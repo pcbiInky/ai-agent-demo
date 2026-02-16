@@ -39,7 +39,7 @@ async function testMemory(cli) {
 
 async function main() {
   console.log('╔══════════════════════════════════════╗');
-  console.log('║     会话记忆测试（遍历所有 CLI）        ║');
+  console.log('║     会话记忆测试（遍历所有 CLI）         ║');
   console.log('╚══════════════════════════════════════╝');
 
   const clis = ['claude', 'trae'];

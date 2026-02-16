@@ -192,7 +192,7 @@ function invokeWithFakeCli(mode, timeoutMs = 600_000) {
 // ── 运行所有测试 ──────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║     invoke.js 健壮性测试              ║");
+  console.log("║     invoke.js 健壮性测试               ║");
   console.log("╚══════════════════════════════════════╝");
 
   if (quickMode) {
