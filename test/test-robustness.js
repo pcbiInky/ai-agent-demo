@@ -107,23 +107,27 @@ async function testBackwardCompat() {
 
 // ── 测试 5: 暗号验证 — 真实 CLI ──────────────────────────
 async function testVerifyWithRealCli() {
-  console.log("\n=== 测试 5: 暗号验证 (真实 Claude CLI) ===");
+  const clis = ["claude", "trae"];
+  
+  for (const cli of clis) {
+    console.log(`\n=== 测试 5: 暗号验证 (真实 ${cli} CLI) ===`);
 
-  const { invoke } = require(INVOKE_PATH);
+    const { invoke } = require(INVOKE_PATH);
 
-  try {
-    const result = await invoke("claude", "1+1等于几？请只回答数字", null, { verify: true });
-    assert(typeof result.verified === "boolean", `verified 字段存在: ${result.verified}`);
-    assert(!result.text.includes("VERIFY:"), `VERIFY 标记已从输出中清除`);
+    try {
+      const result = await invoke(cli, "1+1等于几？请只回答数字", null, { verify: true });
+      assert(typeof result.verified === "boolean", `verified 字段存在: ${result.verified}`);
+      assert(!result.text.includes("VERIFY:"), `VERIFY 标记已从输出中清除`);
 
-    if (result.verified) {
-      log("✅", "暗号校验通过 — AI 忠实遵循了指令");
-    } else {
-      log("⚠️", "暗号校验未通过 — AI 未在末尾输出 VERIFY（不一定是幻觉，可能是指令遵循问题）");
+      if (result.verified) {
+        log("✅", "暗号校验通过 — AI 忠实遵循了指令");
+      } else {
+        log("⚠️", "暗号校验未通过 — AI 未在末尾输出 VERIFY（不一定是幻觉，可能是指令遵循问题）");
+      }
+      console.log(`   回复内容: "${result.text.trim()}"`);
+    } catch (err) {
+      assert(false, `调用失败: "${err.message}"`);
     }
-    console.log(`   回复内容: "${result.text.trim()}"`);
-  } catch (err) {
-    assert(false, `调用失败: "${err.message}"`);
   }
 }
 
@@ -188,7 +192,7 @@ function invokeWithFakeCli(mode, timeoutMs = 600_000) {
 // ── 运行所有测试 ──────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║     invoke.js 健壮性测试             ║");
+  console.log("║     invoke.js 健壮性测试              ║");
   console.log("╚══════════════════════════════════════╝");
 
   if (quickMode) {

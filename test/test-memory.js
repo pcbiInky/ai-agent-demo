@@ -2,11 +2,8 @@
 
 const { invoke } = require('../invoke.js');
 
-async function testMemory() {
-  console.log('=== 测试会话记忆功能 ===\n');
-  
-  const cli = process.argv[2] || 'trae';
-  console.log(`使用 CLI: ${cli}\n`);
+async function testMemory(cli) {
+  console.log(`\n=== 测试 ${cli} CLI 会话记忆功能 ===\n`);
   
   try {
     // 第一轮对话：告诉 AI 一个数字
@@ -34,8 +31,35 @@ async function testMemory() {
     
   } catch (error) {
     console.error('错误:', error.message);
-    process.exit(1);
+    return false;
   }
+  
+  return true;
 }
 
-testMemory();
+async function main() {
+  console.log('╔══════════════════════════════════════╗');
+  console.log('║     会话记忆测试（遍历所有 CLI）        ║');
+  console.log('╚══════════════════════════════════════╝');
+
+  const clis = ['claude', 'trae'];
+  let passed = 0;
+  let failed = 0;
+
+  for (const cli of clis) {
+    const success = await testMemory(cli);
+    if (success) {
+      passed++;
+    } else {
+      failed++;
+    }
+  }
+
+  console.log('\n════════════════════════════════════════');
+  console.log(`结果: ${passed} 通过, ${failed} 失败`);
+  console.log('══════════════════════════════════════════');
+
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+main();
