@@ -2,6 +2,7 @@
 const state = {
   sessionId: null,
   characters: {},
+  profiles: {},
   eventSource: null,
   // 右侧栏统计
   stats: { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 },
@@ -10,6 +11,7 @@ const state = {
   // thinking 中的 messageId -> Set<character>
   thinkingMap: {},
 };
+const PROFILE_STORAGE_KEY = "characterProfilesV1";
 
 // ── DOM 元素 ──────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
@@ -21,17 +23,26 @@ const $newSessionBtn = $("#new-session-btn");
 const $sessionList = $("#session-list");
 const $mentionHints = $("#mention-hints");
 const $charStatuses = $("#character-statuses");
+const $chatSubtitle = $("#chat-subtitle");
+const $settingsBtn = $("#settings-btn");
+const $settingsModal = $("#settings-modal");
+const $settingsForm = $("#settings-form");
+const $settingsError = $("#settings-error");
+const $settingsSaveBtn = $("#settings-save-btn");
+const $settingsCancelBtn = $("#settings-cancel-btn");
 
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
   const res = await fetch("/api/characters");
   const data = await res.json();
   state.characters = data.characters;
+  initProfiles();
 
   // 初始化角色状态
   for (const name of Object.keys(state.characters)) {
     state.charStatus[name] = "online";
   }
+  renderStaticCharacterTexts();
   renderCharStatuses();
 
   // Session
@@ -47,6 +58,7 @@ async function init() {
   connectSSE();
   setupInput();
   setupMentionHints();
+  setupSettings();
 
   $newSessionBtn.addEventListener("click", newSession);
 }
@@ -85,14 +97,15 @@ function connectSSE() {
 
 // ── 发送消息 ──────────────────────────────────────────────
 async function sendMessage() {
-  const text = $input.value.trim();
-  if (!text) return;
+  const rawText = $input.value.trim();
+  if (!rawText) return;
+  const text = normalizeMentions(rawText);
 
   $input.value = "";
   autoResize($input);
   $mentionHints.classList.add("hidden");
 
-  appendUserMessage(text);
+  appendUserMessage(rawText);
 
   try {
     const res = await fetch("/api/chat", {
@@ -132,7 +145,8 @@ function appendUserMessage(text) {
 
 function appendAssistantMessage(character, text, verified) {
   const charClass = getCharClass(character);
-  const avatar = state.characters[character]?.avatar || character[0];
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
 
@@ -146,7 +160,7 @@ function appendAssistantMessage(character, text, verified) {
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
       <div class="msg-header">
-        <span class="character-name ${charClass}">${escapeHtml(character)}</span>
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
@@ -160,7 +174,8 @@ function appendAssistantMessage(character, text, verified) {
 
 function appendErrorMessage(character, error) {
   const charClass = getCharClass(character);
-  const avatar = state.characters[character]?.avatar || "!";
+  const avatar = getAvatar(character, "!");
+  const displayName = getDisplayName(character);
 
   const div = document.createElement("div");
   div.className = `message assistant error-msg ${charClass}`;
@@ -168,7 +183,7 @@ function appendErrorMessage(character, error) {
     <div class="avatar ${charClass}" style="background:var(--error-text)">${avatar}</div>
     <div class="bubble-wrapper">
       <div class="msg-header">
-        <span class="character-name">${escapeHtml(character)}</span>
+        <span class="character-name">${escapeHtml(displayName)}</span>
         <span class="msg-time">${formatTimeShort(Date.now())}</span>
       </div>
       <div class="bubble">${escapeHtml(error)}</div>
@@ -181,7 +196,8 @@ function appendErrorMessage(character, error) {
 // ── Thinking ──────────────────────────────────────────────
 function showThinking(character, messageId) {
   const charClass = getCharClass(character);
-  const avatar = state.characters[character]?.avatar || character[0];
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
@@ -190,7 +206,7 @@ function showThinking(character, messageId) {
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
       <div class="msg-header">
-        <span class="character-name ${charClass}">${escapeHtml(character)}</span>
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">思考中...</span>
       </div>
       <div class="thinking-bubble">
@@ -227,7 +243,7 @@ function renderCharStatuses() {
     div.className = "char-status";
     div.innerHTML = `
       <div class="status-dot ${dotClass}"></div>
-      <span class="char-status-name" style="color: var(--${charClass}-accent)">${name} (${config.cli})</span>
+      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(getDisplayName(name))} (${config.cli})</span>
       <span class="char-status-label">${label}</span>
     `;
     $charStatuses.appendChild(div);
@@ -270,9 +286,9 @@ async function loadSessionList() {
       div.className = `session-item${isCurrent ? " active" : ""}`;
       div.innerHTML = `
         <div class="session-avatars">
-          <span class="mini-avatar" style="background:var(--faker-accent)">F</span>
-          <span class="mini-avatar" style="background:var(--qijige-accent)">奇</span>
-          <span class="mini-avatar" style="background:var(--yyf-accent)">Y</span>
+          <span class="mini-avatar" style="background:var(--faker-accent)">${escapeHtml(getAvatar(getCharacterByClass("faker"), "F"))}</span>
+          <span class="mini-avatar" style="background:var(--qijige-accent)">${escapeHtml(getAvatar(getCharacterByClass("qijige"), "奇"))}</span>
+          <span class="mini-avatar" style="background:var(--yyf-accent)">${escapeHtml(getAvatar(getCharacterByClass("yyf"), "Y"))}</span>
         </div>
         <div class="session-preview">${s.sessionId.slice(0, 12)}...${isCurrent ? " (当前)" : ""}</div>
         <div class="session-meta">
@@ -290,11 +306,7 @@ function switchSession(id) {
   state.sessionId = id;
   sessionStorage.setItem("sessionId", id);
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
-  $messages.innerHTML = `
-    <div class="system-notice">
-      输入 <code>@Faker</code> 调用 Claude，<code>@奇迹哥</code> 调用 Trae，<code>@YYF</code> 调用 Codex
-    </div>
-  `;
+  $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
   renderStats();
   loadHistory();
@@ -334,18 +346,19 @@ async function loadHistory() {
 function setupMentionHints() {
   $mentionHints.innerHTML = "";
   for (const [name] of Object.entries(state.characters)) {
+    const displayName = getDisplayName(name);
     const chip = document.createElement("span");
     chip.className = `hint-chip ${getCharClass(name)}`;
-    chip.textContent = `@${name}`;
+    chip.textContent = `@${displayName}`;
     chip.addEventListener("click", () => {
       const cursor = $input.selectionStart;
       const before = $input.value.slice(0, cursor);
       const after = $input.value.slice(cursor);
       
       if (before.endsWith("@")) {
-        $input.value = before.slice(0, -1) + `@${name} ` + after;
+        $input.value = before.slice(0, -1) + `@${displayName} ` + after;
       } else {
-        $input.value = before + `@${name} ` + after;
+        $input.value = before + `@${displayName} ` + after;
       }
       
       $input.focus();
@@ -390,10 +403,168 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function initProfiles() {
+  const saved = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  })();
+
+  state.profiles = {};
+  for (const [character] of Object.entries(state.characters)) {
+    const nickname = String(saved[character]?.nickname || character).trim() || character;
+    state.profiles[character] = { nickname };
+  }
+}
+
+function persistProfiles() {
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(state.profiles));
+}
+
+function getDisplayName(character) {
+  return state.profiles[character]?.nickname || character;
+}
+
+function getAvatar(character, fallback = "") {
+  const displayName = getDisplayName(character);
+  const derived = deriveAvatarFromName(displayName);
+  return derived || fallback || character?.[0] || "?";
+}
+
+function getCharacterByClass(charClass) {
+  if (charClass === "qijige") return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "trae");
+  if (charClass === "yyf") return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "codex");
+  return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "claude");
+}
+
+function buildSystemNoticeHtml() {
+  const claudeName = getDisplayName(getCharacterByClass("faker"));
+  const traeName = getDisplayName(getCharacterByClass("qijige"));
+  const codexName = getDisplayName(getCharacterByClass("yyf"));
+  return `输入 <code>@${escapeHtml(claudeName)}</code> 调用 Claude，<code>@${escapeHtml(traeName)}</code> 调用 Trae，<code>@${escapeHtml(codexName)}</code> 调用 Codex`;
+}
+
+function renderStaticCharacterTexts() {
+  const claudeName = getDisplayName(getCharacterByClass("faker"));
+  const traeName = getDisplayName(getCharacterByClass("qijige"));
+  const codexName = getDisplayName(getCharacterByClass("yyf"));
+  $chatSubtitle.textContent = `${claudeName} (Claude) & ${traeName} (Trae) & ${codexName} (Codex)`;
+  const noticeEl = $("#system-notice");
+  if (noticeEl) noticeEl.innerHTML = buildSystemNoticeHtml();
+  $("#label-stat-faker").textContent = `${claudeName} 消息`;
+  $("#label-stat-qijige").textContent = `${traeName} 消息`;
+  $("#label-stat-yyf").textContent = `${codexName} 消息`;
+}
+
+function setupSettings() {
+  $settingsBtn.addEventListener("click", () => {
+    renderSettingsForm();
+    hideSettingsError();
+    $settingsModal.classList.remove("hidden");
+  });
+  $settingsCancelBtn.addEventListener("click", () => {
+    hideSettingsError();
+    $settingsModal.classList.add("hidden");
+  });
+  $settingsModal.addEventListener("click", (e) => {
+    if (e.target?.dataset?.close === "1") {
+      hideSettingsError();
+      $settingsModal.classList.add("hidden");
+    }
+  });
+  $settingsSaveBtn.addEventListener("click", () => {
+    const rows = $settingsForm.querySelectorAll(".setting-row");
+    const nextProfiles = {};
+    const nicknameMap = new Map();
+    for (const row of rows) {
+      const character = row.getAttribute("data-character");
+      const nickname = row.querySelector(".nickname-input")?.value?.trim();
+      if (!character) continue;
+      const safeName = nickname || character;
+      nextProfiles[character] = { nickname: safeName };
+
+      const key = safeName.toLocaleLowerCase();
+      if (!nicknameMap.has(key)) nicknameMap.set(key, []);
+      nicknameMap.get(key).push(character);
+    }
+
+    for (const [key, characters] of nicknameMap.entries()) {
+      if (characters.length > 1) {
+        showSettingsError(`昵称重复：${key}。请给每个角色设置不同昵称。`);
+        return;
+      }
+    }
+
+    hideSettingsError();
+    state.profiles = nextProfiles;
+    persistProfiles();
+    renderStaticCharacterTexts();
+    renderCharStatuses();
+    setupMentionHints();
+    loadHistory();
+    loadSessionList();
+    $settingsModal.classList.add("hidden");
+  });
+}
+
+function renderSettingsForm() {
+  $settingsForm.innerHTML = "";
+  for (const [character, config] of Object.entries(state.characters)) {
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    row.setAttribute("data-character", character);
+    row.innerHTML = `
+      <div class="setting-cli">${config.cli}</div>
+      <input class="nickname-input" type="text" value="${escapeHtml(getDisplayName(character))}" placeholder="昵称">
+    `;
+    $settingsForm.appendChild(row);
+  }
+}
+
+function deriveAvatarFromName(name) {
+  const text = String(name || "").trim();
+  if (!text) return "";
+  const firstChinese = text.match(/[\u3400-\u9FFF]/);
+  if (firstChinese) return firstChinese[0];
+  const firstVisible = [...text].find((ch) => /\S/.test(ch));
+  return firstVisible || "";
+}
+
+function showSettingsError(text) {
+  if (!$settingsError) return;
+  $settingsError.textContent = text;
+  $settingsError.classList.remove("hidden");
+}
+
+function hideSettingsError() {
+  if (!$settingsError) return;
+  $settingsError.textContent = "";
+  $settingsError.classList.add("hidden");
+}
+
+function normalizeMentions(raw) {
+  let text = raw;
+  const byLength = Object.keys(state.characters).sort((a, b) => {
+    const da = getDisplayName(a);
+    const db = getDisplayName(b);
+    return db.length - da.length;
+  });
+  for (const canonical of byLength) {
+    const display = getDisplayName(canonical);
+    if (!display || display === canonical) continue;
+    const escaped = display.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`@${escaped}`, "g"), `@${canonical}`);
+  }
+  return text;
+}
+
 function getCharClass(character) {
-  if (character === "奇迹哥") return "qijige";
-  if (character === "YYF") return "yyf";
-  return (character || "").toLowerCase();
+  const cli = state.characters[character]?.cli;
+  if (cli === "trae") return "qijige";
+  if (cli === "codex") return "yyf";
+  return "faker";
 }
 
 function scrollToBottom() {

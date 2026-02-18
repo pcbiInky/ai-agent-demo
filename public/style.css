@@ -347,10 +347,107 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 .char-status-name { flex: 1; }
 .char-status-label { font-size: 11px; color: var(--text-light); }
 
+/* ── 设置按钮与弹窗 ───────────────────── */
+#settings-btn {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 50%;
+  background: var(--header-bg);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  z-index: 50;
+}
+#settings-btn svg { width: 22px; height: 22px; }
+#settings-btn:hover { opacity: 0.92; }
+
+.modal.hidden { display: none; }
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+}
+.modal-panel {
+  position: relative;
+  width: min(560px, calc(100vw - 24px));
+  margin: 8vh auto 0;
+  background: white;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+}
+.modal-panel h3 { font-size: 18px; margin-bottom: 6px; }
+.modal-desc { font-size: 13px; color: var(--text-light); margin-bottom: 14px; }
+.settings-error {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff2f2;
+  color: var(--error-text);
+  font-size: 12px;
+}
+.settings-error.hidden { display: none; }
+
+#settings-form {
+  display: grid;
+  gap: 10px;
+}
+.setting-row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.setting-row .setting-cli {
+  font-size: 12px;
+  color: var(--text-light);
+}
+.setting-row input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.modal-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.btn-primary, .btn-secondary {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-primary {
+  background: var(--faker-accent);
+  color: white;
+}
+.btn-secondary {
+  background: #ececf3;
+  color: var(--text);
+}
+
 /* ── 响应式：窄屏隐藏侧边栏 ─────────── */
 @media (max-width: 900px) {
   #app { grid-template-columns: 1fr; }
   #sidebar-left, #sidebar-right { display: none; }
+  #settings-btn { left: 12px; bottom: 12px; }
+  .setting-row { grid-template-columns: 1fr; }
 }
 @media (min-width: 901px) and (max-width: 1100px) {
   #app { grid-template-columns: 200px 1fr; }

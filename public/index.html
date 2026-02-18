@@ -22,13 +22,13 @@
       <header id="chat-header">
         <div class="chat-title">
           <h1>AI Chat Arena</h1>
-          <span class="chat-subtitle">Faker (Claude) & 奇迹哥 (Trae) & YYF (Codex)</span>
+          <span id="chat-subtitle" class="chat-subtitle">Faker (Claude) & 奇迹哥 (Trae) & YYF (Codex)</span>
         </div>
       </header>
 
       <main id="chat-container">
         <div id="messages">
-          <div class="system-notice">
+          <div id="system-notice" class="system-notice">
             输入 <code>@Faker</code> 调用 Claude，<code>@奇迹哥</code> 调用 Trae，<code>@YYF</code> 调用 Codex
           </div>
         </div>
@@ -55,9 +55,9 @@
         <h3>消息统计</h3>
         <div id="message-stats">
           <div class="stat-row"><span>总数</span><span id="stat-total">0</span></div>
-          <div class="stat-row"><span>Faker 消息</span><span id="stat-faker">0</span></div>
-          <div class="stat-row"><span>奇迹哥 消息</span><span id="stat-qijige">0</span></div>
-          <div class="stat-row"><span>YYF 消息</span><span id="stat-yyf">0</span></div>
+          <div class="stat-row"><span id="label-stat-faker">Faker 消息</span><span id="stat-faker">0</span></div>
+          <div class="stat-row"><span id="label-stat-qijige">奇迹哥 消息</span><span id="stat-qijige">0</span></div>
+          <div class="stat-row"><span id="label-stat-yyf">YYF 消息</span><span id="stat-yyf">0</span></div>
           <div class="stat-row"><span>验证通过</span><span id="stat-verified">0</span></div>
         </div>
       </div>
@@ -68,6 +68,27 @@
         </div>
       </div>
     </aside>
+  </div>
+
+  <button id="settings-btn" title="角色设置" aria-label="角色设置">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.12A1.7 1.7 0 0 0 9.2 20a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.08-.4H2.8a2 2 0 1 1 0-4h.12A1.7 1.7 0 0 0 4 9.2a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9.2 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.08V2.8a2 2 0 1 1 4 0v.12A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.34.3.54.72.6 1.18.01.2.01.41 0 .62-.06.46-.26.88-.6 1.18z"></path>
+    </svg>
+  </button>
+
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel">
+      <h3>角色设置</h3>
+      <p class="modal-desc">修改显示昵称。头像会自动取昵称首个中文或首字符，发送消息时会自动映射到原角色。</p>
+      <div id="settings-error" class="settings-error hidden"></div>
+      <div id="settings-form"></div>
+      <div class="modal-actions">
+        <button id="settings-cancel-btn" class="btn-secondary">取消</button>
+        <button id="settings-save-btn" class="btn-primary">保存</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>
