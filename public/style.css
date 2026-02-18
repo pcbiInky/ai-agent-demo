@@ -1,0 +1,349 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #f0eef6;
+  --sidebar-bg: #ffffff;
+  --chat-bg: #f7f5fb;
+  --header-bg: #2d2b3d;
+  --text: #1a1a2e;
+  --text-light: #8b8b9e;
+  --border: #e8e5f0;
+
+  --faker-bg: #e8f0fe;
+  --faker-accent: #4a6cf7;
+  --faker-name: #2d5be3;
+
+  --qijige-bg: #fef3e8;
+  --qijige-accent: #f59e42;
+  --qijige-name: #d97a0a;
+
+  --user-bg: #d4f5d0;
+  --error-bg: #fee;
+  --error-text: #c62828;
+
+  --green: #4caf50;
+  --radius: 12px;
+}
+
+html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+
+/* ── 三栏布局 ──────────────────────────── */
+#app {
+  display: grid;
+  grid-template-columns: 240px 1fr 220px;
+  height: 100vh;
+  max-width: 1400px;
+  margin: 0 auto;
+  box-shadow: 0 0 40px rgba(0,0,0,0.08);
+}
+
+/* ── 左侧栏 ────────────────────────────── */
+#sidebar-left {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-header h2 { font-size: 16px; font-weight: 600; }
+.sidebar-header button {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--faker-accent);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sidebar-header button:hover { opacity: 0.9; }
+
+#session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 2px;
+  transition: background 0.15s;
+}
+.session-item:hover { background: var(--chat-bg); }
+.session-item.active { background: #ede8f5; }
+.session-item .session-preview { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 2px; display: flex; justify-content: space-between; }
+.session-item .session-avatars { display: flex; gap: -4px; margin-bottom: 4px; }
+.session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid white; }
+
+/* ── 中间聊天区 ────────────────────────── */
+#center {
+  display: flex;
+  flex-direction: column;
+  background: var(--chat-bg);
+  min-width: 0;
+}
+
+#chat-header {
+  padding: 14px 20px;
+  background: var(--header-bg);
+  color: white;
+}
+.chat-title h1 { font-size: 17px; font-weight: 600; }
+.chat-subtitle { font-size: 12px; opacity: 0.6; }
+
+#chat-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 0;
+}
+
+#messages { display: flex; flex-direction: column; gap: 2px; }
+
+/* ── 系统提示 ──────────────────────────── */
+.system-notice {
+  text-align: center;
+  padding: 16px 20px;
+  color: var(--text-light);
+  font-size: 13px;
+}
+.system-notice code {
+  background: #e0dce8;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ── 消息 ──────────────────────────────── */
+.message {
+  display: flex;
+  padding: 6px 20px;
+  gap: 10px;
+}
+.message.user { flex-direction: row-reverse; }
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+  font-size: 13px;
+  margin-top: 2px;
+}
+.avatar.faker { background: var(--faker-accent); }
+.avatar.qijige { background: var(--qijige-accent); }
+.avatar.user-avatar { background: var(--green); }
+
+.bubble-wrapper { max-width: 65%; min-width: 80px; }
+
+.msg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+  padding-left: 2px;
+}
+.character-name { font-size: 13px; font-weight: 600; }
+.character-name.faker { color: var(--faker-name); }
+.character-name.qijige { color: var(--qijige-name); }
+.msg-time { font-size: 11px; color: var(--text-light); }
+.msg-model { font-size: 11px; color: var(--text-light); }
+
+.bubble {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.message.user .bubble {
+  background: var(--user-bg);
+  border-bottom-right-radius: 4px;
+  max-width: 65%;
+  margin-left: auto;
+}
+.message.faker .bubble { background: var(--faker-bg); border-bottom-left-radius: 4px; }
+.message.qijige .bubble { background: var(--qijige-bg); border-bottom-left-radius: 4px; }
+
+/* verified 标记 */
+.verified-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  font-weight: 500;
+}
+.verified-badge.pass { background: #e8f5e9; color: #2e7d32; }
+.verified-badge.fail { background: #fce4ec; color: #c62828; }
+
+/* ── 错误消息 ──────────────────────────── */
+.message.error-msg .bubble {
+  background: var(--error-bg);
+  color: var(--error-text);
+  border-bottom-left-radius: 4px;
+  font-size: 13px;
+}
+
+/* ── Thinking 动画 ─────────────────────── */
+.thinking-bubble {
+  display: flex;
+  gap: 5px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border-bottom-left-radius: 4px;
+}
+.message.faker .thinking-bubble { background: var(--faker-bg); }
+.message.qijige .thinking-bubble { background: var(--qijige-bg); }
+
+.thinking-bubble .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #aaa;
+  animation: bounce 1.4s infinite ease-in-out;
+}
+.thinking-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-8px); }
+}
+
+/* ── 输入区 ────────────────────────────── */
+#input-area {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: white;
+}
+
+#mention-hints {
+  display: flex;
+  gap: 6px;
+  padding: 0 0 8px;
+}
+#mention-hints.hidden { display: none; }
+.hint-chip {
+  padding: 4px 12px;
+  border-radius: 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: white;
+  transition: all 0.15s;
+}
+.hint-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+.hint-chip.faker { color: var(--faker-accent); border-color: var(--faker-accent); }
+.hint-chip.qijige { color: var(--qijige-accent); border-color: var(--qijige-accent); }
+
+#input-row { display: flex; gap: 8px; align-items: flex-end; }
+#message-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  max-height: 120px;
+  line-height: 1.4;
+  background: var(--chat-bg);
+}
+#message-input:focus { border-color: var(--faker-accent); background: white; }
+
+#send-btn {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: var(--faker-accent);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+#send-btn:hover { transform: scale(1.05); }
+
+/* ── 右侧栏 ────────────────────────────── */
+#sidebar-right {
+  background: var(--sidebar-bg);
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.stat-row span:first-child { color: var(--text-light); }
+.stat-row span:last-child { font-weight: 500; }
+
+.mono { font-family: "SF Mono", "Consolas", monospace; font-size: 11px; }
+
+/* 角色状态 */
+.char-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.online { background: var(--green); }
+.status-dot.idle { background: #ffc107; }
+.status-dot.thinking { background: #ffc107; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.char-status-name { flex: 1; }
+.char-status-label { font-size: 11px; color: var(--text-light); }
+
+/* ── 响应式：窄屏隐藏侧边栏 ─────────── */
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; }
+  #sidebar-left, #sidebar-right { display: none; }
+}
+@media (min-width: 901px) and (max-width: 1100px) {
+  #app { grid-template-columns: 200px 1fr; }
+  #sidebar-right { display: none; }
+}

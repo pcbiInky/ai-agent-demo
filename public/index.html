@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chat Arena</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ── 左侧栏：会话列表 ──────────────── -->
+    <aside id="sidebar-left">
+      <div class="sidebar-header">
+        <h2>对话</h2>
+        <button id="new-session-btn" title="新建会话">+ 新对话</button>
+      </div>
+      <div id="session-list"></div>
+    </aside>
+
+    <!-- ── 中间：聊天区 ──────────────────── -->
+    <section id="center">
+      <header id="chat-header">
+        <div class="chat-title">
+          <h1>AI Chat Arena</h1>
+          <span class="chat-subtitle">Faker (Claude) & 奇迹哥 (Trae)</span>
+        </div>
+      </header>
+
+      <main id="chat-container">
+        <div id="messages">
+          <div class="system-notice">
+            输入 <code>@Faker</code> 调用 Claude，<code>@奇迹哥</code> 调用 Trae
+          </div>
+        </div>
+      </main>
+
+      <footer id="input-area">
+        <div id="mention-hints" class="hidden"></div>
+        <div id="input-row">
+          <textarea id="message-input" placeholder="输入消息... (@ 召唤角色)" rows="1"></textarea>
+          <button id="send-btn" title="发送">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- ── 右侧栏：状态面板 ──────────────── -->
+    <aside id="sidebar-right">
+      <div class="panel">
+        <h3>角色状态</h3>
+        <div id="character-statuses"></div>
+      </div>
+      <div class="panel">
+        <h3>消息统计</h3>
+        <div id="message-stats">
+          <div class="stat-row"><span>总数</span><span id="stat-total">0</span></div>
+          <div class="stat-row"><span>Faker 消息</span><span id="stat-faker">0</span></div>
+          <div class="stat-row"><span>奇迹哥 消息</span><span id="stat-qijige">0</span></div>
+          <div class="stat-row"><span>验证通过</span><span id="stat-verified">0</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>对话信息</h3>
+        <div id="session-info-panel">
+          <div class="stat-row"><span>Session</span><span id="session-id-display" class="mono"></span></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
