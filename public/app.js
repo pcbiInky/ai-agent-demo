@@ -4,7 +4,7 @@ const state = {
   characters: {},
   eventSource: null,
   // 右侧栏统计
-  stats: { total: 0, faker: 0, qijige: 0, verified: 0 },
+  stats: { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 },
   // 角色状态: "online" | "thinking"
   charStatus: {},
   // thinking 中的 messageId -> Set<character>
@@ -239,6 +239,7 @@ function updateStats(character, verified) {
   state.stats.total++;
   if (getCharClass(character) === "faker") state.stats.faker++;
   if (getCharClass(character) === "qijige") state.stats.qijige++;
+  if (getCharClass(character) === "yyf") state.stats.yyf++;
   if (verified === true) state.stats.verified++;
   renderStats();
 }
@@ -247,6 +248,7 @@ function renderStats() {
   $("#stat-total").textContent = state.stats.total;
   $("#stat-faker").textContent = state.stats.faker;
   $("#stat-qijige").textContent = state.stats.qijige;
+  $("#stat-yyf").textContent = state.stats.yyf;
   $("#stat-verified").textContent = state.stats.verified;
 }
 
@@ -270,6 +272,7 @@ async function loadSessionList() {
         <div class="session-avatars">
           <span class="mini-avatar" style="background:var(--faker-accent)">F</span>
           <span class="mini-avatar" style="background:var(--qijige-accent)">奇</span>
+          <span class="mini-avatar" style="background:var(--yyf-accent)">Y</span>
         </div>
         <div class="session-preview">${s.sessionId.slice(0, 12)}...${isCurrent ? " (当前)" : ""}</div>
         <div class="session-meta">
@@ -289,10 +292,10 @@ function switchSession(id) {
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
   $messages.innerHTML = `
     <div class="system-notice">
-      输入 <code>@Faker</code> 调用 Claude，<code>@奇迹哥</code> 调用 Trae
+      输入 <code>@Faker</code> 调用 Claude，<code>@奇迹哥</code> 调用 Trae，<code>@YYF</code> 调用 Codex
     </div>
   `;
-  state.stats = { total: 0, faker: 0, qijige: 0, verified: 0 };
+  state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
   renderStats();
   loadHistory();
   loadSessionList();
@@ -312,7 +315,7 @@ async function loadHistory() {
     if (!log.messages || log.messages.length === 0) return;
 
     $messages.innerHTML = "";
-    state.stats = { total: 0, faker: 0, qijige: 0, verified: 0 };
+    state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
 
     for (const msg of log.messages) {
       if (msg.role === "user") {
@@ -383,6 +386,7 @@ function escapeHtml(str) {
 
 function getCharClass(character) {
   if (character === "奇迹哥") return "qijige";
+  if (character === "YYF") return "yyf";
   return (character || "").toLowerCase();
 }
 

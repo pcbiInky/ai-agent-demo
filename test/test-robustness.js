@@ -7,7 +7,7 @@
  * 3. 暗号验证（幻觉检测）
  *
  * 测试 1-2 使用 helpers/slow-cli.js 模拟，无需真实 CLI
- * 测试 3 需要真实 claude CLI
+ * 测试 5 需要真实 claude/trae/codex CLI
  *
  * 用法:
  *   node test/test-robustness.js           — 运行全部测试
@@ -107,7 +107,7 @@ async function testBackwardCompat() {
 
 // ── 测试 5: 暗号验证 — 真实 CLI ──────────────────────────
 async function testVerifyWithRealCli() {
-  const clis = ["claude", "trae"];
+  const clis = ["claude", "trae", "codex"];
   
   for (const cli of clis) {
     console.log(`\n=== 测试 5: 暗号验证 (真实 ${cli} CLI) ===`);
@@ -192,7 +192,7 @@ function invokeWithFakeCli(mode, timeoutMs = 600_000) {
 // ── 运行所有测试 ──────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║     invoke.js 健壮性测试               ║");
+  console.log("║     invoke.js 健壮性测试             ║");
   console.log("╚══════════════════════════════════════╝");
 
   if (quickMode) {

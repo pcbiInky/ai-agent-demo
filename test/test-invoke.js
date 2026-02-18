@@ -32,6 +32,21 @@ async function main() {
   } catch (error) {
     console.error('Trae 错误:', error.message);
   }
+
+  console.log('\n=== 测试 Codex CLI ===');
+  try {
+    const codexResult = await invoke('codex', '你好，请用一句话介绍自己');
+    console.log('Codex 回复:', codexResult.text);
+    console.log('Codex 会话 ID:', codexResult.sessionId);
+
+    // 使用相同的会话 ID 继续对话
+    console.log('\n=== 继续 Codex 对话 ===');
+    const codexResult2 = await invoke('codex', '你能做什么？', codexResult.sessionId);
+    console.log('Codex 回复:', codexResult2.text);
+    console.log('Codex 会话 ID:', codexResult2.sessionId);
+  } catch (error) {
+    console.error('Codex 错误:', error.message);
+  }
 }
 
 main();

@@ -25,24 +25,25 @@ async function testMemory(cli) {
     // 检查是否记住了数字 42
     if (result2.text.includes('42')) {
       console.log('✅ 测试通过！AI 记住了数字 42');
+      return true;
     } else {
       console.log('❌ 测试失败！AI 没有记住数字 42');
+      return false;
     }
     
   } catch (error) {
     console.error('错误:', error.message);
     return false;
   }
-  
-  return true;
 }
 
 async function main() {
   console.log('╔══════════════════════════════════════╗');
-  console.log('║     会话记忆测试（遍历所有 CLI）         ║');
+  console.log('║     会话记忆测试（遍历所有 CLI）       ║');
   console.log('╚══════════════════════════════════════╝');
 
-  const clis = ['claude', 'trae'];
+  const cliArg = process.argv[2];
+  const clis = cliArg ? [cliArg] : ['claude', 'trae', 'codex'];
   let passed = 0;
   let failed = 0;
 
