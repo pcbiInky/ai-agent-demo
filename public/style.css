@@ -17,6 +17,10 @@
   --qijige-accent: #f59e42;
   --qijige-name: #d97a0a;
 
+  --yyf-bg: #e6f7f5;
+  --yyf-accent: #14b8a6;
+  --yyf-name: #0f766e;
+
   --user-bg: #d4f5d0;
   --error-bg: #fee;
   --error-text: #c62828;
@@ -147,6 +151,7 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 }
 .avatar.faker { background: var(--faker-accent); }
 .avatar.qijige { background: var(--qijige-accent); }
+.avatar.yyf { background: var(--yyf-accent); }
 .avatar.user-avatar { background: var(--green); }
 
 .bubble-wrapper { max-width: 65%; min-width: 80px; }
@@ -161,6 +166,7 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 .character-name { font-size: 13px; font-weight: 600; }
 .character-name.faker { color: var(--faker-name); }
 .character-name.qijige { color: var(--qijige-name); }
+.character-name.yyf { color: var(--yyf-name); }
 .msg-time { font-size: 11px; color: var(--text-light); }
 .msg-model { font-size: 11px; color: var(--text-light); }
 
@@ -180,6 +186,7 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 }
 .message.faker .bubble { background: var(--faker-bg); border-bottom-left-radius: 4px; }
 .message.qijige .bubble { background: var(--qijige-bg); border-bottom-left-radius: 4px; }
+.message.yyf .bubble { background: var(--yyf-bg); border-bottom-left-radius: 4px; }
 
 /* verified 标记 */
 .verified-badge {
@@ -211,6 +218,7 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 }
 .message.faker .thinking-bubble { background: var(--faker-bg); }
 .message.qijige .thinking-bubble { background: var(--qijige-bg); }
+.message.yyf .thinking-bubble { background: var(--yyf-bg); }
 
 .thinking-bubble .dot {
   width: 8px;
@@ -251,6 +259,7 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
 .hint-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .hint-chip.faker { color: var(--faker-accent); border-color: var(--faker-accent); }
 .hint-chip.qijige { color: var(--qijige-accent); border-color: var(--qijige-accent); }
+.hint-chip.yyf { color: var(--yyf-accent); border-color: var(--yyf-accent); }
 
 #input-row { display: flex; gap: 8px; align-items: flex-end; }
 #message-input {

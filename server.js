@@ -12,6 +12,7 @@ const LOG_DIR = path.join(__dirname, "chat-logs");
 const CHARACTERS = {
   Faker: { cli: "claude", avatar: "F" },
   奇迹哥: { cli: "trae", avatar: "奇" },
+  YYF: { cli: "codex", avatar: "Y" },
 };
 
 // ── 状态管理 ──────────────────────────────────────────────

@@ -49,11 +49,45 @@ const CLI_CONFIG = {
     // Trae CLI 不支持 system prompt
     supportsSystemPrompt: false,
   },
+  codex: {
+    command: process.env.CODEX_CLI_COMMAND || "codex",
+    extraArgs: [],
+    buildArgs: ({ prompt, isResume, sessionId }) => {
+      if (isResume) {
+        return ["exec", "resume", "--json", sessionId, prompt];
+      }
+      return ["exec", "--json", prompt];
+    },
+    // JSONL 输出：提取 agent_message 文本 + thread_id（作为 sessionId 统一概念）
+    parse: (stdout, onText, onMeta) => {
+      const rl = createInterface({ input: stdout });
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "thread.started" && event.thread_id) {
+            // Codex 使用 thread_id，这里映射为 sessionId 以统一概念
+            onMeta?.({ sessionId: event.thread_id });
+          }
+          // 适配 codex exec --json 的输出:
+          // {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+          if (event.type === "item.completed" && event.item?.type === "agent_message") {
+            const text = typeof event.item.text === "string" ? event.item.text : "";
+            if (text) onText(text);
+          }
+        } catch {
+          // 忽略非 JSON 行
+        }
+      });
+    },
+    // Codex CLI 是否支持 system prompt 不确定，默认关闭
+    supportsSystemPrompt: false,
+  },
 };
 
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
- * @param {"claude" | "trae"} cli - CLI 名称
+ * @param {"claude" | "trae" | "codex"} cli - CLI 名称
  * @param {string} prompt - 提问内容
  * @param {string} [sessionId] - 可选，传入则继续上次对话；不传则创建新会话
  * @param {object} [options]
@@ -75,6 +109,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
   // 暗号验证：注入 canary + 诚实性指令
   let canary = null;
   let systemPrompt = null;
+  let finalPrompt = prompt;
   
   if (verify) {
     canary = randomUUID().slice(0, 6);
@@ -86,21 +121,35 @@ function invoke(cli, prompt, sessionId, options = {}) {
       `验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}`;
   }
 
-  // 通用参数：-p <prompt> + session 参数 + 各 CLI 特有参数
-  const args = [
-    "-p", prompt,
-    ...(isResume ? ["--resume", id] : ["--session-id", id]),
-  ];
-  
   // 如果 CLI 支持 system prompt 且需要验证，添加 system prompt 参数
   if (verify && config.supportsSystemPrompt) {
-    args.push("--append-system-prompt", systemPrompt);
+    // no-op here, handled below for default args
   } else if (verify && !config.supportsSystemPrompt) {
     // 回退方案：不支持 system prompt 的 CLI，在 user prompt 末尾追加
-    args[1] = prompt + 
+    finalPrompt = prompt +
       "\n\n---" +
       '\n重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。' +
       `\n[验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}]`;
+  }
+
+  // 通用参数：-p <prompt> + session 参数 + 各 CLI 特有参数
+  let args;
+  if (typeof config.buildArgs === "function") {
+    args = config.buildArgs({
+      prompt: finalPrompt,
+      isResume,
+      sessionId: id,
+      verify,
+      systemPrompt,
+    });
+  } else {
+    args = [
+      "-p", finalPrompt,
+      ...(isResume ? ["--resume", id] : ["--session-id", id]),
+    ];
+    if (verify && config.supportsSystemPrompt) {
+      args.push("--append-system-prompt", systemPrompt);
+    }
   }
   
   // 添加 CLI 特有参数
@@ -137,8 +186,11 @@ function invoke(cli, prompt, sessionId, options = {}) {
       }
     }, 5000);
 
+    let reportedSessionId = null;
     config.parse(child.stdout, (text) => {
       result += text;
+    }, (meta) => {
+      if (meta?.sessionId) reportedSessionId = meta.sessionId;
     });
 
     child.stderr.on("data", (chunk) => {
@@ -171,13 +223,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
         console.error(`stderr: ${stderr}`);
         console.error(`stdout: ${result}`);
         console.error(`==================`);
-        reject(new Error(errorMsg));
+        const err = new Error(errorMsg);
+        err.stderr = stderr;
+        err.exitCode = code;
+        reject(err);
       } else if (canary) {
         const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result);
         const text = result.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
-        resolve({ text, sessionId: id, verified });
+        resolve({ text, sessionId: reportedSessionId || id, verified });
       } else {
-        resolve({ text: result, sessionId: id });
+        resolve({ text: result, sessionId: reportedSessionId || id });
       }
     });
   });
@@ -186,13 +241,13 @@ function invoke(cli, prompt, sessionId, options = {}) {
 module.exports = { invoke };
 
 // 直接运行:
-//   node invoke.js <claude|trae> "你的问题"                              — 新会话
-//   node invoke.js <claude|trae> "你的问题" <sessionId>                  — 继续对话
-//   node invoke.js <claude|trae> "你的问题" <sessionId> '{"verify":true}'  — 带选项
+//   node invoke.js <claude|trae|codex> "你的问题"                              — 新会话
+//   node invoke.js <claude|trae|codex> "你的问题" <sessionId>                  — 继续对话
+//   node invoke.js <claude|trae|codex> "你的问题" <sessionId> '{"verify":true}'  — 带选项
 if (require.main === module) {
   const [cli, prompt, sessionId, optionsStr] = process.argv.slice(2);
   if (!cli || !prompt) {
-    console.error('用法: node invoke.js <claude|trae> "你的问题" [sessionId] [options]');
+    console.error('用法: node invoke.js <claude|trae|codex> "你的问题" [sessionId] [options]');
     console.error('示例:');
     console.error('  node invoke.js claude "你好"');
     console.error('  node invoke.js claude "你好" "session-id-123"');
