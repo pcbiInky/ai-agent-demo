@@ -341,7 +341,13 @@ function setupMentionHints() {
       const cursor = $input.selectionStart;
       const before = $input.value.slice(0, cursor);
       const after = $input.value.slice(cursor);
-      $input.value = before + `@${name} ` + after;
+      
+      if (before.endsWith("@")) {
+        $input.value = before.slice(0, -1) + `@${name} ` + after;
+      } else {
+        $input.value = before + `@${name} ` + after;
+      }
+      
       $input.focus();
       $mentionHints.classList.add("hidden");
     });
