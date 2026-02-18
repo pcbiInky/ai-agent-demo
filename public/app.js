@@ -93,6 +93,17 @@ function connectSSE() {
       appendErrorMessage(data.character, data.error);
     }
   });
+
+  // ── 权限请求事件 ──
+  es.addEventListener("permission", (e) => {
+    const data = JSON.parse(e.data);
+    showPermissionCard(data);
+  });
+
+  es.addEventListener("permission-resolved", (e) => {
+    const data = JSON.parse(e.data);
+    resolvePermissionCard(data.requestId, data.behavior, data.message);
+  });
 }
 
 // ── 发送消息 ──────────────────────────────────────────────
@@ -223,6 +234,97 @@ function showThinking(character, messageId) {
 function removeThinking(character, messageId) {
   const el = document.getElementById(`thinking-${character}-${messageId}`);
   if (el) el.remove();
+}
+
+// ── 权限审批卡片 ────────────────────────────────────────
+function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+  const time = formatTimeShort(timestamp || Date.now());
+
+  // 根据工具类型格式化展示内容
+  let detail = "";
+  if (toolName === "Bash" && input?.command) {
+    detail = `<div class="perm-detail-label">命令</div><pre class="perm-code">${escapeHtml(input.command)}</pre>`;
+    if (input.description) {
+      detail += `<div class="perm-detail-label">说明</div><div class="perm-desc">${escapeHtml(input.description)}</div>`;
+    }
+  } else if ((toolName === "Edit" || toolName === "Write") && input?.file_path) {
+    detail = `<div class="perm-detail-label">文件</div><div class="perm-desc mono">${escapeHtml(input.file_path)}</div>`;
+    if (input.old_string) {
+      detail += `<div class="perm-detail-label">替换</div><pre class="perm-code">${escapeHtml(truncate(input.old_string, 200))} → ${escapeHtml(truncate(input.new_string || "", 200))}</pre>`;
+    } else if (input.content) {
+      detail += `<div class="perm-detail-label">内容预览</div><pre class="perm-code">${escapeHtml(truncate(input.content, 300))}</pre>`;
+    }
+  } else if (toolName === "Read" && input?.file_path) {
+    detail = `<div class="perm-detail-label">文件</div><div class="perm-desc mono">${escapeHtml(input.file_path)}</div>`;
+  } else {
+    // 通用：显示 JSON 参数
+    const inputStr = JSON.stringify(input, null, 2);
+    detail = `<div class="perm-detail-label">参数</div><pre class="perm-code">${escapeHtml(truncate(inputStr, 400))}</pre>`;
+  }
+
+  const div = document.createElement("div");
+  div.className = `message assistant ${charClass}`;
+  div.id = `perm-${requestId}`;
+  div.innerHTML = `
+    <div class="avatar ${charClass}">${avatar}</div>
+    <div class="bubble-wrapper">
+      <div class="msg-header">
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+        <span class="msg-time">${time}</span>
+        <span class="perm-badge">需要权限</span>
+      </div>
+      <div class="perm-card">
+        <div class="perm-tool-name">
+          <svg class="perm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
+          ${escapeHtml(toolName)}
+        </div>
+        ${detail}
+        <div class="perm-actions" id="perm-actions-${requestId}">
+          <button class="perm-btn perm-deny" onclick="respondPermission('${requestId}', 'deny')">拒绝</button>
+          <button class="perm-btn perm-allow" onclick="respondPermission('${requestId}', 'allow')">允许</button>
+        </div>
+      </div>
+    </div>
+  `;
+  $messages.appendChild(div);
+  scrollToBottom();
+}
+
+async function respondPermission(requestId, behavior) {
+  const actionsEl = document.getElementById(`perm-actions-${requestId}`);
+  if (actionsEl) {
+    actionsEl.innerHTML = `<span class="perm-pending">${behavior === "allow" ? "已允许 ✓" : "已拒绝 ✗"}</span>`;
+  }
+
+  try {
+    await fetch("/api/permission-response", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, behavior }),
+    });
+  } catch {
+    if (actionsEl) {
+      actionsEl.innerHTML = '<span class="perm-pending" style="color:var(--error-text)">发送失败</span>';
+    }
+  }
+}
+
+function resolvePermissionCard(requestId, behavior, message) {
+  const actionsEl = document.getElementById(`perm-actions-${requestId}`);
+  if (actionsEl) {
+    const label = behavior === "allow" ? "已允许 ✓" : "已拒绝 ✗";
+    const color = behavior === "allow" ? "var(--green)" : "var(--error-text)";
+    actionsEl.innerHTML = `<span class="perm-pending" style="color:${color}">${label}</span>`;
+  }
+}
+
+function truncate(str, max) {
+  if (!str) return "";
+  if (str.length <= max) return str;
+  return str.slice(0, max) + "...";
 }
 
 // ── 右侧栏：角色状态 ─────────────────────────────────────

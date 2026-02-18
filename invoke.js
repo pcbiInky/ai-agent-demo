@@ -1,6 +1,9 @@
 const { spawn } = require("child_process");
 const { createInterface } = require("readline");
 const { randomUUID } = require("crypto");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -38,6 +41,8 @@ const CLI_CONFIG = {
     },
     // 支持 system prompt 参数
     supportsSystemPrompt: true,
+    // 支持 --permission-prompt-tool（MCP 权限代理）
+    supportsPermissionTool: true,
   },
   trae: {
     command: "trae-cli",
@@ -85,6 +90,9 @@ const CLI_CONFIG = {
   },
 };
 
+// permission-server.js 的绝对路径（用于生成临时 MCP 配置）
+const PERMISSION_SERVER_PATH = path.join(__dirname, "permission-server.js");
+
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
  * @param {"claude" | "trae" | "codex"} cli - CLI 名称
@@ -93,10 +101,12 @@ const CLI_CONFIG = {
  * @param {object} [options]
  * @param {number} [options.timeoutMs=600000] - 无活跃输出超时时间（毫秒），默认 10 分钟
  * @param {boolean} [options.verify=false] - 是否启用暗号验证（幻觉检测）
+ * @param {string} [options.browserSessionId] - 浏览器会话 ID（权限代理需要）
+ * @param {string} [options.character] - 角色名（权限代理需要）
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
-  const { timeoutMs = 600_000, verify = false } = options;
+  const { timeoutMs = 600_000, verify = false, browserSessionId, character } = options;
 
   const config = CLI_CONFIG[cli];
   if (!config) {
@@ -155,6 +165,36 @@ function invoke(cli, prompt, sessionId, options = {}) {
   // 添加 CLI 特有参数
   args.push(...config.extraArgs);
 
+  // ── 权限代理：为支持的 CLI 注入 MCP permission-prompt-tool ──
+  let tmpMcpConfig = null;
+  const permissionServerPort = process.env.PORT || "3000";
+
+  if (config.supportsPermissionTool && browserSessionId) {
+    // 生成临时 MCP 配置文件
+    const mcpConfig = {
+      mcpServers: {
+        permission: {
+          type: "stdio",
+          command: "node",
+          args: [PERMISSION_SERVER_PATH],
+          env: {
+            PERMISSION_SERVER_PORT: permissionServerPort,
+            PERMISSION_BROWSER_SESSION: browserSessionId,
+            PERMISSION_CHARACTER: character || "",
+          },
+        },
+      },
+    };
+
+    tmpMcpConfig = path.join(os.tmpdir(), `mcp-perm-${randomUUID().slice(0, 8)}.json`);
+    fs.writeFileSync(tmpMcpConfig, JSON.stringify(mcpConfig));
+
+    args.push(
+      "--mcp-config", tmpMcpConfig,
+      "--permission-mode", "delegate"
+    );
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(config.command, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -197,10 +237,19 @@ function invoke(cli, prompt, sessionId, options = {}) {
       stderr += chunk.toString();
     });
 
+    // 清理临时 MCP 配置文件
+    const cleanupTmpConfig = () => {
+      if (tmpMcpConfig) {
+        try { fs.unlinkSync(tmpMcpConfig); } catch { /* ignore */ }
+        tmpMcpConfig = null;
+      }
+    };
+
     child.on("error", (err) => {
       activeChildren.delete(child);
       clearInterval(timer);
       clearTimeout(killTimer);
+      cleanupTmpConfig();
       const errorMsg = `启动 ${config.command} 失败: ${err.message}`;
       if (stderr) {
         console.error(`\n=== 错误详情 ===`);
@@ -215,6 +264,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
       activeChildren.delete(child);
       clearInterval(timer);
       clearTimeout(killTimer);
+      cleanupTmpConfig();
       if (child.killed) {
         reject(new Error(`${config.command} 超时 (${timeoutMs}ms 无活跃输出)`));
       } else if (code !== 0) {
