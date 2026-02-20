@@ -43,6 +43,7 @@ const CLI_CONFIG = {
     supportsSystemPrompt: true,
     // 支持 --permission-prompt-tool（MCP 权限代理）
     supportsPermissionTool: true,
+    permissionStyle: "mcp-config-file",
   },
   trae: {
     command: "trae-cli",
@@ -53,6 +54,9 @@ const CLI_CONFIG = {
     },
     // Trae CLI 不支持 system prompt
     supportsSystemPrompt: false,
+    // 通过 -c 覆盖注入 mcp_servers + permission_mode
+    supportsPermissionTool: true,
+    permissionStyle: "config-overrides",
   },
   codex: {
     command: process.env.CODEX_CLI_COMMAND || "codex",
@@ -93,6 +97,23 @@ const CLI_CONFIG = {
 // permission-server.js 的绝对路径（用于生成临时 MCP 配置）
 const PERMISSION_SERVER_PATH = path.join(__dirname, "permission-server.js");
 
+function buildTraePermissionOverrides(permissionServerPort, browserSessionId, character) {
+  return [
+    "-c", "permission_mode=delegate",
+    "-c", "permission.mcpServerName=permission",
+    "-c", "mcp_servers.0.name=permission",
+    "-c", "mcp_servers.0.type=stdio",
+    "-c", "mcp_servers.0.command=node",
+    "-c", `mcp_servers.0.args.0=${PERMISSION_SERVER_PATH}`,
+    "-c", "mcp_servers.0.env.0.key=PERMISSION_SERVER_PORT",
+    "-c", `mcp_servers.0.env.0.value=${permissionServerPort}`,
+    "-c", "mcp_servers.0.env.1.key=PERMISSION_BROWSER_SESSION",
+    "-c", `mcp_servers.0.env.1.value=${browserSessionId}`,
+    "-c", "mcp_servers.0.env.2.key=PERMISSION_CHARACTER",
+    "-c", `mcp_servers.0.env.2.value=${character || ""}`,
+  ];
+}
+
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
  * @param {"claude" | "trae" | "codex"} cli - CLI 名称
@@ -120,22 +141,33 @@ function invoke(cli, prompt, sessionId, options = {}) {
   let canary = null;
   let systemPrompt = null;
   let finalPrompt = prompt;
-  
+
   if (verify) {
     canary = randomUUID().slice(0, 6);
-    
+
     // 使用 system prompt 而不是 user prompt
     // 这样可以避免模型把验证指令当作噪音忽略
-    systemPrompt = 
+    systemPrompt =
       '重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。\n' +
       `验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}`;
   }
 
-  // 如果 CLI 支持 system prompt 且需要验证，添加 system prompt 参数
-  if (verify && config.supportsSystemPrompt) {
-    // no-op here, handled below for default args
-  } else if (verify && !config.supportsSystemPrompt) {
-    // 回退方案：不支持 system prompt 的 CLI，在 user prompt 末尾追加
+  // MCP 工具代理提示：告知 Claude 必须使用 MCP Server 提供的工具
+  if (config.supportsPermissionTool && browserSessionId) {
+    const mcpHint =
+      '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit）' +
+      '均由 MCP Server "permission" 提供。' +
+      '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
+      '内置工具已被禁用，不要尝试使用内置工具。';
+    if (systemPrompt) {
+      systemPrompt += mcpHint;
+    } else {
+      systemPrompt = mcpHint.trimStart();
+    }
+  }
+
+  // 不支持 system prompt 的 CLI：回退到 user prompt 末尾追加验证指令
+  if (verify && !config.supportsSystemPrompt) {
     finalPrompt = prompt +
       "\n\n---" +
       '\n重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。' +
@@ -157,7 +189,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
       "-p", finalPrompt,
       ...(isResume ? ["--resume", id] : ["--session-id", id]),
     ];
-    if (verify && config.supportsSystemPrompt) {
+    // 有 system prompt 就注入（验证指令 + MCP 工具提示）
+    if (systemPrompt && config.supportsSystemPrompt) {
       args.push("--append-system-prompt", systemPrompt);
     }
   }
@@ -165,34 +198,52 @@ function invoke(cli, prompt, sessionId, options = {}) {
   // 添加 CLI 特有参数
   args.push(...config.extraArgs);
 
-  // ── 权限代理：为支持的 CLI 注入 MCP permission-prompt-tool ──
+  // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
   let tmpMcpConfig = null;
   const permissionServerPort = process.env.PORT || "3000";
 
   if (config.supportsPermissionTool && browserSessionId) {
-    // 生成临时 MCP 配置文件
-    const mcpConfig = {
-      mcpServers: {
-        permission: {
-          type: "stdio",
-          command: "node",
-          args: [PERMISSION_SERVER_PATH],
-          env: {
-            PERMISSION_SERVER_PORT: permissionServerPort,
-            PERMISSION_BROWSER_SESSION: browserSessionId,
-            PERMISSION_CHARACTER: character || "",
+    if (config.permissionStyle === "mcp-config-file") {
+      // Claude: 生成临时 MCP 配置文件 + --tools "" 禁用所有内置工具
+      const mcpConfig = {
+        mcpServers: {
+          permission: {
+            type: "stdio",
+            command: "node",
+            args: [PERMISSION_SERVER_PATH],
+            env: {
+              PERMISSION_SERVER_PORT: permissionServerPort,
+              PERMISSION_BROWSER_SESSION: browserSessionId,
+              PERMISSION_CHARACTER: character || "",
+            },
           },
         },
-      },
-    };
+      };
 
-    tmpMcpConfig = path.join(os.tmpdir(), `mcp-perm-${randomUUID().slice(0, 8)}.json`);
-    fs.writeFileSync(tmpMcpConfig, JSON.stringify(mcpConfig));
-
-    args.push(
-      "--mcp-config", tmpMcpConfig,
-      "--permission-mode", "delegate"
-    );
+      tmpMcpConfig = path.join(os.tmpdir(), `mcp-perm-${randomUUID().slice(0, 8)}.json`);
+      fs.writeFileSync(tmpMcpConfig, JSON.stringify(mcpConfig));
+      // --tools "" 禁用所有内置工具，Claude 只能使用 MCP 代理的 9 个工具
+      // --allowedTools 授权所有 MCP 工具（-p 模式下无交互权限弹窗，必须预授权）
+      const mcpToolNames = [
+        "mcp__permission__Bash",
+        "mcp__permission__Read",
+        "mcp__permission__Edit",
+        "mcp__permission__Write",
+        "mcp__permission__Glob",
+        "mcp__permission__Grep",
+        "mcp__permission__WebFetch",
+        "mcp__permission__WebSearch",
+        "mcp__permission__NotebookEdit",
+      ];
+      args.push(
+        "--mcp-config", tmpMcpConfig,
+        "--tools", "",
+        "--allowedTools", mcpToolNames.join(","),
+      );
+    } else if (config.permissionStyle === "config-overrides") {
+      // Trae: 通过 -c 覆盖配置，避免污染全局 trae_cli.yaml
+      args.push(...buildTraePermissionOverrides(permissionServerPort, browserSessionId, character));
+    }
   }
 
   return new Promise((resolve, reject) => {
