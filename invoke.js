@@ -113,49 +113,94 @@ const MCP_TOOL_NAMES = [
   "mcp__permission__NotebookEdit",
 ];
 
-function buildTraePermissionOverrides(permissionServerPort, browserSessionId, character) {
+// Trae CLI: 内置工具名列表（需要通过 --disallowed-tool 禁用）
+const TRAE_BUILTIN_TOOLS = [
+  "Bash", "BashOutput", "KillShell",
+  "Edit", "Write", "Read",
+  "Glob", "Grep", "LS",
+];
+
+// Trae CLI 的配置文件路径
+const TRAE_CONFIG_PATH = path.join(os.homedir(), "Library", "Application Support", "trae_cli", "trae_cli.yaml");
+
+/**
+ * 构建 Trae CLI 的权限代理参数
+ * 通过 --disallowed-tool 禁用内置工具 + --allowed-tool 预授权 MCP 工具
+ */
+function buildTraePermissionArgs() {
   return [
-    "-c", "permission_mode=delegate",
-    "-c", "permission.mcpServerName=permission",
-    "-c", "mcp_servers.0.name=permission",
-    "-c", "mcp_servers.0.type=stdio",
-    "-c", "mcp_servers.0.command=node",
-    "-c", `mcp_servers.0.args.0=${PERMISSION_SERVER_PATH}`,
-    "-c", "mcp_servers.0.env.0.key=PERMISSION_SERVER_PORT",
-    "-c", `mcp_servers.0.env.0.value=${permissionServerPort}`,
-    "-c", "mcp_servers.0.env.1.key=PERMISSION_BROWSER_SESSION",
-    "-c", `mcp_servers.0.env.1.value=${browserSessionId}`,
-    "-c", "mcp_servers.0.env.2.key=PERMISSION_CHARACTER",
-    "-c", `mcp_servers.0.env.2.value=${character || ""}`,
+    // 禁用所有内置可执行工具，强制模型使用 MCP 代理工具
+    ...TRAE_BUILTIN_TOOLS.flatMap(name => ["--disallowed-tool", name]),
     // 预授权所有 MCP 代理工具，避免 Trae 弹出内部权限确认
     ...MCP_TOOL_NAMES.flatMap(name => ["--allowed-tool", name]),
   ];
 }
 
 /**
- * Codex CLI: 通过 codex mcp add/remove 动态管理 MCP 服务器
- * 返回清理函数，在 invoke 完成后调用以移除 MCP 服务器
+ * 服务启动时统一注册 Trae / Codex 的 MCP permission 服务器。
+ * 只需调用一次，进程退出时由 cleanupMcpRegistrations() 清理。
+ *
+ * @param {string} port — Express 服务端口
  */
-function setupCodexMcp(permissionServerPort, browserSessionId, character) {
+function initMcpRegistrations(port) {
   const { execFileSync } = require("child_process");
-  const codexCmd = CLI_CONFIG.codex.command;
 
-  // 先尝试移除可能残留的旧配置
-  try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
+  // ── Trae: mcp add-json ──
+  try {
+    // 先清理残留
+    if (fs.existsSync(TRAE_CONFIG_PATH)) {
+      const yaml = fs.readFileSync(TRAE_CONFIG_PATH, "utf-8");
+      if (yaml.includes("name: permission")) fs.writeFileSync(TRAE_CONFIG_PATH, "");
+    }
+    const mcpJson = JSON.stringify({
+      type: "stdio",
+      command: "node",
+      args: [PERMISSION_SERVER_PATH],
+      env: {
+        PERMISSION_SERVER_PORT: port,
+        // browserSessionId 和 character 由 Claude/Trae 每次调用时作为 MCP 工具参数传递
+        // 这里留空，permission-server 也会从 env 读取作为默认值
+        PERMISSION_BROWSER_SESSION: "",
+        PERMISSION_CHARACTER: "",
+      },
+    });
+    execFileSync(CLI_CONFIG.trae.command, ["mcp", "add-json", "permission", mcpJson], { stdio: "ignore" });
+    console.log("[MCP] Trae permission server 已注册");
+  } catch (err) {
+    console.warn(`[MCP] Trae 注册跳过: ${err.message}`);
+  }
 
-  // 添加 MCP 服务器 + 环境变量
-  execFileSync(codexCmd, [
-    "mcp", "add", "permission",
-    "--env", `PERMISSION_SERVER_PORT=${permissionServerPort}`,
-    "--env", `PERMISSION_BROWSER_SESSION=${browserSessionId}`,
-    "--env", `PERMISSION_CHARACTER=${character || ""}`,
-    "--", "node", PERMISSION_SERVER_PATH,
-  ], { stdio: "ignore" });
-
-  // 返回清理函数
-  return () => {
+  // ── Codex: codex mcp add ──
+  try {
+    const codexCmd = CLI_CONFIG.codex.command;
     try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
-  };
+    execFileSync(codexCmd, [
+      "mcp", "add", "permission",
+      "--env", `PERMISSION_SERVER_PORT=${port}`,
+      "--env", "PERMISSION_BROWSER_SESSION=",
+      "--env", "PERMISSION_CHARACTER=",
+      "--", "node", PERMISSION_SERVER_PATH,
+    ], { stdio: "ignore" });
+    console.log("[MCP] Codex permission server 已注册");
+  } catch (err) {
+    console.warn(`[MCP] Codex 注册跳过: ${err.message}`);
+  }
+}
+
+/**
+ * 服务关闭时清理 Trae / Codex 的 MCP 注册
+ */
+function cleanupMcpRegistrations() {
+  const { execFileSync } = require("child_process");
+  // Trae: 清空配置文件中的 permission
+  try {
+    if (fs.existsSync(TRAE_CONFIG_PATH)) {
+      const yaml = fs.readFileSync(TRAE_CONFIG_PATH, "utf-8");
+      if (yaml.includes("name: permission")) fs.writeFileSync(TRAE_CONFIG_PATH, "");
+    }
+  } catch { /* ignore */ }
+  // Codex: mcp remove
+  try { execFileSync(CLI_CONFIG.codex.command, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
 }
 
 /**
@@ -246,11 +291,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
   args.push(...config.extraArgs);
 
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
+  // Trae / Codex 的 MCP server 在服务启动时已通过 initMcpRegistrations() 注册
+  // Claude 每次需要生成临时 MCP 配置文件（携带 browserSessionId 等动态信息）
   let tmpMcpConfig = null;
-  let cleanupCodexMcp = null;
   const permissionServerPort = process.env.PORT || "3000";
 
   if (config.supportsPermissionTool && browserSessionId) {
+    // 写入共享上下文文件，供 Trae/Codex 的 MCP server 读取当前 session 和角色
+    const contextFile = path.join(os.tmpdir(), "mcp-perm-context.json");
+    fs.writeFileSync(contextFile, JSON.stringify({ browserSessionId, character: character || "" }));
+
     if (config.permissionStyle === "mcp-config-file") {
       // Claude: 生成临时 MCP 配置文件 + --tools "" 禁用所有内置工具
       const mcpConfig = {
@@ -278,11 +328,10 @@ function invoke(cli, prompt, sessionId, options = {}) {
         "--allowedTools", MCP_TOOL_NAMES.join(","),
       );
     } else if (config.permissionStyle === "config-overrides") {
-      // Trae: 通过 -c 覆盖配置，避免污染全局 trae_cli.yaml
-      args.push(...buildTraePermissionOverrides(permissionServerPort, browserSessionId, character));
+      // Trae: MCP server 已全局注册，这里只需禁用内置工具 + 预授权 MCP 工具
+      args.push(...buildTraePermissionArgs());
     } else if (config.permissionStyle === "codex-mcp-cli") {
-      // Codex: 通过 codex mcp add 动态注册 MCP 服务器
-      cleanupCodexMcp = setupCodexMcp(permissionServerPort, browserSessionId, character);
+      // Codex: MCP server 已全局注册，无需额外参数
     }
   }
 
@@ -328,15 +377,11 @@ function invoke(cli, prompt, sessionId, options = {}) {
       stderr += chunk.toString();
     });
 
-    // 清理临时 MCP 配置文件 / Codex MCP 注册
+    // 清理 Claude 的临时 MCP 配置文件
     const cleanupTmpConfig = () => {
       if (tmpMcpConfig) {
         try { fs.unlinkSync(tmpMcpConfig); } catch { /* ignore */ }
         tmpMcpConfig = null;
-      }
-      if (cleanupCodexMcp) {
-        try { cleanupCodexMcp(); } catch { /* ignore */ }
-        cleanupCodexMcp = null;
       }
     };
 
@@ -383,7 +428,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
   });
 }
 
-module.exports = { invoke };
+module.exports = { invoke, initMcpRegistrations, cleanupMcpRegistrations };
 
 // 直接运行:
 //   node invoke.js <claude|trae|codex> "你的问题"                              — 新会话
