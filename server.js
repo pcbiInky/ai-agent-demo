@@ -2,7 +2,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { invoke } = require("./invoke");
+const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -333,6 +333,13 @@ function appendToLog(sessionId, message) {
 }
 
 // ── 启动服务 ──────────────────────────────────────────────
+// 服务启动时统一注册 Trae / Codex 的 MCP permission 服务器
+initMcpRegistrations(String(PORT));
+
+// 进程退出时清理 MCP 注册
+process.on("SIGINT", () => { cleanupMcpRegistrations(); process.exit(0); });
+process.on("SIGTERM", () => { cleanupMcpRegistrations(); process.exit(0); });
+
 app.listen(PORT, () => {
   console.log(`AI Chat Arena 已启动: http://localhost:${PORT}`);
 });
