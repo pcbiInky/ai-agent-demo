@@ -10,14 +10,20 @@ const state = {
   charStatus: {},
   // thinking 中的 messageId -> Set<character>
   thinkingMap: {},
+  unreadCount: 0,
+  isLoadingHistory: false,
+  isComposing: false,
 };
 const PROFILE_STORAGE_KEY = "characterProfilesV1";
+const BOTTOM_THRESHOLD_PX = 40;
 
 // ── DOM 元素 ──────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
 const $messages = $("#messages");
 const $input = $("#message-input");
 const $sendBtn = $("#send-btn");
+const $chatContainer = $("#chat-container");
+const $jumpToLatestBtn = $("#jump-to-latest-btn");
 const $sessionDisplay = $("#session-id-display");
 const $newSessionBtn = $("#new-session-btn");
 const $sessionList = $("#session-list");
@@ -58,6 +64,7 @@ async function init() {
   connectSSE();
   setupInput();
   setupMentionHints();
+  setupChatScroll();
   setupSettings();
 
   $newSessionBtn.addEventListener("click", newSession);
@@ -136,6 +143,7 @@ async function sendMessage() {
 
 // ── 消息渲染 ──────────────────────────────────────────────
 function appendUserMessage(text) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
   const time = formatTimeShort(Date.now());
   const div = document.createElement("div");
   div.className = "message user";
@@ -149,12 +157,13 @@ function appendUserMessage(text) {
     </div>
   `;
   $messages.appendChild(div);
-  scrollToBottom();
+  handlePostAppend({ shouldAutoScroll, force: true });
   state.stats.total++;
   renderStats();
 }
 
 function appendAssistantMessage(character, text, verified) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
@@ -180,10 +189,11 @@ function appendAssistantMessage(character, text, verified) {
     </div>
   `;
   $messages.appendChild(div);
-  scrollToBottom();
+  handlePostAppend({ shouldAutoScroll });
 }
 
 function appendErrorMessage(character, error) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character, "!");
   const displayName = getDisplayName(character);
@@ -201,11 +211,12 @@ function appendErrorMessage(character, error) {
     </div>
   `;
   $messages.appendChild(div);
-  scrollToBottom();
+  handlePostAppend({ shouldAutoScroll });
 }
 
 // ── Thinking ──────────────────────────────────────────────
 function showThinking(character, messageId) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
@@ -228,7 +239,7 @@ function showThinking(character, messageId) {
     </div>
   `;
   $messages.appendChild(div);
-  scrollToBottom();
+  handlePostAppend({ shouldAutoScroll });
 }
 
 function removeThinking(character, messageId) {
@@ -238,6 +249,7 @@ function removeThinking(character, messageId) {
 
 // ── 权限审批卡片 ────────────────────────────────────────
 function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
@@ -290,7 +302,7 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp }
     </div>
   `;
   $messages.appendChild(div);
-  scrollToBottom();
+  handlePostAppend({ shouldAutoScroll });
 }
 
 async function respondPermission(requestId, behavior) {
@@ -408,6 +420,7 @@ function switchSession(id) {
   state.sessionId = id;
   sessionStorage.setItem("sessionId", id);
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
+  clearUnreadIndicator();
   $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
   renderStats();
@@ -428,6 +441,8 @@ async function loadHistory() {
     const log = await res.json();
     if (!log.messages || log.messages.length === 0) return;
 
+    state.isLoadingHistory = true;
+    clearUnreadIndicator();
     $messages.innerHTML = "";
     state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
 
@@ -441,7 +456,12 @@ async function loadHistory() {
         appendErrorMessage(msg.character, msg.error);
       }
     }
+    scrollToBottom();
+    clearUnreadIndicator();
   } catch { /* ignore */ }
+  finally {
+    state.isLoadingHistory = false;
+  }
 }
 
 // ── @mention 提示 ─────────────────────────────────────────
@@ -485,9 +505,17 @@ function setupInput() {
 
   $input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
+      if (state.isComposing || e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       sendMessage();
     }
+  });
+
+  $input.addEventListener("compositionstart", () => {
+    state.isComposing = true;
+  });
+  $input.addEventListener("compositionend", () => {
+    state.isComposing = false;
   });
 
   $sendBtn.addEventListener("click", sendMessage);
@@ -670,8 +698,52 @@ function getCharClass(character) {
 }
 
 function scrollToBottom() {
-  const container = document.getElementById("chat-container");
-  container.scrollTop = container.scrollHeight;
+  if (!$chatContainer) return;
+  $chatContainer.scrollTop = $chatContainer.scrollHeight;
+}
+
+function setupChatScroll() {
+  if (!$chatContainer || !$jumpToLatestBtn) return;
+  $chatContainer.addEventListener("scroll", () => {
+    if (isNearBottom()) clearUnreadIndicator();
+  });
+  $jumpToLatestBtn.addEventListener("click", () => {
+    scrollToBottom();
+    clearUnreadIndicator();
+  });
+}
+
+function handlePostAppend({ shouldAutoScroll = true, force = false } = {}) {
+  if (state.isLoadingHistory) return;
+  if (force || shouldAutoScroll) {
+    scrollToBottom();
+    clearUnreadIndicator();
+    return;
+  }
+  increaseUnreadIndicator();
+}
+
+function shouldAutoScrollOnAppend() {
+  return isNearBottom(BOTTOM_THRESHOLD_PX);
+}
+
+function isNearBottom(threshold = BOTTOM_THRESHOLD_PX) {
+  if (!$chatContainer) return true;
+  const distance = $chatContainer.scrollHeight - $chatContainer.scrollTop - $chatContainer.clientHeight;
+  return distance <= threshold;
+}
+
+function increaseUnreadIndicator() {
+  if (!$jumpToLatestBtn) return;
+  state.unreadCount += 1;
+  $jumpToLatestBtn.textContent = state.unreadCount > 1 ? `${state.unreadCount} 条新消息` : "有新消息";
+  $jumpToLatestBtn.classList.add("show");
+}
+
+function clearUnreadIndicator() {
+  if (!$jumpToLatestBtn) return;
+  state.unreadCount = 0;
+  $jumpToLatestBtn.classList.remove("show");
 }
 
 function formatTimeShort(ts) {
