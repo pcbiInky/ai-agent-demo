@@ -25,6 +25,54 @@ const sseClients = new Map();
 // requestId -> { resolve, timer, data }（等待用户审批的权限请求）
 const pendingPermissions = new Map();
 
+const SAFE_GIT_QUERY_SUBCOMMANDS = new Set([
+  "status",
+  "diff",
+  "log",
+  "show",
+  "rev-parse",
+  "ls-files",
+  "blame",
+  "shortlog",
+  "grep",
+  "help",
+  "version",
+]);
+
+function parseGitSubcommand(parts) {
+  let i = 1;
+  while (i < parts.length && parts[i].startsWith("-")) {
+    const flag = parts[i];
+    if (flag === "--no-pager") {
+      i += 1;
+      continue;
+    }
+    if (flag === "-C" || flag === "--git-dir" || flag === "--work-tree") {
+      i += 2;
+      continue;
+    }
+    return null;
+  }
+  return parts[i] || null;
+}
+
+function isSafeBashCommand(command) {
+  if (typeof command !== "string") return false;
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  if (/[\n\r|&;<>`$]/.test(trimmed)) return false;
+  const parts = trimmed.split(/\s+/);
+  if (parts[0] !== "git") return false;
+  const subcommand = parseGitSubcommand(parts);
+  return subcommand ? SAFE_GIT_QUERY_SUBCOMMANDS.has(subcommand) : false;
+}
+
+function shouldAutoAllowPermission(toolName, input) {
+  if (toolName === "Read") return true;
+  if (toolName === "Bash" && isSafeBashCommand(input?.command)) return true;
+  return false;
+}
+
 // ── 中间件 ────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -85,6 +133,16 @@ app.post("/api/permission-request", (req, res) => {
   const requestId = toolUseId; // 使用 tool_use_id 作为唯一标识
 
   console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId})`);
+
+  if (shouldAutoAllowPermission(toolName, input)) {
+    console.log(`[权限自动通过] ${toolName} (${requestId})`);
+    emitSSE(browserSessionId, "permission-resolved", {
+      requestId,
+      behavior: "allow",
+      message: "安全命令默认授权",
+    });
+    return res.json({ behavior: "allow", message: "安全命令默认授权" });
+  }
 
   // 通过 SSE 通知前端
   emitSSE(browserSessionId, "permission", {
