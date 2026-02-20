@@ -442,6 +442,112 @@ html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Segoe UI"
   color: var(--text);
 }
 
+/* ── 权限审批卡片 ─────────────────────── */
+.perm-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  margin-left: 6px;
+  font-weight: 600;
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+  animation: pulse 1.5s infinite;
+}
+
+.perm-card {
+  background: #fffdf5;
+  border: 1px solid #ffe082;
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-top: 4px;
+}
+
+.perm-tool-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6d4c00;
+  margin-bottom: 8px;
+}
+
+.perm-icon {
+  width: 16px;
+  height: 16px;
+  stroke: #f59e42;
+  flex-shrink: 0;
+}
+
+.perm-detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin: 6px 0 2px;
+}
+.perm-detail-label:first-child { margin-top: 0; }
+
+.perm-code {
+  background: #f6f1e4;
+  border: 1px solid #e8dfc8;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: "SF Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+  color: #333;
+}
+
+.perm-desc {
+  font-size: 13px;
+  color: var(--text);
+  padding: 2px 0;
+}
+
+.perm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+
+.perm-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.perm-allow {
+  background: var(--green);
+  color: white;
+}
+.perm-allow:hover { background: #43a047; transform: translateY(-1px); }
+
+.perm-deny {
+  background: #f5f5f5;
+  color: #666;
+  border: 1px solid #ddd;
+}
+.perm-deny:hover { background: #fee; color: var(--error-text); border-color: #e57373; }
+
+.perm-pending {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 0;
+}
+
 /* ── 响应式：窄屏隐藏侧边栏 ─────────── */
 @media (max-width: 900px) {
   #app { grid-template-columns: 1fr; }

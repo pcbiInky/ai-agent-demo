@@ -22,6 +22,8 @@ const cliSessions = new Map();
 const invokeQueues = new Map();
 // browserSessionId -> Set<Response>（SSE 客户端）
 const sseClients = new Map();
+// requestId -> { resolve, timer, data }（等待用户审批的权限请求）
+const pendingPermissions = new Map();
 
 // ── 中间件 ────────────────────────────────────────────────
 app.use(express.json());
@@ -69,6 +71,88 @@ function emitSSE(sessionId, event, data) {
   }
 }
 
+// ── API: 权限请求（MCP permission-server 调用）─────────────
+// 长轮询：MCP server POST 权限请求 → 存入 pending → SSE 通知前端 → 等待用户响应
+const PERMISSION_TIMEOUT_MS = 120_000; // 120 秒用户无操作则自动拒绝
+
+app.post("/api/permission-request", (req, res) => {
+  const { toolName, toolUseId, input, browserSessionId, character, timestamp } = req.body;
+
+  if (!toolUseId || !browserSessionId) {
+    return res.status(400).json({ behavior: "deny", message: "缺少必要参数" });
+  }
+
+  const requestId = toolUseId; // 使用 tool_use_id 作为唯一标识
+
+  console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId})`);
+
+  // 通过 SSE 通知前端
+  emitSSE(browserSessionId, "permission", {
+    requestId,
+    character: character || "unknown",
+    toolName,
+    input,
+    timestamp: timestamp || Date.now(),
+  });
+
+  // 创建一个 Promise，等待前端用户响应
+  const permissionPromise = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      // 超时自动拒绝
+      pendingPermissions.delete(requestId);
+      console.log(`[权限超时] ${toolName} (${requestId}) — 自动拒绝`);
+      emitSSE(browserSessionId, "permission-resolved", {
+        requestId,
+        behavior: "deny",
+        message: "用户未在时限内响应，自动拒绝",
+      });
+      resolve({ behavior: "deny", message: "权限请求超时，自动拒绝" });
+    }, PERMISSION_TIMEOUT_MS);
+
+    pendingPermissions.set(requestId, { resolve, timer, browserSessionId });
+  });
+
+  // 等待用户决定后返回给 MCP server
+  permissionPromise.then((result) => {
+    res.json(result);
+  });
+});
+
+// ── API: 权限响应（前端用户操作）────────────────────────────
+app.post("/api/permission-response", (req, res) => {
+  const { requestId, behavior, message } = req.body;
+
+  if (!requestId || !behavior) {
+    return res.status(400).json({ error: "requestId 和 behavior 不能为空" });
+  }
+
+  const pending = pendingPermissions.get(requestId);
+  if (!pending) {
+    return res.status(404).json({ error: "权限请求不存在或已过期" });
+  }
+
+  // 清除超时定时器
+  clearTimeout(pending.timer);
+  pendingPermissions.delete(requestId);
+
+  console.log(`[权限响应] ${requestId} → ${behavior}`);
+
+  // 通知前端权限已处理
+  emitSSE(pending.browserSessionId, "permission-resolved", {
+    requestId,
+    behavior,
+    message: message || (behavior === "allow" ? "已允许" : "已拒绝"),
+  });
+
+  // 返回给 MCP server
+  pending.resolve({
+    behavior,
+    ...(message && { message }),
+  });
+
+  res.json({ ok: true });
+});
+
 // ── API: 发送消息 ─────────────────────────────────────────
 app.post("/api/chat", (req, res) => {
   const { text, sessionId } = req.body;
@@ -103,7 +187,7 @@ app.post("/api/chat", (req, res) => {
 
     emitSSE(sessionId, "thinking", { character, messageId });
 
-    enqueueInvoke(sessionId, config.cli, prompt, (result) => {
+    enqueueInvoke(sessionId, config.cli, prompt, character, (result) => {
       emitSSE(sessionId, "reply", {
         character,
         messageId,
@@ -206,14 +290,18 @@ function parseMentions(text) {
 }
 
 // ── invoke 串行队列 ───────────────────────────────────────
-function enqueueInvoke(browserSessionId, cli, prompt, onResult, onError) {
+function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError) {
   const key = `${browserSessionId}:${cli}`;
   const prev = invokeQueues.get(key) || Promise.resolve();
 
   const next = prev.then(async () => {
     const cliSessionId = cliSessions.get(key);
     try {
-      const result = await invoke(cli, prompt, cliSessionId || undefined, { verify: true });
+      const result = await invoke(cli, prompt, cliSessionId || undefined, {
+        verify: true,
+        browserSessionId,
+        character,
+      });
       cliSessions.set(key, result.sessionId);
       onResult(result);
     } catch (err) {
