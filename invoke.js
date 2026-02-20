@@ -89,13 +89,29 @@ const CLI_CONFIG = {
         }
       });
     },
-    // Codex CLI 是否支持 system prompt 不确定，默认关闭
+    // Codex CLI 不支持 system prompt，回退到 user prompt
     supportsSystemPrompt: false,
+    // 通过 codex mcp add/remove 动态管理 MCP 服务器
+    supportsPermissionTool: true,
+    permissionStyle: "codex-mcp-cli",
   },
 };
 
 // permission-server.js 的绝对路径（用于生成临时 MCP 配置）
 const PERMISSION_SERVER_PATH = path.join(__dirname, "permission-server.js");
+
+// MCP 代理工具名列表（与 permission-server.js 注册的 9 个工具对应）
+const MCP_TOOL_NAMES = [
+  "mcp__permission__Bash",
+  "mcp__permission__Read",
+  "mcp__permission__Edit",
+  "mcp__permission__Write",
+  "mcp__permission__Glob",
+  "mcp__permission__Grep",
+  "mcp__permission__WebFetch",
+  "mcp__permission__WebSearch",
+  "mcp__permission__NotebookEdit",
+];
 
 function buildTraePermissionOverrides(permissionServerPort, browserSessionId, character) {
   return [
@@ -111,7 +127,35 @@ function buildTraePermissionOverrides(permissionServerPort, browserSessionId, ch
     "-c", `mcp_servers.0.env.1.value=${browserSessionId}`,
     "-c", "mcp_servers.0.env.2.key=PERMISSION_CHARACTER",
     "-c", `mcp_servers.0.env.2.value=${character || ""}`,
+    // 预授权所有 MCP 代理工具，避免 Trae 弹出内部权限确认
+    ...MCP_TOOL_NAMES.flatMap(name => ["--allowed-tool", name]),
   ];
+}
+
+/**
+ * Codex CLI: 通过 codex mcp add/remove 动态管理 MCP 服务器
+ * 返回清理函数，在 invoke 完成后调用以移除 MCP 服务器
+ */
+function setupCodexMcp(permissionServerPort, browserSessionId, character) {
+  const { execFileSync } = require("child_process");
+  const codexCmd = CLI_CONFIG.codex.command;
+
+  // 先尝试移除可能残留的旧配置
+  try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
+
+  // 添加 MCP 服务器 + 环境变量
+  execFileSync(codexCmd, [
+    "mcp", "add", "permission",
+    "--env", `PERMISSION_SERVER_PORT=${permissionServerPort}`,
+    "--env", `PERMISSION_BROWSER_SESSION=${browserSessionId}`,
+    "--env", `PERMISSION_CHARACTER=${character || ""}`,
+    "--", "node", PERMISSION_SERVER_PATH,
+  ], { stdio: "ignore" });
+
+  // 返回清理函数
+  return () => {
+    try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
+  };
 }
 
 /**
@@ -152,24 +196,27 @@ function invoke(cli, prompt, sessionId, options = {}) {
       `验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}`;
   }
 
-  // MCP 工具代理提示：告知 Claude 必须使用 MCP Server 提供的工具
-  if (config.supportsPermissionTool && browserSessionId) {
-    const mcpHint =
-      '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit）' +
+  // MCP 工具代理提示：告知模型必须使用 MCP Server 提供的工具
+  const mcpHint = (config.supportsPermissionTool && browserSessionId)
+    ? '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit）' +
       '均由 MCP Server "permission" 提供。' +
       '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
-      '内置工具已被禁用，不要尝试使用内置工具。';
-    if (systemPrompt) {
-      systemPrompt += mcpHint;
+      '内置工具已被禁用，不要尝试使用内置工具。'
+    : null;
+
+  if (mcpHint) {
+    if (config.supportsSystemPrompt) {
+      // 支持 system prompt 的 CLI：追加到 system prompt
+      systemPrompt = systemPrompt ? systemPrompt + mcpHint : mcpHint.trimStart();
     } else {
-      systemPrompt = mcpHint.trimStart();
+      // 不支持 system prompt 的 CLI：追加到 user prompt
+      finalPrompt += mcpHint;
     }
   }
 
   // 不支持 system prompt 的 CLI：回退到 user prompt 末尾追加验证指令
   if (verify && !config.supportsSystemPrompt) {
-    finalPrompt = prompt +
-      "\n\n---" +
+    finalPrompt += "\n\n---" +
       '\n重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。' +
       `\n[验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}]`;
   }
@@ -200,6 +247,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
   let tmpMcpConfig = null;
+  let cleanupCodexMcp = null;
   const permissionServerPort = process.env.PORT || "3000";
 
   if (config.supportsPermissionTool && browserSessionId) {
@@ -224,25 +272,17 @@ function invoke(cli, prompt, sessionId, options = {}) {
       fs.writeFileSync(tmpMcpConfig, JSON.stringify(mcpConfig));
       // --tools "" 禁用所有内置工具，Claude 只能使用 MCP 代理的 9 个工具
       // --allowedTools 授权所有 MCP 工具（-p 模式下无交互权限弹窗，必须预授权）
-      const mcpToolNames = [
-        "mcp__permission__Bash",
-        "mcp__permission__Read",
-        "mcp__permission__Edit",
-        "mcp__permission__Write",
-        "mcp__permission__Glob",
-        "mcp__permission__Grep",
-        "mcp__permission__WebFetch",
-        "mcp__permission__WebSearch",
-        "mcp__permission__NotebookEdit",
-      ];
       args.push(
         "--mcp-config", tmpMcpConfig,
         "--tools", "",
-        "--allowedTools", mcpToolNames.join(","),
+        "--allowedTools", MCP_TOOL_NAMES.join(","),
       );
     } else if (config.permissionStyle === "config-overrides") {
       // Trae: 通过 -c 覆盖配置，避免污染全局 trae_cli.yaml
       args.push(...buildTraePermissionOverrides(permissionServerPort, browserSessionId, character));
+    } else if (config.permissionStyle === "codex-mcp-cli") {
+      // Codex: 通过 codex mcp add 动态注册 MCP 服务器
+      cleanupCodexMcp = setupCodexMcp(permissionServerPort, browserSessionId, character);
     }
   }
 
@@ -288,11 +328,15 @@ function invoke(cli, prompt, sessionId, options = {}) {
       stderr += chunk.toString();
     });
 
-    // 清理临时 MCP 配置文件
+    // 清理临时 MCP 配置文件 / Codex MCP 注册
     const cleanupTmpConfig = () => {
       if (tmpMcpConfig) {
         try { fs.unlinkSync(tmpMcpConfig); } catch { /* ignore */ }
         tmpMcpConfig = null;
+      }
+      if (cleanupCodexMcp) {
+        try { cleanupCodexMcp(); } catch { /* ignore */ }
+        cleanupCodexMcp = null;
       }
     };
 
