@@ -68,6 +68,18 @@ assert(!isSafeBashCommand("git log | sed 's/a/b/'"), "sed 被拒绝（即使无�
 assert(!isSafeBashCommand("git log | tee /etc/passwd"), "tee 写文件被拒绝");
 assert(!isSafeBashCommand("git log | tee output.txt"), "tee 被拒绝（即使看似无害）");
 
+// ── Shell 命令连接符必须被拒绝 ────────────────────────────
+console.log("\n=== Shell 命令连接符（必须拒绝）===");
+assert(!isSafeBashCommand("git log && rm -rf /"), "&& 连接符被拒绝");
+assert(!isSafeBashCommand("git log && echo pwned"), "&& echo 被拒绝");
+assert(!isSafeBashCommand("git status && git push"), "&& 链接两个 git 命令被拒绝");
+assert(!isSafeBashCommand("git log || rm -rf /"), "|| 连接符被拒绝");
+assert(!isSafeBashCommand("git log || echo fallback"), "|| echo 被拒绝");
+assert(!isSafeBashCommand("git log; rm -rf /"), "分号连接被拒绝");
+assert(!isSafeBashCommand("git log; echo pwned"), "分号 echo 被拒绝");
+assert(!isSafeBashCommand("git log & rm -rf /"), "后台执行 & 被拒绝");
+assert(!isSafeBashCommand("git log |& cat"), "|& (bash 特殊管道) 被拒绝");
+
 // ── 其他危险命令也必须被拒绝 ─────────────────────────────
 console.log("\n=== 其他危险命令 ===");
 assert(!isSafeBashCommand("rm -rf /"), "rm -rf 被拒绝");
@@ -76,11 +88,14 @@ assert(!isSafeBashCommand("git push"), "git push 被拒绝（非只读）");
 assert(!isSafeBashCommand("git commit -m 'test'"), "git commit 被拒绝");
 assert(!isSafeBashCommand("git checkout main"), "git checkout 被拒绝");
 assert(!isSafeBashCommand("git reset --hard"), "git reset --hard 被拒绝");
-assert(!isSafeBashCommand("git log; rm -rf /"), "分号注入被拒绝");
-assert(!isSafeBashCommand("git log && rm -rf /"), "&& 注入被拒绝");
-assert(!isSafeBashCommand("git log > /etc/passwd"), "重定向被拒绝");
+assert(!isSafeBashCommand("git log > /etc/passwd"), "重定向 > 被拒绝");
+assert(!isSafeBashCommand("git log < /dev/null"), "重定向 < 被拒绝");
+assert(!isSafeBashCommand("git log >> /tmp/out"), "追加重定向 >> 被拒绝");
+assert(!isSafeBashCommand("git log 2>&1 | cat"), "stderr 重定向被拒绝");
 assert(!isSafeBashCommand("git log `id`"), "反引号注入被拒绝");
 assert(!isSafeBashCommand("git log $(id)"), "$() 注入被拒绝");
+assert(!isSafeBashCommand("(git log)"), "子 shell () 被拒绝");
+assert(!isSafeBashCommand("git log\nrm -rf /"), "换行注入被拒绝");
 assert(!isSafeBashCommand(""), "空字符串被拒绝");
 assert(!isSafeBashCommand(null), "null 被拒绝");
 assert(!isSafeBashCommand(undefined), "undefined 被拒绝");

@@ -67,6 +67,10 @@ function isSafeBashCommand(command) {
   const trimmed = command.trim();
   if (!trimmed) return false;
 
+  // 先拦截 shell 命令连接符和危险语法（&&、||、;、&、反引号、$()、重定向、换行）
+  // 只允许单管道 | 作为分隔符
+  if (/&&|\|\||[;\n\r\\`]|\$\(|[<>]|^\s*\(|\)\s*$/.test(trimmed)) return false;
+
   // 按管道符拆分
   const segments = trimmed.split("|");
   // 第一段必须是安全的 git 只读命令
