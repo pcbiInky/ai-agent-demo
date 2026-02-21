@@ -197,6 +197,7 @@ html, body {
 .character-name.faker { color: var(--faker-name); }
 .character-name.qijige { color: var(--qijige-name); }
 .character-name.yyf { color: var(--yyf-name); }
+.character-name.user-name { color: var(--green); }
 .msg-time { font-size: 11px; color: var(--text-light); }
 .msg-model { font-size: 11px; color: var(--text-light); }
 
@@ -214,6 +215,7 @@ html, body {
   max-width: 65%;
   margin-left: auto;
 }
+.message.user .msg-header { justify-content: flex-end; }
 .message.faker .bubble { background: var(--faker-bg); border-bottom-left-radius: 4px; }
 .message.qijige .bubble { background: var(--qijige-bg); border-bottom-left-radius: 4px; }
 .message.yyf .bubble { background: var(--yyf-bg); border-bottom-left-radius: 4px; }
