@@ -203,7 +203,7 @@ function appendAssistantMessage(character, text, verified) {
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble">${escapeHtml(text)}</div>
+      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
       <div class="msg-model">${cli}</div>
     </div>
   `;
@@ -627,6 +627,35 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// ── Markdown 渲染 ─────────────────────────────────────────
+function renderMarkdown(text) {
+  if (!text) return "";
+  try {
+    const raw = marked.parse(text);
+    return DOMPurify.sanitize(raw);
+  } catch {
+    return escapeHtml(text);
+  }
+}
+
+// 初始化 marked 配置
+(function initMarked() {
+  if (typeof marked === "undefined") return;
+  marked.use({ breaks: true, gfm: true });
+  if (typeof markedHighlight !== "undefined" && typeof hljs !== "undefined") {
+    marked.use(markedHighlight.markedHighlight({
+      langPrefix: "hljs language-",
+      highlight: function (code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          try { return hljs.highlight(code, { language: lang }).value; } catch {}
+        }
+        try { return hljs.highlightAuto(code).value; } catch {}
+        return "";
+      },
+    }));
+  }
+})();
 
 function initProfiles() {
   const saved = (() => {
