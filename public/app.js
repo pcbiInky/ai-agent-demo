@@ -266,15 +266,35 @@ function removeThinking(character, messageId) {
   if (el) el.remove();
 }
 
-// ── 权限审批卡片 ────────────────────────────────────────
-function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
-  const shouldAutoScroll = shouldAutoScrollOnAppend();
-  const charClass = getCharClass(character);
-  const avatar = getAvatar(character);
-  const displayName = getDisplayName(character);
-  const time = formatTimeShort(timestamp || Date.now());
+// ── 权限审批卡片（紧凑模式） ────────────────────────────
+function getPermBrief(toolName, input) {
+  if (toolName === "Bash" && input?.command) return input.command;
+  if (toolName === "Read" && input?.file_path) return input.file_path;
+  if (toolName === "Edit" && input?.file_path) return input.file_path;
+  if (toolName === "Write" && input?.file_path) return input.file_path;
+  if (toolName === "Glob" && input?.pattern) return input.pattern;
+  if (toolName === "Grep" && input?.pattern) return input.pattern;
+  if (toolName === "WebFetch" && input?.url) return input.url;
+  if (toolName === "WebSearch" && input?.query) return input.query;
+  return JSON.stringify(input || {}).slice(0, 80);
+}
 
-  // 根据工具类型格式化展示内容
+function getPermIntent(toolName, input) {
+  // 从 description 字段提取 AI 的意图说明
+  if (input?.description) return input.description;
+  // 生成默认意图描述
+  if (toolName === "Bash") return "执行系统命令";
+  if (toolName === "Read") return "读取文件内容";
+  if (toolName === "Edit") return "修改文件内容";
+  if (toolName === "Write") return "创建/覆盖文件";
+  if (toolName === "Glob") return "搜索匹配文件";
+  if (toolName === "Grep") return "在文件中搜索内容";
+  if (toolName === "WebFetch") return "获取网页内容";
+  if (toolName === "WebSearch") return "搜索网页";
+  return "执行工具操作";
+}
+
+function buildPermDetail(toolName, input) {
   let detail = "";
   if (toolName === "Bash" && input?.command) {
     detail = `<div class="perm-detail-label">命令</div><pre class="perm-code">${escapeHtml(input.command)}</pre>`;
@@ -291,10 +311,22 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp }
   } else if (toolName === "Read" && input?.file_path) {
     detail = `<div class="perm-detail-label">文件</div><div class="perm-desc mono">${escapeHtml(input.file_path)}</div>`;
   } else {
-    // 通用：显示 JSON 参数
     const inputStr = JSON.stringify(input, null, 2);
     detail = `<div class="perm-detail-label">参数</div><pre class="perm-code">${escapeHtml(truncate(inputStr, 400))}</pre>`;
   }
+  return detail;
+}
+
+function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+  const time = formatTimeShort(timestamp || Date.now());
+
+  const brief = getPermBrief(toolName, input);
+  const intent = getPermIntent(toolName, input);
+  const detail = buildPermDetail(toolName, input);
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
@@ -307,15 +339,20 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp }
         <span class="msg-time">${time}</span>
         <span class="perm-badge">需要权限</span>
       </div>
-      <div class="perm-card">
-        <div class="perm-tool-name">
-          <svg class="perm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
-          ${escapeHtml(toolName)}
+      <div class="perm-card" id="perm-card-${requestId}">
+        <div class="perm-summary" onclick="togglePermDetail('${requestId}')">
+          <svg class="perm-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
+          <span class="perm-summary-tool">${escapeHtml(toolName)}</span>
+          <span class="perm-summary-brief">${escapeHtml(truncate(brief, 60))}</span>
+          <svg class="perm-expand-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+          <div class="perm-summary-actions" id="perm-actions-${requestId}">
+            <button class="perm-btn perm-deny" onclick="event.stopPropagation(); respondPermission('${requestId}', 'deny')">拒绝</button>
+            <button class="perm-btn perm-allow" onclick="event.stopPropagation(); respondPermission('${requestId}', 'allow')">允许</button>
+          </div>
         </div>
-        ${detail}
-        <div class="perm-actions" id="perm-actions-${requestId}">
-          <button class="perm-btn perm-deny" onclick="respondPermission('${requestId}', 'deny')">拒绝</button>
-          <button class="perm-btn perm-allow" onclick="respondPermission('${requestId}', 'allow')">允许</button>
+        <div class="perm-detail">
+          <div class="perm-intent">${escapeHtml(intent)}</div>
+          ${detail}
         </div>
       </div>
     </div>
@@ -324,11 +361,13 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp }
   handlePostAppend({ shouldAutoScroll });
 }
 
+function togglePermDetail(requestId) {
+  const card = document.getElementById(`perm-card-${requestId}`);
+  if (card) card.classList.toggle("expanded");
+}
+
 async function respondPermission(requestId, behavior) {
-  const actionsEl = document.getElementById(`perm-actions-${requestId}`);
-  if (actionsEl) {
-    actionsEl.innerHTML = `<span class="perm-pending">${behavior === "allow" ? "已允许 ✓" : "已拒绝 ✗"}</span>`;
-  }
+  markPermResolved(requestId, behavior);
 
   try {
     await fetch("/api/permission-response", {
@@ -337,6 +376,7 @@ async function respondPermission(requestId, behavior) {
       body: JSON.stringify({ requestId, behavior }),
     });
   } catch {
+    const actionsEl = document.getElementById(`perm-actions-${requestId}`);
     if (actionsEl) {
       actionsEl.innerHTML = '<span class="perm-pending" style="color:var(--error-text)">发送失败</span>';
     }
@@ -344,11 +384,46 @@ async function respondPermission(requestId, behavior) {
 }
 
 function resolvePermissionCard(requestId, behavior, message) {
+  // 自动通过的权限可能 permission 和 permission-resolved 几乎同时到达
+  // 卡片可能还没渲染完，延迟一帧重试
+  if (!document.getElementById(`perm-card-${requestId}`)) {
+    requestAnimationFrame(() => markPermResolved(requestId, behavior, message));
+  } else {
+    markPermResolved(requestId, behavior, message);
+  }
+}
+
+function markPermResolved(requestId, behavior, message) {
+  const card = document.getElementById(`perm-card-${requestId}`);
   const actionsEl = document.getElementById(`perm-actions-${requestId}`);
+  const isAuto = message && message.includes("默认授权");
+
+  if (card) {
+    card.classList.remove("expanded");
+    card.classList.add("resolved");
+    if (isAuto) card.classList.add("auto-resolved");
+  }
+
   if (actionsEl) {
-    const label = behavior === "allow" ? "已允许 ✓" : "已拒绝 ✗";
-    const color = behavior === "allow" ? "var(--green)" : "var(--error-text)";
-    actionsEl.innerHTML = `<span class="perm-pending" style="color:${color}">${label}</span>`;
+    const cls = behavior === "allow" ? "allowed" : "denied";
+    const label = behavior === "allow" ? "已允许" : "已拒绝";
+    actionsEl.innerHTML = `<span class="perm-resolved-label ${cls}">${label}</span>`;
+  }
+
+  const permEl = document.getElementById(`perm-${requestId}`);
+  if (permEl) {
+    // 移除 badge 上的 "需要权限" 脉冲动画
+    const badge = permEl.querySelector(".perm-badge");
+    if (badge) badge.remove();
+
+    // 自动通过的权限：隐藏头像和消息头，只保留极简卡片
+    if (isAuto) {
+      permEl.classList.add("perm-auto-msg");
+      const avatar = permEl.querySelector(".avatar");
+      if (avatar) avatar.style.display = "none";
+      const header = permEl.querySelector(".msg-header");
+      if (header) header.style.display = "none";
+    }
   }
 }
 

@@ -69,6 +69,8 @@ function isSafeBashCommand(command) {
 
 function shouldAutoAllowPermission(toolName, input) {
   if (toolName === "Read") return true;
+  if (toolName === "Glob") return true;
+  if (toolName === "Grep") return true;
   if (toolName === "Bash" && isSafeBashCommand(input?.command)) return true;
   return false;
 }
@@ -136,6 +138,15 @@ app.post("/api/permission-request", (req, res) => {
 
   if (shouldAutoAllowPermission(toolName, input)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
+    // 先发 permission 事件让前端创建卡片（用户能看到 AI 在做什么）
+    emitSSE(browserSessionId, "permission", {
+      requestId,
+      character: character || "unknown",
+      toolName,
+      input,
+      timestamp: timestamp || Date.now(),
+    });
+    // 紧接着发 resolved 事件，前端会将卡片标记为自动通过的极简样式
     emitSSE(browserSessionId, "permission-resolved", {
       requestId,
       behavior: "allow",
