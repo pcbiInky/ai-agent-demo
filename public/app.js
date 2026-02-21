@@ -13,6 +13,7 @@ const state = {
   unreadCount: 0,
   isLoadingHistory: false,
   isComposing: false,
+  lastSpeaker: null,
 };
 const PROFILE_STORAGE_KEY = "characterProfilesV1";
 const BOTTOM_THRESHOLD_PX = 40;
@@ -88,6 +89,7 @@ function connectSSE() {
     setCharStatus(data.character, "online");
     removeThinking(data.character, data.messageId);
     appendAssistantMessage(data.character, data.text, data.verified);
+    state.lastSpeaker = data.character;
     updateStats(data.character, data.verified);
     loadSessionList();
   });
@@ -114,9 +116,25 @@ function connectSSE() {
 }
 
 // ── 发送消息 ──────────────────────────────────────────────
+function hasMention(text) {
+  const names = Object.keys(state.characters);
+  for (const name of names) {
+    const display = getDisplayName(name);
+    if (text.includes("@" + name) || text.includes("@" + display)) return true;
+  }
+  return false;
+}
+
 async function sendMessage() {
-  const rawText = $input.value.trim();
+  let rawText = $input.value.trim();
   if (!rawText) return;
+
+  // 没有 @mention 时自动 @上一个说话的对象
+  if (!hasMention(rawText) && state.lastSpeaker) {
+    const displayName = getDisplayName(state.lastSpeaker);
+    rawText = "@" + displayName + " " + rawText;
+  }
+
   const text = normalizeMentions(rawText);
 
   $input.value = "";
@@ -148,10 +166,11 @@ function appendUserMessage(text) {
   const div = document.createElement("div");
   div.className = "message user";
   div.innerHTML = `
-    <div class="avatar user-avatar">你</div>
+    <div class="avatar user-avatar">铲</div>
     <div class="bubble-wrapper">
       <div class="msg-header">
-        <span class="msg-time">${time}</span>
+        <span class="character-name user-name">铲屎官</span>
+          <span class="msg-time">${time}</span>
       </div>
       <div class="bubble">${escapeHtml(text)}</div>
     </div>
@@ -452,6 +471,7 @@ async function loadHistory() {
       } else if (msg.role === "assistant") {
         appendAssistantMessage(msg.character, msg.text, msg.verified);
         updateStats(msg.character, msg.verified);
+        state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
         appendErrorMessage(msg.character, msg.error);
       }
