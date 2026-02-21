@@ -474,7 +474,7 @@ html, body {
   color: var(--text);
 }
 
-/* ── 权限审批卡片 ─────────────────────── */
+/* ── 权限审批卡片（紧凑模式） ─────────── */
 .perm-badge {
   display: inline-block;
   font-size: 10px;
@@ -488,12 +488,89 @@ html, body {
   animation: pulse 1.5s infinite;
 }
 
+/* 紧凑权限卡片：一行摘要 + 可展开 */
 .perm-card {
   background: #fffdf5;
   border: 1px solid #ffe082;
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 0;
   margin-top: 4px;
+  overflow: hidden;
+}
+
+.perm-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.perm-summary:hover { background: #fff8e1; }
+
+.perm-summary-icon {
+  width: 14px;
+  height: 14px;
+  stroke: #f59e42;
+  flex-shrink: 0;
+}
+
+.perm-summary-tool {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6d4c00;
+  flex-shrink: 0;
+}
+
+.perm-summary-brief {
+  font-size: 12px;
+  color: var(--text-light);
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: "SF Mono", "Consolas", monospace;
+}
+
+.perm-expand-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  transition: transform 0.2s;
+  stroke: var(--text-light);
+}
+.perm-card.expanded .perm-expand-arrow { transform: rotate(90deg); }
+
+.perm-summary-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.perm-summary-actions .perm-btn {
+  padding: 3px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.perm-detail {
+  display: none;
+  padding: 0 12px 10px;
+  border-top: 1px solid #f0e8d0;
+}
+.perm-card.expanded .perm-detail { display: block; }
+
+/* AI 思考意图说明 */
+.perm-intent {
+  font-size: 12px;
+  color: #6d4c00;
+  padding: 6px 0 4px;
+  line-height: 1.5;
+  font-style: italic;
+}
+.perm-intent::before {
+  content: "💭 ";
 }
 
 .perm-tool-name {
@@ -579,6 +656,45 @@ html, body {
   font-weight: 500;
   padding: 7px 0;
 }
+
+/* 已处理的权限卡片 — 极简模式 */
+.perm-card.resolved {
+  border-color: #e8e5f0;
+  background: #fafafa;
+}
+.perm-card.resolved .perm-summary { cursor: pointer; padding: 5px 12px; }
+.perm-card.resolved .perm-summary-icon { stroke: var(--text-light); }
+.perm-card.resolved .perm-summary-tool { color: var(--text-light); font-weight: 500; }
+
+.perm-resolved-label {
+  font-size: 11px;
+  font-weight: 500;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 6px;
+}
+.perm-resolved-label.allowed { background: #e8f5e9; color: #2e7d32; }
+.perm-resolved-label.denied { background: #fce4ec; color: #c62828; }
+
+/* 自动通过的权限 — 更简约 */
+.perm-card.auto-resolved {
+  border-color: transparent;
+  background: transparent;
+}
+.perm-card.auto-resolved .perm-summary {
+  padding: 2px 0;
+  gap: 6px;
+  cursor: pointer;
+}
+.perm-card.auto-resolved .perm-summary-icon { display: none; }
+.perm-card.auto-resolved .perm-summary-tool { font-size: 12px; color: var(--text-light); font-weight: 500; }
+.perm-card.auto-resolved .perm-summary-brief { font-size: 11px; }
+.perm-card.auto-resolved .perm-expand-arrow { width: 12px; height: 12px; }
+.perm-card.auto-resolved .perm-resolved-label { font-size: 10px; }
+
+/* 自动通过的权限消息 — 去掉左侧空间 */
+.perm-auto-msg { padding: 1px 20px 1px 64px; }
+.perm-auto-msg .bubble-wrapper { max-width: 100%; }
 
 /* ── 响应式：窄屏隐藏侧边栏 ─────────── */
 @media (max-width: 900px) {

@@ -25,53 +25,7 @@ const sseClients = new Map();
 // requestId -> { resolve, timer, data }（等待用户审批的权限请求）
 const pendingPermissions = new Map();
 
-const SAFE_GIT_QUERY_SUBCOMMANDS = new Set([
-  "status",
-  "diff",
-  "log",
-  "show",
-  "rev-parse",
-  "ls-files",
-  "blame",
-  "shortlog",
-  "grep",
-  "help",
-  "version",
-]);
-
-function parseGitSubcommand(parts) {
-  let i = 1;
-  while (i < parts.length && parts[i].startsWith("-")) {
-    const flag = parts[i];
-    if (flag === "--no-pager") {
-      i += 1;
-      continue;
-    }
-    if (flag === "-C" || flag === "--git-dir" || flag === "--work-tree") {
-      i += 2;
-      continue;
-    }
-    return null;
-  }
-  return parts[i] || null;
-}
-
-function isSafeBashCommand(command) {
-  if (typeof command !== "string") return false;
-  const trimmed = command.trim();
-  if (!trimmed) return false;
-  if (/[\n\r|&;<>`$]/.test(trimmed)) return false;
-  const parts = trimmed.split(/\s+/);
-  if (parts[0] !== "git") return false;
-  const subcommand = parseGitSubcommand(parts);
-  return subcommand ? SAFE_GIT_QUERY_SUBCOMMANDS.has(subcommand) : false;
-}
-
-function shouldAutoAllowPermission(toolName, input) {
-  if (toolName === "Read") return true;
-  if (toolName === "Bash" && isSafeBashCommand(input?.command)) return true;
-  return false;
-}
+const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
 // ── 中间件 ────────────────────────────────────────────────
 app.use(express.json());
@@ -136,6 +90,15 @@ app.post("/api/permission-request", (req, res) => {
 
   if (shouldAutoAllowPermission(toolName, input)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
+    // 先发 permission 事件让前端创建卡片（用户能看到 AI 在做什么）
+    emitSSE(browserSessionId, "permission", {
+      requestId,
+      character: character || "unknown",
+      toolName,
+      input,
+      timestamp: timestamp || Date.now(),
+    });
+    // 紧接着发 resolved 事件，前端会将卡片标记为自动通过的极简样式
     emitSSE(browserSessionId, "permission-resolved", {
       requestId,
       behavior: "allow",
