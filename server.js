@@ -56,15 +56,45 @@ function parseGitSubcommand(parts) {
   return parts[i] || null;
 }
 
-function isSafeBashCommand(command) {
-  if (typeof command !== "string") return false;
-  const trimmed = command.trim();
+// 管道右侧允许的安全过滤命令
+const SAFE_PIPE_COMMANDS = new Set([
+  "head", "tail", "wc", "sort", "uniq", "cat", "less", "more", "tee",
+  "cut", "tr", "sed", "awk", "grep", "xargs",
+]);
+
+function isSafeSingleCommand(cmd) {
+  const trimmed = cmd.trim();
   if (!trimmed) return false;
-  if (/[\n\r|&;<>`$]/.test(trimmed)) return false;
+  // 单条命令内不允许 换行、&、;、<、>、反引号、$（防注入）
+  if (/[\n\r&;<>`$]/.test(trimmed)) return false;
   const parts = trimmed.split(/\s+/);
   if (parts[0] !== "git") return false;
   const subcommand = parseGitSubcommand(parts);
   return subcommand ? SAFE_GIT_QUERY_SUBCOMMANDS.has(subcommand) : false;
+}
+
+function isSafePipeTarget(cmd) {
+  const trimmed = cmd.trim();
+  if (!trimmed) return false;
+  if (/[\n\r&;<>`$]/.test(trimmed)) return false;
+  const parts = trimmed.split(/\s+/);
+  return SAFE_PIPE_COMMANDS.has(parts[0]);
+}
+
+function isSafeBashCommand(command) {
+  if (typeof command !== "string") return false;
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+
+  // 按管道符拆分
+  const segments = trimmed.split("|");
+  // 第一段必须是安全的 git 只读命令
+  if (!isSafeSingleCommand(segments[0])) return false;
+  // 后续每段必须是安全的过滤命令
+  for (let i = 1; i < segments.length; i++) {
+    if (!isSafePipeTarget(segments[i])) return false;
+  }
+  return true;
 }
 
 function shouldAutoAllowPermission(toolName, input) {
