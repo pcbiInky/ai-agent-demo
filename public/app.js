@@ -326,18 +326,16 @@ function appendThreadReply(data) {
   div.dataset.msgId = msgId;
   div.dataset.threadId = threadId || "";
   div.innerHTML = `
-    ${quoteHtml}
-    <div style="display:flex;gap:10px;">
-      <div class="avatar ${charClass}">${avatar}</div>
-      <div class="bubble-wrapper">
-        <div class="msg-header">
-          <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
-          <span class="msg-time">${time}</span>
-          ${verifiedHtml}
-        </div>
-        <div class="bubble markdown-body">${renderMarkdown(text)}</div>
-        <div class="msg-model">${cli}</div>
+    <div class="avatar ${charClass}">${avatar}</div>
+    <div class="bubble-wrapper">
+      ${quoteHtml}
+      <div class="msg-header">
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+        <span class="msg-time">${time}</span>
+        ${verifiedHtml}
       </div>
+      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+      <div class="msg-model">${cli}</div>
     </div>
   `;
   $messages.appendChild(div);
@@ -377,13 +375,14 @@ function updateThreadReplyBar(threadId) {
   const originEl = state.messageElements[thread.originId];
   if (!originEl) return;
 
-  // 找到或创建回复计数条
+  // 找到或创建回复计数条（放在 bubble-wrapper 内部底部）
   let bar = originEl.querySelector(".thread-reply-bar");
   if (!bar) {
     bar = document.createElement("div");
     bar.className = "thread-reply-bar";
     bar.onclick = () => openThread(threadId);
-    originEl.appendChild(bar);
+    const wrapper = originEl.querySelector(".bubble-wrapper") || originEl;
+    wrapper.appendChild(bar);
   }
 
   const replyCount = thread.replies.length;

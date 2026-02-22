@@ -797,7 +797,6 @@ html, body {
   color: var(--text-light);
   cursor: pointer;
   border-left: 2px solid #d0cde0;
-  margin-left: 44px;
   transition: background 0.15s;
   border-radius: 0 4px 4px 0;
 }
@@ -821,7 +820,6 @@ html, body {
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  margin-left: 44px;
   margin-top: 2px;
   cursor: pointer;
   font-size: 12px;
