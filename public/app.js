@@ -21,8 +21,6 @@ const state = {
   messageElements: {},
 };
 
-// Thread 面板关闭定时器（用于避免竞态条件）
-let _closeThreadTimer = null;
 const PROFILE_STORAGE_KEY = "characterProfilesV1";
 const BOTTOM_THRESHOLD_PX = 40;
 
