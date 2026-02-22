@@ -56,6 +56,19 @@ assert(isSafeBashCommand("git show HEAD | head"), "git show HEAD | head");
 assert(isSafeBashCommand("git log | cut -d: -f1"), "git log | cut -d: -f1");
 assert(isSafeBashCommand("git log | tr A-Z a-z"), "git log | tr A-Z a-z");
 
+// ── cd 命令安全放行 ─────────────────────────────────────────
+console.log("\n=== cd 命令安全放行 ===");
+assert(isSafeBashCommand("cd /tmp"), "cd /tmp 通过");
+assert(isSafeBashCommand("cd .."), "cd .. 通过");
+assert(isSafeBashCommand("cd /Users/jan/Code"), "cd 绝对路径通过");
+assert(isSafeBashCommand("cd"), "cd（无参数）通过");
+assert(!isSafeBashCommand("cd /tmp && rm -rf /"), "cd && rm -rf 被拒绝");
+assert(!isSafeBashCommand("cd /tmp; ls"), "cd; ls 被拒绝");
+assert(!isSafeBashCommand("cd $(pwd)"), "cd $() 注入被拒绝");
+assert(!isSafeBashCommand("cd `pwd`"), "cd 反引号注入被拒绝");
+assert(!isSafeBashCommand("cd /tmp || echo pwned"), "cd || 被拒绝");
+assert(shouldAutoAllowPermission("Bash", { command: "cd /tmp" }), "cd 命令自动通过审批");
+
 // ── Issue #10 绕过场景：必须被拒绝 ──────────────────────────
 console.log("\n=== Issue #10 绕过场景（必须拒绝）===");
 assert(!isSafeBashCommand("git log | xargs rm -rf"), "xargs rm -rf 被拒绝");
