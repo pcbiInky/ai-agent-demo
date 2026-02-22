@@ -43,12 +43,19 @@ const SAFE_PIPE_COMMANDS = new Set([
   "cut", "tr", "grep",
 ]);
 
+// 独立安全命令（无副作用的非 git 命令）
+const SAFE_STANDALONE_COMMANDS = new Set([
+  "cd",
+]);
+
 function isSafeSingleCommand(cmd) {
   const trimmed = cmd.trim();
   if (!trimmed) return false;
   // 单条命令内不允许 换行、&、;、<、>、反引号、$（防注入）
   if (/[\n\r&;<>`$]/.test(trimmed)) return false;
   const parts = trimmed.split(/\s+/);
+  // 独立安全命令（如 cd）
+  if (SAFE_STANDALONE_COMMANDS.has(parts[0])) return true;
   if (parts[0] !== "git") return false;
   const subcommand = parseGitSubcommand(parts);
   return subcommand ? SAFE_GIT_QUERY_SUBCOMMANDS.has(subcommand) : false;
