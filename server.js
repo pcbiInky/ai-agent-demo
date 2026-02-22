@@ -323,11 +323,9 @@ function parseMentions(text) {
     }
   }
 
-  // 没有独立 prompt 的 @mention 共享全局 prompt
-  if (globalPrompt.length > 0) {
-    for (const m of mentionsWithoutPrompt) {
-      mentionsWithPrompt.push({ character: m.character, prompt: globalPrompt });
-    }
+  // 没有独立 prompt 的 @mention 共享全局 prompt（无 prompt 时回退到空串，避免丢弃 mention）
+  for (const m of mentionsWithoutPrompt) {
+    mentionsWithPrompt.push({ character: m.character, prompt: globalPrompt || "" });
   }
 
   // 按原始出现顺序排序

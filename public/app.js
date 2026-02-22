@@ -20,6 +20,9 @@ const state = {
   // 消息 ID -> DOM 元素映射（用于定位和引用）
   messageElements: {},
 };
+
+// Thread 面板关闭定时器（用于避免竞态条件）
+let _closeThreadTimer = null;
 const PROFILE_STORAGE_KEY = "characterProfilesV1";
 const BOTTOM_THRESHOLD_PX = 40;
 
@@ -405,9 +408,17 @@ function setupThreadPanel() {
   $threadCloseBtn.addEventListener("click", closeThread);
 }
 
+let _closeThreadTimer = null;
+
 function openThread(threadId) {
   const thread = state.threads[threadId];
   if (!thread) return;
+
+  // 取消可能残留的关闭定时器，防止竞态
+  if (_closeThreadTimer) {
+    clearTimeout(_closeThreadTimer);
+    _closeThreadTimer = null;
+  }
 
   state.activeThreadId = threadId;
   renderThreadPanel(threadId);
@@ -423,8 +434,9 @@ function closeThread() {
   state.activeThreadId = null;
   $threadPanel.classList.remove("visible");
   // 等动画结束再隐藏
-  setTimeout(() => {
+  _closeThreadTimer = setTimeout(() => {
     $threadPanel.classList.remove("open");
+    _closeThreadTimer = null;
   }, 250);
 }
 
