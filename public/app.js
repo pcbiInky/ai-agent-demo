@@ -97,7 +97,7 @@ function connectSSE() {
   es.addEventListener("reply", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "online");
-    removeThinking(data.character, data.messageId);
+    finalizeThinking(data.character, data.messageId, "done");
 
     if (data.threadId && data.depth > 0) {
       // Thread 回复：带引用条显示在主流 + 更新 thread 数据
@@ -105,9 +105,6 @@ function connectSSE() {
     } else {
       appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions);
     }
-
-    // 将暂存的权限卡片迁移到刚插入的回复消息中
-    migratePermCards(data.character, data.messageId);
 
     state.lastSpeaker = data.character;
     updateStats(data.character, data.verified);
@@ -118,7 +115,7 @@ function connectSSE() {
     if (e.data) {
       const data = JSON.parse(e.data);
       setCharStatus(data.character, "online");
-      removeThinking(data.character, data.messageId);
+      finalizeThinking(data.character, data.messageId, "error");
       appendErrorMessage(data.character, data.error);
     }
   });
@@ -520,6 +517,9 @@ function appendErrorMessage(character, error) {
 
 // ── Thinking ──────────────────────────────────────────────
 function showThinking(character, messageId) {
+  const existing = document.getElementById(`thinking-${character}-${messageId}`);
+  if (existing) return;
+
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
@@ -532,66 +532,39 @@ function showThinking(character, messageId) {
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
-      <div class="msg-header">
-        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
-        <span class="msg-time">思考中...</span>
-      </div>
-      <div class="thinking-scroll-area">
-        <div class="thinking-bubble">
-          <div class="dot"></div>
-          <div class="dot"></div>
-          <div class="dot"></div>
+        <div class="msg-header">
+          <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+          <span class="msg-time">处理中...</span>
         </div>
-        <div class="perm-container"></div>
+        <div class="thinking-scroll-area">
+          <div class="process-log"></div>
+          <div class="perm-container"></div>
+        </div>
       </div>
-    </div>
   `;
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
 }
 
-function removeThinking(character, messageId) {
+function finalizeThinking(character, messageId, status = "done") {
   const el = document.getElementById(`thinking-${character}-${messageId}`);
   if (!el) return;
-
-  // 将 thinking 内的已解决权限卡片暂存，稍后迁移到回复消息中
-  const permContainer = el.querySelector(".perm-container");
-  const permCards = permContainer ? [...permContainer.querySelectorAll(".perm-card")] : [];
-  if (permCards.length > 0) {
-    // 暂存到 state，appendAssistantMessage / appendThreadReply 会取出并嵌入
-    if (!state._pendingPermCards) state._pendingPermCards = {};
-    state._pendingPermCards[`${character}:${messageId}`] = permCards;
+  const hasPerm = !!el.querySelector(".perm-card");
+  const hasStep = !!el.querySelector(".process-step");
+  if (!hasPerm && !hasStep) {
+    el.remove();
+    return;
   }
 
-  el.remove();
-}
+  el.classList.add("thinking-finished");
+  el.dataset.archived = "true";
+  el.id = `thinking-archive-${character}-${messageId}-${Date.now()}`;
 
-// 将暂存的权限卡片迁移到最新插入的回复消息的 bubble 内部顶部
-function migratePermCards(character, messageId) {
-  if (!state._pendingPermCards) return;
-  const key = `${character}:${messageId}`;
-  const cards = state._pendingPermCards[key];
-  if (!cards || cards.length === 0) return;
-  delete state._pendingPermCards[key];
+  const timeEl = el.querySelector(".msg-time");
+  if (timeEl) timeEl.textContent = status === "error" ? "执行中断" : "过程记录";
 
-  // 找到刚插入的最后一条该角色消息
-  const allMsgs = $messages.querySelectorAll(`.message.assistant.${getCharClass(character)}`);
-  const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
-  if (!lastMsg) return;
-
-  const bubble = lastMsg.querySelector(".bubble");
-  if (!bubble) return;
-
-  // 创建一个折叠容器包裹迁移过来的权限记录
-  const wrapper = document.createElement("div");
-  wrapper.className = "perm-history";
-  for (const card of cards) {
-    // 确保都是已解决的极简样式
-    card.classList.add("resolved");
-    wrapper.appendChild(card);
-  }
-  // 插入到 bubble 顶部
-  bubble.insertBefore(wrapper, bubble.firstChild);
+  const buttons = el.querySelectorAll(".perm-summary-actions .perm-btn");
+  for (const btn of buttons) btn.disabled = true;
 }
 
 // ── 权限审批卡片（紧凑模式） ────────────────────────────
@@ -675,6 +648,14 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
   `;
 
   if (container) {
+    const processLog = thinkingEl.querySelector(".process-log");
+    if (processLog) {
+      const step = document.createElement("div");
+      step.className = "process-step";
+      step.textContent = input?.description || `准备调用 ${toolName}：${truncate(brief, 80)}`;
+      processLog.appendChild(step);
+    }
+
     // 嵌入 thinking 消息内部
     container.insertAdjacentHTML("beforeend", cardHtml);
     // 滚动 thinking 区域到底部，确保新卡片可见

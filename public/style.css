@@ -330,21 +330,31 @@ html, body {
   font-size: 13px;
 }
 
-/* ── Thinking 动画 ─────────────────────── */
+/* ── 过程记录区（权限审批时间线） ───────── */
 .thinking-scroll-area {
-  max-height: 400px;
+  max-height: min(72vh, 760px);
   overflow-y: auto;
   border-radius: var(--radius);
   border-bottom-left-radius: 4px;
+  padding: 10px 10px 8px;
 }
 .message.faker .thinking-scroll-area { background: var(--faker-bg); }
 .message.qijige .thinking-scroll-area { background: var(--qijige-bg); }
 .message.yyf .thinking-scroll-area { background: var(--yyf-bg); }
 
-.thinking-bubble {
+.process-log {
   display: flex;
-  gap: 5px;
-  padding: 12px 16px;
+  flex-direction: column;
+  gap: 6px;
+}
+.process-step {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #495057;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.05);
 }
 
 /* 嵌入 thinking 内部的权限卡片容器 */
@@ -353,25 +363,13 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 0 8px 8px;
+  padding: 8px 0 0;
 }
 .perm-container .perm-card {
   margin-top: 0;
 }
 
-.thinking-bubble .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #aaa;
-  animation: bounce 1.4s infinite ease-in-out;
-}
-.thinking-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
-.thinking-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
-@keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); }
-  40% { transform: translateY(-8px); }
-}
+.message.thinking-finished .process-step { opacity: 0.92; }
 
 /* ── 输入区 ────────────────────────────── */
 #input-area {
@@ -660,6 +658,10 @@ html, body {
   font-size: 12px;
   border-radius: 6px;
 }
+.perm-summary-actions .perm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 .perm-detail {
   display: none;
@@ -802,23 +804,6 @@ html, body {
 /* 自动通过的权限消息 — 去掉左侧空间 */
 .perm-auto-msg { padding: 1px 20px 1px 64px; }
 .perm-auto-msg .bubble-wrapper { max-width: 100%; }
-
-/* 迁移到回复气泡内的权限审批记录 */
-.perm-history {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: -10px -14px 8px;
-  padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.03);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
-  max-height: 200px;
-  overflow-y: auto;
-}
-.perm-history .perm-card {
-  margin-top: 0;
-}
 
 /* ── Thread 引用条（气泡内部顶部的引用块） ── */
 .thread-quote {
