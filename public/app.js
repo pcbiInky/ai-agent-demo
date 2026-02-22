@@ -525,6 +525,7 @@ function showThinking(character, messageId) {
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
   div.id = `thinking-${character}-${messageId}`;
+  div.dataset.character = character;
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
@@ -532,10 +533,13 @@ function showThinking(character, messageId) {
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">思考中...</span>
       </div>
-      <div class="thinking-bubble">
-        <div class="dot"></div>
-        <div class="dot"></div>
-        <div class="dot"></div>
+      <div class="thinking-scroll-area">
+        <div class="thinking-bubble">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+        <div class="perm-container"></div>
       </div>
     </div>
   `;
@@ -601,46 +605,70 @@ function buildPermDetail(toolName, input) {
 
 function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
-  const charClass = getCharClass(character);
-  const avatar = getAvatar(character);
-  const displayName = getDisplayName(character);
-  const time = formatTimeShort(timestamp || Date.now());
-
   const brief = getPermBrief(toolName, input);
   const intent = getPermIntent(toolName, input);
   const detail = buildPermDetail(toolName, input);
 
-  const div = document.createElement("div");
-  div.className = `message assistant ${charClass}`;
-  div.id = `perm-${requestId}`;
-  div.innerHTML = `
-    <div class="avatar ${charClass}">${avatar}</div>
-    <div class="bubble-wrapper">
-      <div class="msg-header">
-        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
-        <span class="msg-time">${time}</span>
-        <span class="perm-badge">需要权限</span>
+  // 找到该角色当前的 thinking 元素，将权限卡片嵌入其中
+  const thinkingEl = findThinkingElement(character);
+  const container = thinkingEl?.querySelector(".perm-container");
+
+  const cardHtml = `
+    <div class="perm-card" id="perm-card-${requestId}" data-request-id="${requestId}">
+      <div class="perm-summary" onclick="togglePermDetail('${requestId}')">
+        <svg class="perm-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
+        <span class="perm-summary-tool">${escapeHtml(toolName)}</span>
+        <span class="perm-summary-brief">${escapeHtml(truncate(brief, 60))}</span>
+        <svg class="perm-expand-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+        <div class="perm-summary-actions" id="perm-actions-${requestId}">
+          <button class="perm-btn perm-deny" onclick="event.stopPropagation(); respondPermission('${requestId}', 'deny')">拒绝</button>
+          <button class="perm-btn perm-allow" onclick="event.stopPropagation(); respondPermission('${requestId}', 'allow')">允许</button>
+        </div>
       </div>
-      <div class="perm-card" id="perm-card-${requestId}">
-        <div class="perm-summary" onclick="togglePermDetail('${requestId}')">
-          <svg class="perm-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
-          <span class="perm-summary-tool">${escapeHtml(toolName)}</span>
-          <span class="perm-summary-brief">${escapeHtml(truncate(brief, 60))}</span>
-          <svg class="perm-expand-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-          <div class="perm-summary-actions" id="perm-actions-${requestId}">
-            <button class="perm-btn perm-deny" onclick="event.stopPropagation(); respondPermission('${requestId}', 'deny')">拒绝</button>
-            <button class="perm-btn perm-allow" onclick="event.stopPropagation(); respondPermission('${requestId}', 'allow')">允许</button>
-          </div>
-        </div>
-        <div class="perm-detail">
-          <div class="perm-intent">${escapeHtml(intent)}</div>
-          ${detail}
-        </div>
+      <div class="perm-detail">
+        <div class="perm-intent">${escapeHtml(intent)}</div>
+        ${detail}
       </div>
     </div>
   `;
-  $messages.appendChild(div);
+
+  if (container) {
+    // 嵌入 thinking 消息内部
+    container.insertAdjacentHTML("beforeend", cardHtml);
+    // 滚动 thinking 区域到底部，确保新卡片可见
+    const scrollArea = thinkingEl.querySelector(".thinking-scroll-area");
+    if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+  } else {
+    // 降级：如果找不到 thinking 元素（极端边界情况），独立显示
+    const charClass = getCharClass(character);
+    const avatar = getAvatar(character);
+    const displayName = getDisplayName(character);
+    const time = formatTimeShort(timestamp || Date.now());
+    const div = document.createElement("div");
+    div.className = `message assistant ${charClass}`;
+    div.id = `perm-fallback-${requestId}`;
+    div.innerHTML = `
+      <div class="avatar ${charClass}">${avatar}</div>
+      <div class="bubble-wrapper">
+        <div class="msg-header">
+          <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+          <span class="msg-time">${time}</span>
+          <span class="perm-badge">需要权限</span>
+        </div>
+        ${cardHtml}
+      </div>
+    `;
+    $messages.appendChild(div);
+  }
   handlePostAppend({ shouldAutoScroll });
+}
+
+// 找到指定角色当前正在显示的 thinking 元素
+function findThinkingElement(character) {
+  // thinking 元素 id 格式: thinking-{character}-{messageId}
+  const candidates = $messages.querySelectorAll(`[id^="thinking-${character}-"]`);
+  // 返回最后一个（最新的）
+  return candidates.length > 0 ? candidates[candidates.length - 1] : null;
 }
 
 function togglePermDetail(requestId) {
@@ -692,18 +720,16 @@ function markPermResolved(requestId, behavior, message) {
     actionsEl.innerHTML = `<span class="perm-resolved-label ${cls}">${label}</span>`;
   }
 
-  const permEl = document.getElementById(`perm-${requestId}`);
-  if (permEl) {
-    // 移除 badge 上的 "需要权限" 脉冲动画
-    const badge = permEl.querySelector(".perm-badge");
+  // 降级模式的独立卡片处理
+  const fallbackEl = document.getElementById(`perm-fallback-${requestId}`);
+  if (fallbackEl) {
+    const badge = fallbackEl.querySelector(".perm-badge");
     if (badge) badge.remove();
-
-    // 自动通过的权限：隐藏头像和消息头，只保留极简卡片
     if (isAuto) {
-      permEl.classList.add("perm-auto-msg");
-      const avatar = permEl.querySelector(".avatar");
+      fallbackEl.classList.add("perm-auto-msg");
+      const avatar = fallbackEl.querySelector(".avatar");
       if (avatar) avatar.style.display = "none";
-      const header = permEl.querySelector(".msg-header");
+      const header = fallbackEl.querySelector(".msg-header");
       if (header) header.style.display = "none";
     }
   }

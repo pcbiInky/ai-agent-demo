@@ -331,16 +331,33 @@ html, body {
 }
 
 /* ── Thinking 动画 ─────────────────────── */
+.thinking-scroll-area {
+  max-height: 400px;
+  overflow-y: auto;
+  border-radius: var(--radius);
+  border-bottom-left-radius: 4px;
+}
+.message.faker .thinking-scroll-area { background: var(--faker-bg); }
+.message.qijige .thinking-scroll-area { background: var(--qijige-bg); }
+.message.yyf .thinking-scroll-area { background: var(--yyf-bg); }
+
 .thinking-bubble {
   display: flex;
   gap: 5px;
   padding: 12px 16px;
-  border-radius: var(--radius);
-  border-bottom-left-radius: 4px;
 }
-.message.faker .thinking-bubble { background: var(--faker-bg); }
-.message.qijige .thinking-bubble { background: var(--qijige-bg); }
-.message.yyf .thinking-bubble { background: var(--yyf-bg); }
+
+/* 嵌入 thinking 内部的权限卡片容器 */
+.perm-container:empty { display: none; }
+.perm-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+.perm-container .perm-card {
+  margin-top: 0;
+}
 
 .thinking-bubble .dot {
   width: 8px;
