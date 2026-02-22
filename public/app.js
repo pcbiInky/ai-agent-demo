@@ -14,7 +14,13 @@ const state = {
   isLoadingHistory: false,
   isComposing: false,
   lastSpeaker: null,
+  // Thread 相关
+  threads: {},          // threadId -> { originId, originChar, originText, replies: [{ id, character, text, verified, depth }] }
+  activeThreadId: null,  // 当前打开的 thread
+  // 消息 ID -> DOM 元素映射（用于定位和引用）
+  messageElements: {},
 };
+
 const PROFILE_STORAGE_KEY = "characterProfilesV1";
 const BOTTOM_THRESHOLD_PX = 40;
 
@@ -37,6 +43,9 @@ const $settingsForm = $("#settings-form");
 const $settingsError = $("#settings-error");
 const $settingsSaveBtn = $("#settings-save-btn");
 const $settingsCancelBtn = $("#settings-cancel-btn");
+const $threadPanel = $("#thread-panel");
+const $threadMessages = $("#thread-messages");
+const $threadCloseBtn = $("#thread-close-btn");
 
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
@@ -67,6 +76,7 @@ async function init() {
   setupMentionHints();
   setupChatScroll();
   setupSettings();
+  setupThreadPanel();
 
   $newSessionBtn.addEventListener("click", newSession);
 }
@@ -88,7 +98,14 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "online");
     removeThinking(data.character, data.messageId);
-    appendAssistantMessage(data.character, data.text, data.verified);
+
+    if (data.threadId && data.depth > 0) {
+      // Thread 回复：带引用条显示在主流 + 更新 thread 数据
+      appendThreadReply(data);
+    } else {
+      appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions);
+    }
+
     state.lastSpeaker = data.character;
     updateStats(data.character, data.verified);
     loadSessionList();
@@ -101,6 +118,21 @@ function connectSSE() {
       removeThinking(data.character, data.messageId);
       appendErrorMessage(data.character, data.error);
     }
+  });
+
+  es.addEventListener("ai-mention", (e) => {
+    const data = JSON.parse(e.data);
+    appendAIMentionNotice(data.from, data.to, data.threadId);
+  });
+
+  es.addEventListener("system-notice", (e) => {
+    const data = JSON.parse(e.data);
+    appendSystemNotice(data.text);
+  });
+
+  es.addEventListener("status", (e) => {
+    const data = JSON.parse(e.data);
+    setCharStatus(data.character, data.status);
   });
 
   // ── 权限请求事件 ──
@@ -117,6 +149,8 @@ function connectSSE() {
 
 // ── 发送消息 ──────────────────────────────────────────────
 function hasMention(text) {
+  // "@所有人" 视为有效 mention
+  if (text.includes("@所有人")) return true;
   const names = Object.keys(state.characters);
   for (const name of names) {
     const display = getDisplayName(name);
@@ -135,6 +169,12 @@ async function sendMessage() {
     rawText = "@" + displayName + " " + rawText;
   }
 
+  // "@所有人" 展开为所有角色的 @mention
+  if (rawText.includes("@所有人")) {
+    const allMentions = Object.keys(state.characters).map(name => "@" + getDisplayName(name)).join(" ");
+    rawText = rawText.replace(/@所有人/g, allMentions);
+  }
+
   const text = normalizeMentions(rawText);
 
   $input.value = "";
@@ -147,7 +187,15 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, sessionId: state.sessionId }),
+      body: JSON.stringify({
+          text,
+          sessionId: state.sessionId,
+          nicknames: Object.fromEntries(
+            Object.keys(state.characters)
+              .filter(c => getDisplayName(c) !== c)
+              .map(c => [c, getDisplayName(c)])
+          ),
+        }),
     });
 
     if (!res.ok) {
@@ -181,13 +229,14 @@ function appendUserMessage(text) {
   renderStats();
 }
 
-function appendAssistantMessage(character, text, verified) {
+function appendAssistantMessage(character, text, verified, replyId, threadId, aiMentions) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
+  const msgId = replyId || crypto.randomUUID();
 
   let verifiedHtml = "";
   if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
@@ -195,6 +244,7 @@ function appendAssistantMessage(character, text, verified) {
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
+  div.dataset.msgId = msgId;
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
@@ -208,7 +258,241 @@ function appendAssistantMessage(character, text, verified) {
     </div>
   `;
   $messages.appendChild(div);
+
+  // 追踪消息元素
+  state.messageElements[msgId] = div;
+
+  // 如果这条消息中有 AI @mention，初始化 thread 数据（避免覆盖 loadHistory 已建好的）
+  if (aiMentions && aiMentions.length > 0) {
+    const tid = threadId || msgId;
+    if (!state.threads[tid]) {
+      state.threads[tid] = {
+        originId: msgId,
+        originChar: character,
+        originText: text,
+        replies: [],
+      };
+    }
+  }
+
   handlePostAppend({ shouldAutoScroll });
+}
+
+// ── Thread 回复渲染（主聊天流中，带引用条） ──────────────
+function appendThreadReply(data) {
+  const { character, text, verified, replyId, threadId, depth } = data;
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+  const time = formatTimeShort(Date.now());
+  const cli = state.characters[character]?.cli || "";
+  const msgId = replyId || crypto.randomUUID();
+
+  // 更新 thread 数据（避免 loadHistory 时重复 push）
+  if (threadId && state.threads[threadId]) {
+    const existing = state.threads[threadId].replies.find(r => r.id === msgId);
+    if (!existing) {
+      state.threads[threadId].replies.push({
+        id: msgId, character, text, verified, depth,
+      });
+    }
+    if (!state.isLoadingHistory) {
+      updateThreadReplyBar(threadId);
+      updateThreadPanelIfOpen(threadId);
+    }
+  }
+
+  let verifiedHtml = "";
+  if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
+  else if (verified === false) verifiedHtml = '<span class="verified-badge fail">unverified</span>';
+
+  // 引用条：显示原始消息的第一行
+  let quoteHtml = "";
+  if (threadId && state.threads[threadId]) {
+    const origin = state.threads[threadId];
+    const firstLine = (origin.originText || "").split("\n")[0].slice(0, 60);
+    const originDisplayName = getDisplayName(origin.originChar);
+    quoteHtml = `
+      <div class="thread-quote" data-thread-id="${threadId}" onclick="openThread('${threadId}')">
+        <span class="quote-char">${escapeHtml(originDisplayName)}:</span>
+        <span class="quote-text">${escapeHtml(firstLine)}</span>
+      </div>
+    `;
+  }
+
+  const div = document.createElement("div");
+  div.className = `message assistant ${charClass}`;
+  div.dataset.msgId = msgId;
+  div.dataset.threadId = threadId || "";
+  div.innerHTML = `
+    ${quoteHtml}
+    <div style="display:flex;gap:10px;">
+      <div class="avatar ${charClass}">${avatar}</div>
+      <div class="bubble-wrapper">
+        <div class="msg-header">
+          <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+          <span class="msg-time">${time}</span>
+          ${verifiedHtml}
+        </div>
+        <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+        <div class="msg-model">${cli}</div>
+      </div>
+    </div>
+  `;
+  $messages.appendChild(div);
+  state.messageElements[msgId] = div;
+
+  handlePostAppend({ shouldAutoScroll });
+}
+
+// ── AI 互@ 系统提示 ──────────────────────────────────────
+function appendAIMentionNotice(from, to, threadId) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
+  const fromName = getDisplayName(from);
+  const toName = getDisplayName(to);
+
+  const div = document.createElement("div");
+  div.className = "ai-mention-notice";
+  div.innerHTML = `<span class="mention-icon">🔗</span> ${escapeHtml(fromName)} 召唤了 ${escapeHtml(toName)}`;
+  if (threadId) div.dataset.threadId = threadId;
+  $messages.appendChild(div);
+  handlePostAppend({ shouldAutoScroll });
+}
+
+function appendSystemNotice(text) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
+  const div = document.createElement("div");
+  div.className = "system-notice";
+  div.textContent = text;
+  $messages.appendChild(div);
+  handlePostAppend({ shouldAutoScroll });
+}
+
+// ── Thread 回复计数条 ────────────────────────────────────
+function updateThreadReplyBar(threadId) {
+  const thread = state.threads[threadId];
+  if (!thread) return;
+
+  const originEl = state.messageElements[thread.originId];
+  if (!originEl) return;
+
+  // 找到或创建回复计数条
+  let bar = originEl.querySelector(".thread-reply-bar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "thread-reply-bar";
+    bar.onclick = () => openThread(threadId);
+    originEl.appendChild(bar);
+  }
+
+  const replyCount = thread.replies.length;
+  const participants = [...new Set(thread.replies.map(r => r.character))];
+  const avatarsHtml = participants.slice(0, 3).map(c => {
+    const charClass = getCharClass(c);
+    const av = getAvatar(c);
+    return `<span class="thread-mini-avatar" style="background:var(--${charClass}-accent)">${escapeHtml(av)}</span>`;
+  }).join("");
+
+  bar.innerHTML = `
+    <span class="thread-avatars">${avatarsHtml}</span>
+    <span>💬 ${replyCount} 条回复${participants.length > 0 ? "  " + participants.map(c => getDisplayName(c)).join("·") : ""}</span>
+    <svg class="thread-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+  `;
+}
+
+// ── Thread 面板 ──────────────────────────────────────────
+function setupThreadPanel() {
+  $threadCloseBtn.addEventListener("click", closeThread);
+}
+
+let _closeThreadTimer = null;
+
+function openThread(threadId) {
+  const thread = state.threads[threadId];
+  if (!thread) return;
+
+  // 取消可能残留的关闭定时器，防止竞态
+  if (_closeThreadTimer) {
+    clearTimeout(_closeThreadTimer);
+    _closeThreadTimer = null;
+  }
+
+  state.activeThreadId = threadId;
+  renderThreadPanel(threadId);
+
+  $threadPanel.classList.add("open");
+  // 用 rAF 来触发 CSS transition
+  requestAnimationFrame(() => {
+    $threadPanel.classList.add("visible");
+  });
+}
+
+function closeThread() {
+  state.activeThreadId = null;
+  $threadPanel.classList.remove("visible");
+  // 等动画结束再隐藏
+  _closeThreadTimer = setTimeout(() => {
+    $threadPanel.classList.remove("open");
+    _closeThreadTimer = null;
+  }, 250);
+}
+
+function renderThreadPanel(threadId) {
+  const thread = state.threads[threadId];
+  if (!thread) return;
+
+  $threadMessages.innerHTML = "";
+
+  // 1. 原始消息
+  const originEl = buildThreadMessage(thread.originChar, thread.originText, false);
+  $threadMessages.appendChild(originEl);
+
+  // 分隔线
+  const divider = document.createElement("div");
+  divider.className = "thread-origin-divider";
+  divider.textContent = `${thread.replies.length} 条回复`;
+  $threadMessages.appendChild(divider);
+
+  // 2. 所有回复
+  for (const reply of thread.replies) {
+    const replyEl = buildThreadMessage(reply.character, reply.text, true, reply.verified);
+    $threadMessages.appendChild(replyEl);
+  }
+
+  $threadMessages.scrollTop = $threadMessages.scrollHeight;
+}
+
+function buildThreadMessage(character, text, isReply, verified) {
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+  const cli = state.characters[character]?.cli || "";
+
+  let verifiedHtml = "";
+  if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
+  else if (verified === false) verifiedHtml = '<span class="verified-badge fail">unverified</span>';
+
+  const div = document.createElement("div");
+  div.className = `message assistant ${charClass}`;
+  div.innerHTML = `
+    <div class="avatar ${charClass}">${avatar}</div>
+    <div class="bubble-wrapper">
+      <div class="msg-header">
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+        ${verifiedHtml}
+      </div>
+      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+      <div class="msg-model">${cli}</div>
+    </div>
+  `;
+  return div;
+}
+
+function updateThreadPanelIfOpen(threadId) {
+  if (state.activeThreadId === threadId) {
+    renderThreadPanel(threadId);
+  }
 }
 
 function appendErrorMessage(character, error) {
@@ -515,8 +799,11 @@ function switchSession(id) {
   sessionStorage.setItem("sessionId", id);
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
   clearUnreadIndicator();
+  closeThread();
   $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
+  state.threads = {};
+  state.messageElements = {};
   renderStats();
   loadHistory();
   loadSessionList();
@@ -539,18 +826,64 @@ async function loadHistory() {
     clearUnreadIndicator();
     $messages.innerHTML = "";
     state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
+    state.threads = {};
+    state.messageElements = {};
 
+    // 第一遍：重建 thread 数据结构
+    for (const msg of log.messages) {
+      if (msg.threadId && msg.aiMentions && msg.aiMentions.length > 0 && !msg.depth) {
+        // 这是 thread 发起消息
+        state.threads[msg.threadId] = {
+          originId: msg.id,
+          originChar: msg.character,
+          originText: msg.text,
+          replies: [],
+        };
+      }
+    }
+    for (const msg of log.messages) {
+      if (msg.threadId && msg.depth > 0 && state.threads[msg.threadId]) {
+        state.threads[msg.threadId].replies.push({
+          id: msg.id,
+          character: msg.character,
+          text: msg.text,
+          verified: msg.verified,
+          depth: msg.depth,
+        });
+      }
+    }
+
+    // 第二遍：渲染消息
     for (const msg of log.messages) {
       if (msg.role === "user") {
         appendUserMessage(msg.text);
       } else if (msg.role === "assistant") {
-        appendAssistantMessage(msg.character, msg.text, msg.verified);
+        if (msg.threadId && msg.depth > 0) {
+          appendThreadReply({
+            character: msg.character,
+            text: msg.text,
+            verified: msg.verified,
+            replyId: msg.id,
+            threadId: msg.threadId,
+            depth: msg.depth,
+          });
+        } else {
+          appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions);
+        }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
         appendErrorMessage(msg.character, msg.error);
       }
     }
+
+    // 重建所有 thread 的回复计数条
+    for (const threadId of Object.keys(state.threads)) {
+      if (state.threads[threadId].replies.length > 0) {
+        updateThreadReplyBar(threadId);
+      }
+    }
+
     scrollToBottom();
     clearUnreadIndicator();
   } catch { /* ignore */ }
