@@ -803,6 +803,23 @@ html, body {
 .perm-auto-msg { padding: 1px 20px 1px 64px; }
 .perm-auto-msg .bubble-wrapper { max-width: 100%; }
 
+/* 迁移到回复气泡内的权限审批记录 */
+.perm-history {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: -10px -14px 8px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.perm-history .perm-card {
+  margin-top: 0;
+}
+
 /* ── Thread 引用条（气泡内部顶部的引用块） ── */
 .thread-quote {
   display: flex;

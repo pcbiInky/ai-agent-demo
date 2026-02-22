@@ -106,6 +106,9 @@ function connectSSE() {
       appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions);
     }
 
+    // 将暂存的权限卡片迁移到刚插入的回复消息中
+    migratePermCards(data.character, data.messageId);
+
     state.lastSpeaker = data.character;
     updateStats(data.character, data.verified);
     loadSessionList();
@@ -549,7 +552,46 @@ function showThinking(character, messageId) {
 
 function removeThinking(character, messageId) {
   const el = document.getElementById(`thinking-${character}-${messageId}`);
-  if (el) el.remove();
+  if (!el) return;
+
+  // 将 thinking 内的已解决权限卡片暂存，稍后迁移到回复消息中
+  const permContainer = el.querySelector(".perm-container");
+  const permCards = permContainer ? [...permContainer.querySelectorAll(".perm-card")] : [];
+  if (permCards.length > 0) {
+    // 暂存到 state，appendAssistantMessage / appendThreadReply 会取出并嵌入
+    if (!state._pendingPermCards) state._pendingPermCards = {};
+    state._pendingPermCards[`${character}:${messageId}`] = permCards;
+  }
+
+  el.remove();
+}
+
+// 将暂存的权限卡片迁移到最新插入的回复消息的 bubble 内部顶部
+function migratePermCards(character, messageId) {
+  if (!state._pendingPermCards) return;
+  const key = `${character}:${messageId}`;
+  const cards = state._pendingPermCards[key];
+  if (!cards || cards.length === 0) return;
+  delete state._pendingPermCards[key];
+
+  // 找到刚插入的最后一条该角色消息
+  const allMsgs = $messages.querySelectorAll(`.message.assistant.${getCharClass(character)}`);
+  const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
+  if (!lastMsg) return;
+
+  const bubble = lastMsg.querySelector(".bubble");
+  if (!bubble) return;
+
+  // 创建一个折叠容器包裹迁移过来的权限记录
+  const wrapper = document.createElement("div");
+  wrapper.className = "perm-history";
+  for (const card of cards) {
+    // 确保都是已解决的极简样式
+    card.classList.add("resolved");
+    wrapper.appendChild(card);
+  }
+  // 插入到 bubble 顶部
+  bubble.insertBefore(wrapper, bubble.firstChild);
 }
 
 // ── 权限审批卡片（紧凑模式） ────────────────────────────
@@ -603,14 +645,14 @@ function buildPermDetail(toolName, input) {
   return detail;
 }
 
-function showPermissionCard({ requestId, character, toolName, input, timestamp }) {
+function showPermissionCard({ requestId, character, toolName, input, timestamp, messageId }) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const brief = getPermBrief(toolName, input);
   const intent = getPermIntent(toolName, input);
   const detail = buildPermDetail(toolName, input);
 
-  // 找到该角色当前的 thinking 元素，将权限卡片嵌入其中
-  const thinkingEl = findThinkingElement(character);
+  // 用 character + messageId 精确定位 thinking 容器
+  const thinkingEl = findThinkingElement(character, messageId);
   const container = thinkingEl?.querySelector(".perm-container");
 
   const cardHtml = `
@@ -664,10 +706,14 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp }
 }
 
 // 找到指定角色当前正在显示的 thinking 元素
-function findThinkingElement(character) {
-  // thinking 元素 id 格式: thinking-{character}-{messageId}
+function findThinkingElement(character, messageId) {
+  // 优先按精确 id 定位
+  if (messageId) {
+    const exact = document.getElementById(`thinking-${character}-${messageId}`);
+    if (exact) return exact;
+  }
+  // 降级：按角色取最新一个
   const candidates = $messages.querySelectorAll(`[id^="thinking-${character}-"]`);
-  // 返回最后一个（最新的）
   return candidates.length > 0 ? candidates[candidates.length - 1] : null;
 }
 
