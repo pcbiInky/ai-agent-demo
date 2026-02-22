@@ -328,13 +328,12 @@ function appendThreadReply(data) {
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
-      ${quoteHtml}
       <div class="msg-header">
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+      <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(text)}</div>
       <div class="msg-model">${cli}</div>
     </div>
   `;
