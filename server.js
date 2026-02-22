@@ -15,6 +15,10 @@ const CHARACTERS = {
   YYF: { cli: "codex", avatar: "Y" },
 };
 
+// ── AI 互@ 链式调用限制 ──────────────────────────────────
+const MAX_AI_CHAIN_CALLS = 5;  // 每轮用户消息最多触发的 AI→AI 交互次数
+const MAX_DEPTH = 2;           // 最大唤醒深度（depth=0: 用户@, depth=1: AI@, depth=2: 被AI@的回复，不能再@）
+
 // ── 状态管理 ──────────────────────────────────────────────
 // browserSessionId:cli -> CLI 返回的真实 sessionId
 const cliSessions = new Map();
@@ -24,6 +28,8 @@ const invokeQueues = new Map();
 const sseClients = new Map();
 // requestId -> { resolve, timer, data }（等待用户审批的权限请求）
 const pendingPermissions = new Map();
+// browserSessionId -> { characterName: displayName }（用户设置的昵称映射）
+const sessionNicknames = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -176,9 +182,14 @@ app.post("/api/permission-response", (req, res) => {
 
 // ── API: 发送消息 ─────────────────────────────────────────
 app.post("/api/chat", (req, res) => {
-  const { text, sessionId } = req.body;
+  const { text, sessionId, nicknames } = req.body;
   if (!text || !sessionId) {
     return res.status(400).json({ error: "text 和 sessionId 不能为空" });
+  }
+
+  // 保存用户设置的昵称映射
+  if (nicknames && typeof nicknames === "object") {
+    sessionNicknames.set(sessionId, nicknames);
   }
 
   const mentions = parseMentions(text);
@@ -202,46 +213,42 @@ app.post("/api/chat", (req, res) => {
   // 立即返回，后台异步处理
   res.json({ messageId, mentions });
 
-  // 对每个 @mention 触发 invoke
-  for (const { character, prompt } of mentions) {
-    const config = CHARACTERS[character];
+  // 串行处理每个 @mention，带共享记忆 + AI 互@ 链式唤醒
+  const chainCounter = { count: 0 };
 
-    emitSSE(sessionId, "thinking", { character, messageId });
+  (async () => {
+    for (const { character, prompt } of mentions) {
+      const config = CHARACTERS[character];
+      const contextPrompt = buildContextPrompt(sessionId, prompt, character, { depth: 0 });
 
-    enqueueInvoke(sessionId, config.cli, prompt, character, (result) => {
-      emitSSE(sessionId, "reply", {
-        character,
-        messageId,
-        text: result.text,
-        ...(result.verified !== undefined && { verified: result.verified }),
-      });
+      emitSSE(sessionId, "thinking", { character, messageId });
 
-      appendToLog(sessionId, {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        character,
-        text: result.text,
-        replyTo: messageId,
-        timestamp: Date.now(),
-        ...(result.verified !== undefined && { verified: result.verified }),
-      });
-    }, (err) => {
-      emitSSE(sessionId, "error", {
-        character,
-        messageId,
-        error: err.message,
-      });
+      await new Promise((resolve) => {
+        enqueueInvoke(sessionId, config.cli, contextPrompt, character, async (result) => {
+          setCharStatus(sessionId, character, "online");
+          await processAIChain(sessionId, character, result, messageId, null, 0, chainCounter);
+          resolve();
+        }, (err) => {
+          setCharStatus(sessionId, character, "online");
+          emitSSE(sessionId, "error", {
+            character,
+            messageId,
+            error: err.message,
+          });
 
-      appendToLog(sessionId, {
-        id: crypto.randomUUID(),
-        role: "error",
-        character,
-        error: err.message,
-        replyTo: messageId,
-        timestamp: Date.now(),
+          appendToLog(sessionId, {
+            id: crypto.randomUUID(),
+            role: "error",
+            character,
+            error: err.message,
+            replyTo: messageId,
+            timestamp: Date.now(),
+          });
+          resolve();
+        });
       });
-    });
-  }
+    }
+  })();
 });
 
 // ── API: 聊天历史 ─────────────────────────────────────────
@@ -297,13 +304,43 @@ function parseMentions(text) {
     });
   }
 
-  const mentions = [];
+  // 提取每个 @mention 各自的 prompt（到下一个 @mention 之间的文本）
+  const mentionsWithPrompt = [];
+  const mentionsWithoutPrompt = [];
+  // 全局 prompt：最后一个 @mention 之后的文本
+  const globalPrompt = positions.length > 0
+    ? text.slice(positions[positions.length - 1].end).trim()
+    : text.trim();
+
   for (let i = 0; i < positions.length; i++) {
     const promptStart = positions[i].end;
     const promptEnd = i + 1 < positions.length ? positions[i + 1].start : text.length;
     const prompt = text.slice(promptStart, promptEnd).trim();
     if (prompt.length > 0) {
-      mentions.push({ character: positions[i].character, prompt });
+      mentionsWithPrompt.push({ character: positions[i].character, prompt });
+    } else {
+      mentionsWithoutPrompt.push({ character: positions[i].character });
+    }
+  }
+
+  // 没有独立 prompt 的 @mention 共享全局 prompt
+  if (globalPrompt.length > 0) {
+    for (const m of mentionsWithoutPrompt) {
+      mentionsWithPrompt.push({ character: m.character, prompt: globalPrompt });
+    }
+  }
+
+  // 按原始出现顺序排序
+  const charOrder = positions.map(p => p.character);
+  mentionsWithPrompt.sort((a, b) => charOrder.indexOf(a.character) - charOrder.indexOf(b.character));
+
+  // 去重（同一角色只保留第一次出现）
+  const seen = new Set();
+  const mentions = [];
+  for (const m of mentionsWithPrompt) {
+    if (!seen.has(m.character)) {
+      seen.add(m.character);
+      mentions.push(m);
     }
   }
 
@@ -351,6 +388,253 @@ function appendToLog(sessionId, message) {
 
   log.messages.push(message);
   fs.writeFileSync(filePath, JSON.stringify(log, null, 2));
+}
+
+// ── 共享记忆：为 AI 构建带上下文的 prompt ─────────────────
+function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromCharacter = null } = {}) {
+  const logPath = path.join(LOG_DIR, `${sessionId}.json`);
+  const characterInfo = Object.entries(CHARACTERS)
+    .map(([name, cfg]) => `${name}(${cfg.cli})`)
+    .join(", ");
+
+  let recentSummary = "(暂无历史)";
+  try {
+    const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+    const recent = log.messages.slice(-8);
+    if (recent.length > 0) {
+      recentSummary = recent.map(m => {
+        const who = m.role === "user" ? "铲屎官" : m.character;
+        const content = (m.text || m.error || "").slice(0, 200);
+        return `[${who}]: ${content}`;
+      }).join("\n");
+    }
+  } catch { /* 新会话，无历史 */ }
+
+  // AI 互@ 规则提示
+  let mentionRules = "";
+  if (depth < MAX_DEPTH) {
+    mentionRules = `\n\n【AI 互@规则】
+如果你认为需要向其他角色提问、求证或讨论，可以在回复中使用 @角色名 来召唤他们。
+可用角色: ${characterInfo}
+注意: 只在确实有必要时才@其他角色，不要为了展示而@。`;
+  } else {
+    mentionRules = `\n\n【注意】你是被其他 AI 角色召唤的，请直接回答问题，不要在回复中@其他角色。`;
+  }
+
+  // 被 AI 唤醒时的额外说明
+  let invokeContext = "";
+  if (fromCharacter) {
+    invokeContext = `\n\n【召唤上下文】${fromCharacter} 召唤了你，请结合聊天记录上下文回答。`;
+  }
+
+  const myConfig = CHARACTERS[character];
+  const myCliName = myConfig?.cli || "unknown";
+
+  // 获取用户设置的昵称映射
+  const nicknames = sessionNicknames.get(sessionId) || {};
+  const myNickname = nicknames[character];
+  let nicknameHint = "";
+  if (Object.keys(nicknames).length > 0) {
+    const mapping = Object.entries(nicknames).map(([k, v]) => `${k} → ${v}`).join(", ");
+    nicknameHint = `\n用户给角色设置的昵称: ${mapping}`;
+  }
+
+  return `${prompt}
+
+---
+【你的身份】
+你是 ${character}${myNickname ? `（用户给你的昵称是「${myNickname}」）` : ""}，使用 ${myCliName} CLI。请牢记你的角色名是「${character}」，不要与其他角色混淆。${nicknameHint}
+
+【共享聊天记录】
+- 聊天记录文件: ${logPath}
+- 格式: JSON { sessionId, createdAt, messages: [{ id, role, character, text, timestamp, threadId?, replyToThread?, aiMentions? }] }
+- 参与角色: ${characterInfo}
+- 用户昵称: 铲屎官
+- 最近消息:
+${recentSummary}
+如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}`;
+}
+
+// ── AI 回复中的 @mention 检测 ─────────────────────────────
+function parseAIMentions(text) {
+  const names = Object.keys(CHARACTERS).sort((a, b) => b.length - a.length);
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
+
+  const found = new Set();
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    found.add(match[1]);
+  }
+  return [...found];
+}
+
+// ── AI 互@ 链式处理 ──────────────────────────────────────
+async function processAIChain(sessionId, character, result, messageId, threadId, depth, chainCounter) {
+  // 保存 AI 回复
+  const replyId = crypto.randomUUID();
+  const aiMentions = depth < MAX_DEPTH ? parseAIMentions(result.text).filter(c => c !== character) : [];
+
+  appendToLog(sessionId, {
+    id: replyId,
+    role: "assistant",
+    character,
+    text: result.text,
+    replyTo: messageId,
+    timestamp: Date.now(),
+    ...(result.verified !== undefined && { verified: result.verified }),
+    ...(threadId && { threadId }),
+    ...(depth > 0 && { depth }),
+    ...(aiMentions.length > 0 && { aiMentions }),
+  });
+
+  // 如果 depth=0 且有 aiMentions，这条消息将成为 thread origin
+  // 提前计算 activeThreadId 以便在 SSE 中传递
+  const hasAIMentions = aiMentions.length > 0;
+  const activeThreadId = threadId || (hasAIMentions ? replyId : null);
+
+  // 回写 threadId 到日志
+  if (hasAIMentions && !threadId) {
+    updateMessageInLog(sessionId, replyId, { threadId: activeThreadId });
+  }
+
+  emitSSE(sessionId, "reply", {
+    character,
+    messageId,
+    replyId,
+    text: result.text,
+    ...(result.verified !== undefined && { verified: result.verified }),
+    ...(activeThreadId && { threadId: activeThreadId }),
+    ...(depth > 0 && { depth }),
+    ...(hasAIMentions && { aiMentions }),
+  });
+
+  // depth 超限或无 mentions 则停止
+  if (depth >= MAX_DEPTH || !hasAIMentions) return;
+
+  // 串行处理被 AI @的每个角色
+  for (const targetChar of aiMentions) {
+    if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
+      emitSSE(sessionId, "system-notice", {
+        text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
+        threadId: activeThreadId,
+      });
+      break;
+    }
+    chainCounter.count++;
+
+    const targetConfig = CHARACTERS[targetChar];
+    const contextPrompt = buildContextPrompt(
+      sessionId,
+      `${character} 在聊天中提到了你，请查看最近的聊天记录并回应。`,
+      targetChar,
+      { depth: depth + 1, fromCharacter: character }
+    );
+
+    // 通知前端：AI 发起了召唤
+    emitSSE(sessionId, "ai-mention", {
+      from: character,
+      to: targetChar,
+      threadId: activeThreadId,
+      sourceMessageId: replyId,
+    });
+
+    emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId: activeThreadId });
+
+    // 等待被@角色的回复
+    await new Promise((resolve) => {
+      enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
+        setCharStatus(sessionId, targetChar, "online");
+        removeThinking(sessionId, targetChar, messageId);
+        await processAIChain(sessionId, targetChar, targetResult, messageId, activeThreadId, depth + 1, chainCounter);
+        resolve();
+      }, (err) => {
+        setCharStatus(sessionId, targetChar, "online");
+        removeThinking(sessionId, targetChar, messageId);
+        emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId: activeThreadId });
+        appendToLog(sessionId, {
+          id: crypto.randomUUID(),
+          role: "error",
+          character: targetChar,
+          error: err.message,
+          replyTo: messageId,
+          timestamp: Date.now(),
+          threadId: activeThreadId,
+          depth: depth + 1,
+        });
+        resolve();
+      });
+    });
+  }
+
+  // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
+  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
+    chainCounter.count++;
+    const followUpPrompt = buildContextPrompt(
+      sessionId,
+      `你之前在回复中@了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。不要再@其他角色。`,
+      character,
+      { depth: 1 }
+    );
+
+    emitSSE(sessionId, "thinking", { character, messageId, threadId: activeThreadId });
+
+    await new Promise((resolve) => {
+      enqueueInvoke(sessionId, CHARACTERS[character].cli, followUpPrompt, character, (followResult) => {
+        setCharStatus(sessionId, character, "online");
+        removeThinking(sessionId, character, messageId);
+        const followId = crypto.randomUUID();
+        appendToLog(sessionId, {
+          id: followId,
+          role: "assistant",
+          character,
+          text: followResult.text,
+          replyTo: messageId,
+          timestamp: Date.now(),
+          ...(followResult.verified !== undefined && { verified: followResult.verified }),
+          threadId: activeThreadId,
+          depth: 1,
+        });
+        emitSSE(sessionId, "reply", {
+          character,
+          messageId,
+          replyId: followId,
+          text: followResult.text,
+          ...(followResult.verified !== undefined && { verified: followResult.verified }),
+          threadId: activeThreadId,
+          depth: 1,
+        });
+        resolve();
+      }, (err) => {
+        setCharStatus(sessionId, character, "online");
+        removeThinking(sessionId, character, messageId);
+        emitSSE(sessionId, "error", { character, messageId, error: err.message, threadId: activeThreadId });
+        resolve();
+      });
+    });
+  }
+}
+
+// ── 辅助：更新已写入的消息字段 ───────────────────────────
+function updateMessageInLog(sessionId, msgId, updates) {
+  const filePath = path.join(LOG_DIR, `${sessionId}.json`);
+  try {
+    const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const msg = log.messages.find(m => m.id === msgId);
+    if (msg) {
+      Object.assign(msg, updates);
+      fs.writeFileSync(filePath, JSON.stringify(log, null, 2));
+    }
+  } catch { /* ignore */ }
+}
+
+// ── 辅助：SSE 方式的状态通知 ─────────────────────────────
+function setCharStatus(sessionId, character, status) {
+  emitSSE(sessionId, "status", { character, status });
+}
+
+function removeThinking(sessionId, character, messageId) {
+  // 前端通过 reply/error 事件自动移除 thinking
 }
 
 // ── 启动服务 ──────────────────────────────────────────────
