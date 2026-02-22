@@ -30,6 +30,8 @@ const sseClients = new Map();
 const pendingPermissions = new Map();
 // browserSessionId -> { characterName: displayName }（用户设置的昵称映射）
 const sessionNicknames = new Map();
+// browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
+const activeThinking = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -92,7 +94,10 @@ app.post("/api/permission-request", (req, res) => {
 
   const requestId = toolUseId; // 使用 tool_use_id 作为唯一标识
 
-  console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId})`);
+  // 查找当前角色正在思考的 messageId，用于前端精确定位 thinking 容器
+  const thinkingMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+
+  console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId}) messageId=${thinkingMessageId}`);
 
   if (shouldAutoAllowPermission(toolName, input)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
@@ -103,6 +108,7 @@ app.post("/api/permission-request", (req, res) => {
       toolName,
       input,
       timestamp: timestamp || Date.now(),
+      messageId: thinkingMessageId,
     });
     // 紧接着发 resolved 事件，前端会将卡片标记为自动通过的极简样式
     emitSSE(browserSessionId, "permission-resolved", {
@@ -120,6 +126,7 @@ app.post("/api/permission-request", (req, res) => {
     toolName,
     input,
     timestamp: timestamp || Date.now(),
+    messageId: thinkingMessageId,
   });
 
   // 创建一个 Promise，等待前端用户响应
@@ -222,14 +229,17 @@ app.post("/api/chat", (req, res) => {
       const contextPrompt = buildContextPrompt(sessionId, prompt, character, { depth: 0 });
 
       emitSSE(sessionId, "thinking", { character, messageId });
+      activeThinking.set(`${sessionId}:${character}`, messageId);
 
       await new Promise((resolve) => {
         enqueueInvoke(sessionId, config.cli, contextPrompt, character, async (result) => {
           setCharStatus(sessionId, character, "online");
+          activeThinking.delete(`${sessionId}:${character}`);
           await processAIChain(sessionId, character, result, messageId, null, 0, chainCounter);
           resolve();
         }, (err) => {
           setCharStatus(sessionId, character, "online");
+          activeThinking.delete(`${sessionId}:${character}`);
           emitSSE(sessionId, "error", {
             character,
             messageId,
@@ -538,16 +548,19 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
     });
 
     emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId: activeThreadId });
+    activeThinking.set(`${sessionId}:${targetChar}`, messageId);
 
     // 等待被@角色的回复
     await new Promise((resolve) => {
       enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
         setCharStatus(sessionId, targetChar, "online");
+        activeThinking.delete(`${sessionId}:${targetChar}`);
         removeThinking(sessionId, targetChar, messageId);
         await processAIChain(sessionId, targetChar, targetResult, messageId, activeThreadId, depth + 1, chainCounter);
         resolve();
       }, (err) => {
         setCharStatus(sessionId, targetChar, "online");
+        activeThinking.delete(`${sessionId}:${targetChar}`);
         removeThinking(sessionId, targetChar, messageId);
         emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId: activeThreadId });
         appendToLog(sessionId, {
@@ -576,10 +589,12 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
     );
 
     emitSSE(sessionId, "thinking", { character, messageId, threadId: activeThreadId });
+    activeThinking.set(`${sessionId}:${character}`, messageId);
 
     await new Promise((resolve) => {
       enqueueInvoke(sessionId, CHARACTERS[character].cli, followUpPrompt, character, (followResult) => {
         setCharStatus(sessionId, character, "online");
+        activeThinking.delete(`${sessionId}:${character}`);
         removeThinking(sessionId, character, messageId);
         const followId = crypto.randomUUID();
         appendToLog(sessionId, {
@@ -605,6 +620,7 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
         resolve();
       }, (err) => {
         setCharStatus(sessionId, character, "online");
+        activeThinking.delete(`${sessionId}:${character}`);
         removeThinking(sessionId, character, messageId);
         emitSSE(sessionId, "error", { character, messageId, error: err.message, threadId: activeThreadId });
         resolve();

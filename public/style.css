@@ -330,31 +330,46 @@ html, body {
   font-size: 13px;
 }
 
-/* ── Thinking 动画 ─────────────────────── */
-.thinking-bubble {
-  display: flex;
-  gap: 5px;
-  padding: 12px 16px;
+/* ── 过程记录区（权限审批时间线） ───────── */
+.thinking-scroll-area {
+  max-height: min(72vh, 760px);
+  overflow-y: auto;
   border-radius: var(--radius);
   border-bottom-left-radius: 4px;
+  padding: 10px 10px 8px;
 }
-.message.faker .thinking-bubble { background: var(--faker-bg); }
-.message.qijige .thinking-bubble { background: var(--qijige-bg); }
-.message.yyf .thinking-bubble { background: var(--yyf-bg); }
+.message.faker .thinking-scroll-area { background: var(--faker-bg); }
+.message.qijige .thinking-scroll-area { background: var(--qijige-bg); }
+.message.yyf .thinking-scroll-area { background: var(--yyf-bg); }
 
-.thinking-bubble .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #aaa;
-  animation: bounce 1.4s infinite ease-in-out;
+.process-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.thinking-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
-.thinking-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
-@keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); }
-  40% { transform: translateY(-8px); }
+.process-step {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #495057;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.05);
 }
+
+/* 嵌入 thinking 内部的权限卡片容器 */
+.perm-container:empty { display: none; }
+.perm-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 0;
+}
+.perm-container .perm-card {
+  margin-top: 0;
+}
+
+.message.thinking-finished .process-step { opacity: 0.92; }
 
 /* ── 输入区 ────────────────────────────── */
 #input-area {
@@ -642,6 +657,10 @@ html, body {
   padding: 3px 12px;
   font-size: 12px;
   border-radius: 6px;
+}
+.perm-summary-actions .perm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .perm-detail {
