@@ -220,7 +220,7 @@ function appendUserMessage(text) {
         <span class="character-name user-name">铲屎官</span>
           <span class="msg-time">${time}</span>
       </div>
-      <div class="bubble">${escapeHtml(text)}</div>
+      <div class="bubble">${escapeHtml(displayMentions(text))}</div>
     </div>
   `;
   $messages.appendChild(div);
@@ -253,7 +253,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+      <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
       <div class="msg-model">${cli}</div>
     </div>
   `;
@@ -316,7 +316,7 @@ function appendThreadReply(data) {
     quoteHtml = `
       <div class="thread-quote" data-thread-id="${threadId}" onclick="openThread('${threadId}')">
         <span class="quote-char">${escapeHtml(originDisplayName)}:</span>
-        <span class="quote-text">${escapeHtml(firstLine)}</span>
+        <span class="quote-text">${escapeHtml(displayMentions(firstLine))}</span>
       </div>
     `;
   }
@@ -333,7 +333,7 @@ function appendThreadReply(data) {
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(text)}</div>
+      <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(displayMentions(text))}</div>
       <div class="msg-model">${cli}</div>
     </div>
   `;
@@ -480,7 +480,7 @@ function buildThreadMessage(character, text, isReply, verified) {
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
+      <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
       <div class="msg-model">${cli}</div>
     </div>
   `;
@@ -1194,6 +1194,19 @@ function normalizeMentions(raw) {
     if (!display || display === canonical) continue;
     const escaped = display.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     text = text.replace(new RegExp(`@${escaped}`, "g"), `@${canonical}`);
+  }
+  return text;
+}
+
+// 反向：将 @原始角色名 替换为 @昵称（用于渲染显示）
+function displayMentions(raw) {
+  let text = raw;
+  const byLength = Object.keys(state.characters).sort((a, b) => b.length - a.length);
+  for (const canonical of byLength) {
+    const display = getDisplayName(canonical);
+    if (!display || display === canonical) continue;
+    const escaped = canonical.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`@${escaped}`, "g"), `@${display}`);
   }
   return text;
 }
