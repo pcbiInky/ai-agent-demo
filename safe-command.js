@@ -89,11 +89,12 @@ function isSafeBashCommand(command) {
   return true;
 }
 
-function shouldAutoAllowPermission(toolName, input) {
+function shouldAutoAllowPermission(toolName, input, context) {
   if (toolName === "Read") return true;
   if (toolName === "Glob") return true;
   if (toolName === "Grep") return true;
   if (toolName === "Bash" && isSafeBashCommand(input?.command)) return true;
+  if (toolName === "SendMessage" && context?.isChatMember) return true;
   return false;
 }
 

@@ -96,6 +96,7 @@ function requestPermission(toolName, input) {
 }
 
 // 工具通用封装：请求权限 → 批准则执行 → 返回结果
+// executeFn 接收 decision 参数（包含 requestId 等审批信息）
 async function withPermission(toolName, input, executeFn) {
   log(`工具请求: ${toolName}`);
 
@@ -108,7 +109,7 @@ async function withPermission(toolName, input, executeFn) {
     }
 
     log(`用户允许: ${toolName}，开始执行`);
-    const result = await executeFn();
+    const result = await executeFn(decision);
     return { content: [{ type: "text", text: result }] };
   } catch (err) {
     log(`错误: ${toolName} — ${err.message}`);
@@ -346,11 +347,65 @@ server.tool(
   }
 );
 
+// 10. SendMessage
+server.tool(
+  "SendMessage",
+  "向当前聊天室发布消息，可通过 atTargets 显式召唤其他角色",
+  {
+    text: z.string().describe("消息文本内容"),
+    atTargets: z.array(z.string()).optional()
+      .describe('要召唤的角色名列表，如 ["YYF", "奇迹哥"]。只有在此列表中的角色才会被唤醒'),
+    threadId: z.string().optional()
+      .describe("关联的线程ID，不传则作为独立消息"),
+  },
+  async ({ text, atTargets, threadId }) => {
+    const permInput = { text: text.slice(0, 200) + (text.length > 200 ? "..." : "") };
+    if (atTargets?.length) permInput.atTargets = atTargets;
+
+    return withPermission("SendMessage", permInput, async (decision) => {
+      const body = JSON.stringify({
+        text,
+        atTargets: atTargets || [],
+        threadId: threadId || null,
+        requestId: decision.requestId,
+      });
+
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: "127.0.0.1",
+          port: parseInt(PORT, 10),
+          path: "/api/mcp-send-message",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+          timeout: 10_000,
+        }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => { data += chunk; });
+          res.on("end", () => {
+            try {
+              const result = JSON.parse(data);
+              resolve(result.ok ? `消息已发送 (id: ${result.messageId})` : `发送失败: ${result.error}`);
+            } catch {
+              reject(new Error(`响应解析失败: ${data}`));
+            }
+          });
+        });
+        req.on("error", (err) => reject(new Error(`无法连接服务: ${err.message}`)));
+        req.write(body);
+        req.end();
+      });
+    });
+  }
+);
+
 // ── 启动 ──────────────────────────────────────────────────
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log("MCP 工具代理服务器已启动（9 个工具已注册）");
+  log("MCP 工具代理服务器已启动（10 个工具已注册）");
 }
 
 main().catch((err) => {

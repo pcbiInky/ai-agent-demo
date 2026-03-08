@@ -100,7 +100,7 @@ const CLI_CONFIG = {
 // permission-server.js 的绝对路径（用于生成临时 MCP 配置）
 const PERMISSION_SERVER_PATH = path.join(__dirname, "permission-server.js");
 
-// MCP 代理工具名列表（与 permission-server.js 注册的 9 个工具对应）
+// MCP 代理工具名列表（与 permission-server.js 注册的 10 个工具对应）
 const MCP_TOOL_NAMES = [
   "mcp__permission__Bash",
   "mcp__permission__Read",
@@ -111,6 +111,7 @@ const MCP_TOOL_NAMES = [
   "mcp__permission__WebFetch",
   "mcp__permission__WebSearch",
   "mcp__permission__NotebookEdit",
+  "mcp__permission__SendMessage",
 ];
 
 // Trae CLI: 内置工具名列表（需要通过 --disallowed-tool 禁用）
@@ -243,7 +244,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
   // MCP 工具代理提示：告知模型必须使用 MCP Server 提供的工具
   const mcpHint = (config.supportsPermissionTool && browserSessionId)
-    ? '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit）' +
+    ? '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）' +
       '均由 MCP Server "permission" 提供。' +
       '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
       '内置工具已被禁用，不要尝试使用内置工具。'

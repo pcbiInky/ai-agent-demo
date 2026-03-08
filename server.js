@@ -32,8 +32,49 @@ const pendingPermissions = new Map();
 const sessionNicknames = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
+// browserSessionId -> Set<character>（当前聊天室的成员，按实际参与追踪）
+const sessionMembers = new Map();
+// requestId -> { browserSessionId, character, toolName, expireAt }（已批准的权限请求，一次性消费）
+const approvedRequests = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
+
+// ── 聊天室成员追踪 ──────────────────────────────────────────
+function addSessionMember(sessionId, character) {
+  if (!sessionMembers.has(sessionId)) sessionMembers.set(sessionId, new Set());
+  sessionMembers.get(sessionId).add(character);
+}
+
+function isSessionMember(sessionId, character) {
+  return sessionMembers.get(sessionId)?.has(character) || false;
+}
+
+// ── 审批记录管理（一次性消费 + TTL）────────────────────────
+const APPROVAL_TTL_MS = 30_000; // 30 秒过期
+
+function storeApproval(requestId, browserSessionId, character, toolName) {
+  approvedRequests.set(requestId, {
+    browserSessionId,
+    character,
+    toolName,
+    expireAt: Date.now() + APPROVAL_TTL_MS,
+  });
+  // 自动清理过期记录
+  setTimeout(() => approvedRequests.delete(requestId), APPROVAL_TTL_MS);
+}
+
+function consumeApproval(requestId, requiredToolName) {
+  const record = approvedRequests.get(requestId);
+  if (!record) return null;
+  if (record.expireAt < Date.now()) {
+    approvedRequests.delete(requestId);
+    return null;
+  }
+  if (record.toolName !== requiredToolName) return null;
+  // 一次性消费
+  approvedRequests.delete(requestId);
+  return record;
+}
 
 // ── 中间件 ────────────────────────────────────────────────
 app.use(express.json());
@@ -99,8 +140,14 @@ app.post("/api/permission-request", (req, res) => {
 
   console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId}) messageId=${thinkingMessageId}`);
 
-  if (shouldAutoAllowPermission(toolName, input)) {
+  const permContext = {
+    isChatMember: isSessionMember(browserSessionId, character),
+  };
+
+  if (shouldAutoAllowPermission(toolName, input, permContext)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
+    // 存储审批记录（供 /api/mcp-send-message 校验身份）
+    storeApproval(requestId, browserSessionId, character, toolName);
     // 先发 permission 事件让前端创建卡片（用户能看到 AI 在做什么）
     emitSSE(browserSessionId, "permission", {
       requestId,
@@ -116,7 +163,7 @@ app.post("/api/permission-request", (req, res) => {
       behavior: "allow",
       message: "安全命令默认授权",
     });
-    return res.json({ behavior: "allow", message: "安全命令默认授权" });
+    return res.json({ behavior: "allow", message: "安全命令默认授权", requestId });
   }
 
   // 通过 SSE 通知前端
@@ -143,7 +190,7 @@ app.post("/api/permission-request", (req, res) => {
       resolve({ behavior: "deny", message: "权限请求超时，自动拒绝" });
     }, PERMISSION_TIMEOUT_MS);
 
-    pendingPermissions.set(requestId, { resolve, timer, browserSessionId });
+    pendingPermissions.set(requestId, { resolve, timer, browserSessionId, character, toolName });
   });
 
   // 等待用户决定后返回给 MCP server
@@ -178,10 +225,16 @@ app.post("/api/permission-response", (req, res) => {
     message: message || (behavior === "allow" ? "已允许" : "已拒绝"),
   });
 
+  // 如果批准，存储审批记录（供 /api/mcp-send-message 等后续调用校验身份）
+  if (behavior === "allow" && pending.toolName) {
+    storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName);
+  }
+
   // 返回给 MCP server
   pending.resolve({
     behavior,
     ...(message && { message }),
+    requestId,
   });
 
   res.json({ ok: true });
@@ -216,6 +269,11 @@ app.post("/api/chat", (req, res) => {
     mentions: mentions.map((m) => m.character),
     timestamp: Date.now(),
   });
+
+  // 将被@的角色加入聊天室成员
+  for (const { character } of mentions) {
+    addSessionMember(sessionId, character);
+  }
 
   // 立即返回，后台异步处理
   res.json({ messageId, mentions });
@@ -477,6 +535,131 @@ function parseAIMentions(text) {
   return [...found];
 }
 
+// ── AI 互@ 统一调度 ──────────────────────────────────────
+/**
+ * 统一的 AI 召唤调度函数，processAIChain 和 /api/mcp-send-message 共用。
+ * 负责：串行 invoke 被召唤角色 → 等待回复 → 递归处理 → follow-up。
+ * @param {string} sessionId - 浏览器会话 ID
+ * @param {string} fromCharacter - 发起召唤的角色
+ * @param {string[]} aiMentions - 被召唤的角色列表（已去重、已排除 self）
+ * @param {string} messageId - 原始用户消息 ID（reply 的锚点）
+ * @param {string} threadId - 线程 ID
+ * @param {number} depth - 当前深度
+ * @param {object} chainCounter - { count: number } 共享计数器
+ * @param {string} sourceMessageId - 触发召唤的消息 ID（用于 ai-mention 事件）
+ */
+async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageId, threadId, depth, chainCounter, sourceMessageId) {
+  for (const targetChar of aiMentions) {
+    if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
+      emitSSE(sessionId, "system-notice", {
+        text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
+        threadId,
+      });
+      break;
+    }
+    chainCounter.count++;
+
+    // 被召唤的角色加入聊天室成员
+    addSessionMember(sessionId, targetChar);
+
+    const targetConfig = CHARACTERS[targetChar];
+    const contextPrompt = buildContextPrompt(
+      sessionId,
+      `${fromCharacter} 在聊天中提到了你，请查看最近的聊天记录并回应。`,
+      targetChar,
+      { depth: depth + 1, fromCharacter }
+    );
+
+    // 通知前端：AI 发起了召唤
+    emitSSE(sessionId, "ai-mention", {
+      from: fromCharacter,
+      to: targetChar,
+      threadId,
+      sourceMessageId,
+    });
+
+    emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId });
+    activeThinking.set(`${sessionId}:${targetChar}`, messageId);
+
+    // 等待被@角色的回复
+    await new Promise((resolve) => {
+      enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
+        setCharStatus(sessionId, targetChar, "online");
+        activeThinking.delete(`${sessionId}:${targetChar}`);
+        removeThinking(sessionId, targetChar, messageId);
+        await processAIChain(sessionId, targetChar, targetResult, messageId, threadId, depth + 1, chainCounter);
+        resolve();
+      }, (err) => {
+        setCharStatus(sessionId, targetChar, "online");
+        activeThinking.delete(`${sessionId}:${targetChar}`);
+        removeThinking(sessionId, targetChar, messageId);
+        emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
+        appendToLog(sessionId, {
+          id: crypto.randomUUID(),
+          role: "error",
+          character: targetChar,
+          error: err.message,
+          replyTo: messageId,
+          timestamp: Date.now(),
+          threadId,
+          depth: depth + 1,
+        });
+        resolve();
+      });
+    });
+  }
+
+  // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
+  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
+    chainCounter.count++;
+    const followUpPrompt = buildContextPrompt(
+      sessionId,
+      `你之前在回复中@了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。不要再@其他角色。`,
+      fromCharacter,
+      { depth: 1 }
+    );
+
+    emitSSE(sessionId, "thinking", { character: fromCharacter, messageId, threadId });
+    activeThinking.set(`${sessionId}:${fromCharacter}`, messageId);
+
+    await new Promise((resolve) => {
+      enqueueInvoke(sessionId, CHARACTERS[fromCharacter].cli, followUpPrompt, fromCharacter, (followResult) => {
+        setCharStatus(sessionId, fromCharacter, "online");
+        activeThinking.delete(`${sessionId}:${fromCharacter}`);
+        removeThinking(sessionId, fromCharacter, messageId);
+        const followId = crypto.randomUUID();
+        appendToLog(sessionId, {
+          id: followId,
+          role: "assistant",
+          character: fromCharacter,
+          text: followResult.text,
+          replyTo: messageId,
+          timestamp: Date.now(),
+          ...(followResult.verified !== undefined && { verified: followResult.verified }),
+          threadId,
+          depth: 1,
+        });
+        emitSSE(sessionId, "reply", {
+          character: fromCharacter,
+          messageId,
+          replyId: followId,
+          text: followResult.text,
+          ...(followResult.verified !== undefined && { verified: followResult.verified }),
+          threadId,
+          depth: 1,
+        });
+        resolve();
+      }, (err) => {
+        setCharStatus(sessionId, fromCharacter, "online");
+        activeThinking.delete(`${sessionId}:${fromCharacter}`);
+        removeThinking(sessionId, fromCharacter, messageId);
+        emitSSE(sessionId, "error", { character: fromCharacter, messageId, error: err.message, threadId });
+        resolve();
+      });
+    });
+  }
+}
+
 // ── AI 互@ 链式处理 ──────────────────────────────────────
 async function processAIChain(sessionId, character, result, messageId, threadId, depth, chainCounter) {
   // 保存 AI 回复
@@ -520,113 +703,8 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
   // depth 超限或无 mentions 则停止
   if (depth >= MAX_DEPTH || !hasAIMentions) return;
 
-  // 串行处理被 AI @的每个角色
-  for (const targetChar of aiMentions) {
-    if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
-      emitSSE(sessionId, "system-notice", {
-        text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
-        threadId: activeThreadId,
-      });
-      break;
-    }
-    chainCounter.count++;
-
-    const targetConfig = CHARACTERS[targetChar];
-    const contextPrompt = buildContextPrompt(
-      sessionId,
-      `${character} 在聊天中提到了你，请查看最近的聊天记录并回应。`,
-      targetChar,
-      { depth: depth + 1, fromCharacter: character }
-    );
-
-    // 通知前端：AI 发起了召唤
-    emitSSE(sessionId, "ai-mention", {
-      from: character,
-      to: targetChar,
-      threadId: activeThreadId,
-      sourceMessageId: replyId,
-    });
-
-    emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId: activeThreadId });
-    activeThinking.set(`${sessionId}:${targetChar}`, messageId);
-
-    // 等待被@角色的回复
-    await new Promise((resolve) => {
-      enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
-        setCharStatus(sessionId, targetChar, "online");
-        activeThinking.delete(`${sessionId}:${targetChar}`);
-        removeThinking(sessionId, targetChar, messageId);
-        await processAIChain(sessionId, targetChar, targetResult, messageId, activeThreadId, depth + 1, chainCounter);
-        resolve();
-      }, (err) => {
-        setCharStatus(sessionId, targetChar, "online");
-        activeThinking.delete(`${sessionId}:${targetChar}`);
-        removeThinking(sessionId, targetChar, messageId);
-        emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId: activeThreadId });
-        appendToLog(sessionId, {
-          id: crypto.randomUUID(),
-          role: "error",
-          character: targetChar,
-          error: err.message,
-          replyTo: messageId,
-          timestamp: Date.now(),
-          threadId: activeThreadId,
-          depth: depth + 1,
-        });
-        resolve();
-      });
-    });
-  }
-
-  // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
-  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
-    chainCounter.count++;
-    const followUpPrompt = buildContextPrompt(
-      sessionId,
-      `你之前在回复中@了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。不要再@其他角色。`,
-      character,
-      { depth: 1 }
-    );
-
-    emitSSE(sessionId, "thinking", { character, messageId, threadId: activeThreadId });
-    activeThinking.set(`${sessionId}:${character}`, messageId);
-
-    await new Promise((resolve) => {
-      enqueueInvoke(sessionId, CHARACTERS[character].cli, followUpPrompt, character, (followResult) => {
-        setCharStatus(sessionId, character, "online");
-        activeThinking.delete(`${sessionId}:${character}`);
-        removeThinking(sessionId, character, messageId);
-        const followId = crypto.randomUUID();
-        appendToLog(sessionId, {
-          id: followId,
-          role: "assistant",
-          character,
-          text: followResult.text,
-          replyTo: messageId,
-          timestamp: Date.now(),
-          ...(followResult.verified !== undefined && { verified: followResult.verified }),
-          threadId: activeThreadId,
-          depth: 1,
-        });
-        emitSSE(sessionId, "reply", {
-          character,
-          messageId,
-          replyId: followId,
-          text: followResult.text,
-          ...(followResult.verified !== undefined && { verified: followResult.verified }),
-          threadId: activeThreadId,
-          depth: 1,
-        });
-        resolve();
-      }, (err) => {
-        setCharStatus(sessionId, character, "online");
-        activeThinking.delete(`${sessionId}:${character}`);
-        removeThinking(sessionId, character, messageId);
-        emitSSE(sessionId, "error", { character, messageId, error: err.message, threadId: activeThreadId });
-        resolve();
-      });
-    });
-  }
+  // 委托统一调度函数处理召唤链
+  await dispatchAIMentions(sessionId, character, aiMentions, messageId, activeThreadId, depth, chainCounter, replyId);
 }
 
 // ── 辅助：更新已写入的消息字段 ───────────────────────────
@@ -650,6 +728,72 @@ function setCharStatus(sessionId, character, status) {
 function removeThinking(sessionId, character, messageId) {
   // 前端通过 reply/error 事件自动移除 thinking
 }
+
+// ── API: MCP SendMessage（AI 主动向聊天室发消息）───────────
+app.post("/api/mcp-send-message", (req, res) => {
+  const { text, atTargets, threadId, requestId } = req.body;
+
+  if (!text || !requestId) {
+    return res.status(400).json({ error: "text 和 requestId 不能为空" });
+  }
+
+  if (text.length > 5000) {
+    return res.status(400).json({ error: "消息长度不能超过 5000 字符" });
+  }
+
+  // 从已批准的审批记录中获取可信的身份信息（一次性消费 + toolName 绑定）
+  const approval = consumeApproval(requestId, "SendMessage");
+  if (!approval) {
+    return res.status(403).json({ error: "无效、已过期或已使用的审批记录" });
+  }
+
+  const { browserSessionId, character } = approval;
+
+  // 验证角色合法性
+  if (!CHARACTERS[character]) {
+    return res.status(400).json({ error: `未知角色: ${character}` });
+  }
+
+  const messageId = crypto.randomUUID();
+
+  // aiMentions 完全由 atTargets 决定，不从 text 中正则匹配
+  const aiMentions = (atTargets || []).filter(t =>
+    CHARACTERS[t] && t !== character  // 排除自己，只允许合法角色
+  );
+
+  // 确定线程 ID
+  const activeThreadId = threadId || (aiMentions.length > 0 ? messageId : null);
+
+  appendToLog(browserSessionId, {
+    id: messageId,
+    role: "assistant",
+    character,
+    text,
+    timestamp: Date.now(),
+    source: "mcp-tool",
+    ...(activeThreadId && { threadId: activeThreadId }),
+    ...(aiMentions.length > 0 && { aiMentions }),
+  });
+
+  emitSSE(browserSessionId, "reply", {
+    character,
+    replyId: messageId,
+    text,
+    source: "mcp-tool",
+    ...(activeThreadId && { threadId: activeThreadId }),
+    ...(aiMentions.length > 0 && { aiMentions }),
+  });
+
+  res.json({ ok: true, messageId });
+
+  // 如果有 atTargets，异步触发 AI 召唤链
+  if (aiMentions.length > 0) {
+    const chainCounter = { count: 0 };
+    // depth=0 表示这是一个新的召唤起点（类似用户 @ 触发的 depth=0）
+    dispatchAIMentions(browserSessionId, character, aiMentions, messageId, activeThreadId, 0, chainCounter, messageId)
+      .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
+  }
+});
 
 // ── 启动服务 ──────────────────────────────────────────────
 // 服务启动时统一注册 Trae / Codex 的 MCP permission 服务器
