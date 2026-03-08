@@ -18,6 +18,7 @@ const CHARACTERS = {
 // ── AI 互@ 链式调用限制 ──────────────────────────────────
 const MAX_AI_CHAIN_CALLS = 5;  // 每轮用户消息最多触发的 AI→AI 交互次数
 const MAX_DEPTH = 2;           // 最大唤醒深度（depth=0: 用户@, depth=1: AI@, depth=2: 被AI@的回复，不能再@）
+const ENFORCE_MCP_SENDMESSAGE = process.env.ENFORCE_MCP_SENDMESSAGE !== "false";
 
 // ── 状态管理 ──────────────────────────────────────────────
 // browserSessionId:cli -> CLI 返回的真实 sessionId
@@ -36,6 +37,8 @@ const activeThinking = new Map();
 const sessionMembers = new Map();
 // requestId -> { browserSessionId, character, toolName, expireAt }（已批准的权限请求，一次性消费）
 const approvedRequests = new Map();
+// browserSessionId:character -> number（该角色在当前会话通过 MCP SendMessage 成功发消息次数）
+const mcpSendCounts = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -47,6 +50,17 @@ function addSessionMember(sessionId, character) {
 
 function isSessionMember(sessionId, character) {
   return sessionMembers.get(sessionId)?.has(character) || false;
+}
+
+function getMcpSendCount(sessionId, character) {
+  return mcpSendCounts.get(`${sessionId}:${character}`) || 0;
+}
+
+function markMcpSend(sessionId, character) {
+  const key = `${sessionId}:${character}`;
+  const next = getMcpSendCount(sessionId, character) + 1;
+  mcpSendCounts.set(key, next);
+  return next;
 }
 
 // ── 审批记录管理（一次性消费 + TTL）────────────────────────
@@ -260,6 +274,8 @@ app.post("/api/chat", (req, res) => {
   }
 
   const messageId = crypto.randomUUID();
+  const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  markMcpSend(browserSessionId, character);
 
   // 保存用户消息
   appendToLog(sessionId, {
@@ -420,12 +436,15 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
 
   const next = prev.then(async () => {
     const cliSessionId = cliSessions.get(key);
+    const sendCountBefore = getMcpSendCount(browserSessionId, character);
     try {
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
         verify: true,
         browserSessionId,
         character,
       });
+      const sendCountAfter = getMcpSendCount(browserSessionId, character);
+      result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
       cliSessions.set(key, result.sessionId);
       onResult(result);
     } catch (err) {
@@ -610,7 +629,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
   }
 
   // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
-  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
+  if (!ENFORCE_MCP_SENDMESSAGE && depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
     chainCounter.count++;
     const followUpPrompt = buildContextPrompt(
       sessionId,
@@ -662,6 +681,24 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
 
 // ── AI 互@ 链式处理 ──────────────────────────────────────
 async function processAIChain(sessionId, character, result, messageId, threadId, depth, chainCounter) {
+  if (ENFORCE_MCP_SENDMESSAGE) {
+    if (!result.usedMcpSendMessage) {
+      const errorMsg = "协议违规：本轮未通过 mcp__permission__SendMessage 发送消息";
+      emitSSE(sessionId, "error", { character, messageId, error: errorMsg, ...(threadId && { threadId }) });
+      appendToLog(sessionId, {
+        id: crypto.randomUUID(),
+        role: "error",
+        character,
+        error: errorMsg,
+        replyTo: messageId,
+        timestamp: Date.now(),
+        ...(threadId && { threadId }),
+        ...(depth > 0 && { depth }),
+      });
+    }
+    return;
+  }
+
   // 保存 AI 回复
   const replyId = crypto.randomUUID();
   const aiMentions = depth < MAX_DEPTH ? parseAIMentions(result.text).filter(c => c !== character) : [];
@@ -769,6 +806,7 @@ app.post("/api/mcp-send-message", (req, res) => {
     role: "assistant",
     character,
     text,
+    ...(replyToMessageId && { replyTo: replyToMessageId }),
     timestamp: Date.now(),
     source: "mcp-tool",
     ...(activeThreadId && { threadId: activeThreadId }),
@@ -777,6 +815,7 @@ app.post("/api/mcp-send-message", (req, res) => {
 
   emitSSE(browserSessionId, "reply", {
     character,
+    ...(replyToMessageId && { messageId: replyToMessageId }),
     replyId: messageId,
     text,
     source: "mcp-tool",

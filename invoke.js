@@ -247,7 +247,9 @@ function invoke(cli, prompt, sessionId, options = {}) {
     ? '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）' +
       '均由 MCP Server "permission" 提供。' +
       '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
-      '内置工具已被禁用，不要尝试使用内置工具。'
+      '内置工具已被禁用，不要尝试使用内置工具。' +
+      '你的最终对外回复必须调用 mcp__permission__SendMessage 发送，不要直接输出正文。' +
+      '如需召唤其他角色，请在 SendMessage 的 atTargets 参数中显式给出角色名列表。'
     : null;
 
   if (mcpHint) {
