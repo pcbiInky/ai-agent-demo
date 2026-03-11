@@ -31,6 +31,8 @@ const sseClients = new Map();
 const pendingPermissions = new Map();
 // browserSessionId -> { characterName: displayName }（用户设置的昵称映射）
 const sessionNicknames = new Map();
+// browserSessionId -> { characterName: modelName }（用户设置的模型映射）
+const sessionModels = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
 // browserSessionId -> Set<character>（当前聊天室的成员，按实际参与追踪）
@@ -256,7 +258,7 @@ app.post("/api/permission-response", (req, res) => {
 
 // ── API: 发送消息 ─────────────────────────────────────────
 app.post("/api/chat", (req, res) => {
-  const { text, sessionId, nicknames } = req.body;
+  const { text, sessionId, nicknames, models } = req.body;
   if (!text || !sessionId) {
     return res.status(400).json({ error: "text 和 sessionId 不能为空" });
   }
@@ -264,6 +266,11 @@ app.post("/api/chat", (req, res) => {
   // 保存用户设置的昵称映射
   if (nicknames && typeof nicknames === "object") {
     sessionNicknames.set(sessionId, nicknames);
+  }
+
+  // 保存用户设置的模型映射
+  if (models && typeof models === "object") {
+    sessionModels.set(sessionId, models);
   }
 
   const mentions = parseMentions(text);
@@ -274,8 +281,6 @@ app.post("/api/chat", (req, res) => {
   }
 
   const messageId = crypto.randomUUID();
-  const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
-  markMcpSend(browserSessionId, character);
 
   // 保存用户消息
   appendToLog(sessionId, {
@@ -434,6 +439,10 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   const key = `${browserSessionId}:${cli}`;
   const prev = invokeQueues.get(key) || Promise.resolve();
 
+  // 查找用户设置的模型（仅对支持的 CLI 生效）
+  const models = sessionModels.get(browserSessionId) || {};
+  const model = models[character] || undefined;
+
   const next = prev.then(async () => {
     const cliSessionId = cliSessions.get(key);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
@@ -442,6 +451,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
         verify: true,
         browserSessionId,
         character,
+        model,
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
@@ -785,7 +795,8 @@ app.post("/api/mcp-send-message", (req, res) => {
   }
 
   const { browserSessionId, character } = approval;
-
+  const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  markMcpSend(browserSessionId, character);
   // 验证角色合法性
   if (!CHARACTERS[character]) {
     return res.status(400).json({ error: `未知角色: ${character}` });

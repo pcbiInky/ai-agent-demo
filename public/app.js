@@ -21,7 +21,7 @@ const state = {
   messageElements: {},
 };
 
-const PROFILE_STORAGE_KEY = "characterProfilesV1";
+const PROFILE_STORAGE_KEY = "characterProfilesV2";
 const BOTTOM_THRESHOLD_PX = 40;
 
 // ── DOM 元素 ──────────────────────────────────────────────
@@ -195,6 +195,11 @@ async function sendMessage() {
               .filter(c => getDisplayName(c) !== c)
               .map(c => [c, getDisplayName(c)])
           ),
+          models: Object.fromEntries(
+            Object.keys(state.characters)
+              .filter(c => state.profiles[c]?.model)
+              .map(c => [c, state.profiles[c].model])
+          ),
         }),
     });
 
@@ -236,6 +241,8 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
   const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
+  const model = state.profiles[character]?.model;
+  const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
   let verifiedHtml = "";
@@ -254,7 +261,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
         ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
-      <div class="msg-model">${cli}</div>
+      <div class="msg-model">${modelLabel}</div>
     </div>
   `;
   $messages.appendChild(div);
@@ -287,6 +294,8 @@ function appendThreadReply(data) {
   const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
+  const model = state.profiles[character]?.model;
+  const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
   // 更新 thread 数据（避免 loadHistory 时重复 push）
@@ -334,7 +343,7 @@ function appendThreadReply(data) {
         ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(displayMentions(text))}</div>
-      <div class="msg-model">${cli}</div>
+      <div class="msg-model">${modelLabel}</div>
     </div>
   `;
   $messages.appendChild(div);
@@ -466,6 +475,8 @@ function buildThreadMessage(character, text, isReply, verified) {
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
   const cli = state.characters[character]?.cli || "";
+  const model = state.profiles[character]?.model;
+  const modelLabel = model ? `${cli} · ${model}` : cli;
 
   let verifiedHtml = "";
   if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
@@ -481,7 +492,7 @@ function buildThreadMessage(character, text, isReply, verified) {
         ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
-      <div class="msg-model">${cli}</div>
+      <div class="msg-model">${modelLabel}</div>
     </div>
   `;
   return div;
@@ -786,7 +797,7 @@ function renderCharStatuses() {
     div.className = "char-status";
     div.innerHTML = `
       <div class="status-dot ${dotClass}"></div>
-      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(getDisplayName(name))} (${config.cli})</span>
+      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(getDisplayName(name))} (${state.profiles[name]?.model ? config.cli + ' · ' + state.profiles[name].model : config.cli})</span>
       <span class="char-status-label">${label}</span>
     `;
     $charStatuses.appendChild(div);
@@ -1042,18 +1053,24 @@ function renderMarkdown(text) {
 })();
 
 function initProfiles() {
-  const saved = (() => {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
+  } catch { /* ignore */ }
+
+  // 从 V1 迁移（V1 只有 nickname）
+  if (Object.keys(saved).length === 0) {
     try {
-      return JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
-    } catch {
-      return {};
-    }
-  })();
+      const v1 = JSON.parse(localStorage.getItem("characterProfilesV1") || "{}");
+      if (Object.keys(v1).length > 0) saved = v1;
+    } catch { /* ignore */ }
+  }
 
   state.profiles = {};
   for (const [character] of Object.entries(state.characters)) {
     const nickname = String(saved[character]?.nickname || character).trim() || character;
-    state.profiles[character] = { nickname };
+    const model = String(saved[character]?.model || "").trim();
+    state.profiles[character] = { nickname, model };
   }
 }
 
@@ -1113,15 +1130,16 @@ function setupSettings() {
     }
   });
   $settingsSaveBtn.addEventListener("click", () => {
-    const rows = $settingsForm.querySelectorAll(".setting-row");
+    const rows = $settingsForm.querySelectorAll(".setting-row[data-character]");
     const nextProfiles = {};
     const nicknameMap = new Map();
     for (const row of rows) {
       const character = row.getAttribute("data-character");
       const nickname = row.querySelector(".nickname-input")?.value?.trim();
+      const model = row.querySelector(".model-input")?.value?.trim() || "";
       if (!character) continue;
       const safeName = nickname || character;
-      nextProfiles[character] = { nickname: safeName };
+      nextProfiles[character] = { nickname: safeName, model };
 
       const key = safeName.toLocaleLowerCase();
       if (!nicknameMap.has(key)) nicknameMap.set(key, []);
@@ -1149,13 +1167,23 @@ function setupSettings() {
 
 function renderSettingsForm() {
   $settingsForm.innerHTML = "";
+  // 表头
+  const header = document.createElement("div");
+  header.className = "setting-row";
+  header.style.cssText = "font-size:12px;color:var(--text-light);font-weight:500;";
+  header.innerHTML = `<div>CLI</div><div>昵称</div><div>模型</div>`;
+  $settingsForm.appendChild(header);
+
   for (const [character, config] of Object.entries(state.characters)) {
+    const currentModel = state.profiles[character]?.model || "";
+    const isTraeCli = config.cli === "trae";
     const row = document.createElement("div");
     row.className = "setting-row";
     row.setAttribute("data-character", character);
     row.innerHTML = `
       <div class="setting-cli">${config.cli}</div>
       <input class="nickname-input" type="text" value="${escapeHtml(getDisplayName(character))}" placeholder="昵称">
+      <input class="model-input" type="text" value="${escapeHtml(currentModel)}" placeholder="${isTraeCli ? "例如 glm-5" : "暂不支持"}" ${isTraeCli ? "" : "disabled"}>
     `;
     $settingsForm.appendChild(row);
   }

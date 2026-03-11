@@ -543,7 +543,7 @@ html, body {
 }
 .setting-row {
   display: grid;
-  grid-template-columns: 92px 1fr;
+  grid-template-columns: 92px 1fr 1fr;
   gap: 8px;
   align-items: center;
 }
@@ -556,6 +556,11 @@ html, body {
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 13px;
+}
+.setting-row input:disabled {
+  background: #f3f3f3;
+  color: var(--text-light);
+  cursor: not-allowed;
 }
 .modal-actions {
   margin-top: 14px;
@@ -985,7 +990,7 @@ html, body {
   #app { grid-template-columns: 1fr; }
   #sidebar-left, #sidebar-right { display: none; }
   #settings-btn { left: 12px; bottom: 12px; }
-  .setting-row { grid-template-columns: 1fr; }
+  .setting-row { grid-template-columns: 1fr 1fr; }
 }
 @media (min-width: 901px) and (max-width: 1100px) {
   #app { grid-template-columns: 200px 1fr; }

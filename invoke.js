@@ -217,7 +217,7 @@ function cleanupMcpRegistrations() {
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
-  const { timeoutMs = 600_000, verify = false, browserSessionId, character } = options;
+  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model } = options;
 
   const config = CLI_CONFIG[cli];
   if (!config) {
@@ -292,6 +292,14 @@ function invoke(cli, prompt, sessionId, options = {}) {
   
   // 添加 CLI 特有参数
   args.push(...config.extraArgs);
+
+  // ── 模型覆盖：按角色注入模型参数 ──
+  if (model) {
+    if (cli === "trae") {
+      args.push("-c", `model.name=${model}`);
+    }
+    // claude / codex 暂不支持运行时模型切换，预留扩展位
+  }
 
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
   // Trae / Codex 的 MCP server 在服务启动时已通过 initMcpRegistrations() 注册
