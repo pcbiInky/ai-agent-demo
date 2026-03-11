@@ -1,0 +1,4 @@
+[submodule "chat-logs"]
+	path = chat-logs
+	url = https://github.com/pcbiInky/ai-agent-chat-logs.git
+	branch = master
