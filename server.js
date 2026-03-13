@@ -3,17 +3,57 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
+const roleStore = require("./role-system/roles");
+const sessionStore = require("./role-system/sessions");
+const { ensureRoleSystemInitialized } = require("./role-system/migrations");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
-// ── 角色配置 ──────────────────────────────────────────────
-const CHARACTERS = {
-  Faker: { cli: "claude", avatar: "F" },
-  奇迹哥: { cli: "trae", avatar: "奇" },
-  YYF: { cli: "codex", avatar: "Y" },
-};
+// ── 角色系统初始化 ────────────────────────────────────────
+const legacyNameMap = ensureRoleSystemInitialized();
+
+/**
+ * 获取所有活跃角色（未归档），返回 { name -> { cli, avatar, id } } 格式
+ * 兼容旧代码中 CHARACTERS 的用法
+ */
+function getActiveRoles() {
+  const roles = roleStore.listRoles();
+  const result = {};
+  for (const role of roles) {
+    result[role.name] = { cli: role.cli, avatar: role.avatar, id: role.id };
+  }
+  return result;
+}
+
+/**
+ * 获取所有角色（含归档），同样格式
+ */
+function getAllRoles() {
+  const roles = roleStore.listRoles({ includeArchived: true });
+  const result = {};
+  for (const role of roles) {
+    result[role.name] = { cli: role.cli, avatar: role.avatar, id: role.id, archived: role.archived };
+  }
+  return result;
+}
+
+/**
+ * 按角色名查找角色配置（兼容旧消息中的 character 字段）
+ */
+function getRoleConfig(characterName) {
+  // 先查当前角色
+  const role = roleStore.getRoleByName(characterName);
+  if (role) return { cli: role.cli, avatar: role.avatar, id: role.id, name: role.name };
+  // 再查 legacyNameMap
+  const roleId = legacyNameMap[characterName];
+  if (roleId) {
+    const legacyRole = roleStore.getRoleById(roleId);
+    if (legacyRole) return { cli: legacyRole.cli, avatar: legacyRole.avatar, id: legacyRole.id, name: legacyRole.name };
+  }
+  return null;
+}
 
 // ── AI 互@ 链式调用限制 ──────────────────────────────────
 const MAX_AI_CHAIN_CALLS = 5;  // 每轮用户消息最多触发的 AI→AI 交互次数
@@ -21,22 +61,14 @@ const MAX_DEPTH = 2;           // 最大唤醒深度（depth=0: 用户@, depth=1
 const ENFORCE_MCP_SENDMESSAGE = process.env.ENFORCE_MCP_SENDMESSAGE !== "false";
 
 // ── 状态管理 ──────────────────────────────────────────────
-// browserSessionId:cli -> CLI 返回的真实 sessionId
-const cliSessions = new Map();
-// browserSessionId:cli -> Promise 链（串行队列）
+// browserSessionId:roleId -> Promise 链（串行队列）
 const invokeQueues = new Map();
 // browserSessionId -> Set<Response>（SSE 客户端）
 const sseClients = new Map();
 // requestId -> { resolve, timer, data }（等待用户审批的权限请求）
 const pendingPermissions = new Map();
-// browserSessionId -> { characterName: displayName }（用户设置的昵称映射）
-const sessionNicknames = new Map();
-// browserSessionId -> { characterName: modelName }（用户设置的模型映射）
-const sessionModels = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
-// browserSessionId -> Set<character>（当前聊天室的成员，按实际参与追踪）
-const sessionMembers = new Map();
 // requestId -> { browserSessionId, character, toolName, expireAt }（已批准的权限请求，一次性消费）
 const approvedRequests = new Map();
 // browserSessionId:character -> number（该角色在当前会话通过 MCP SendMessage 成功发消息次数）
@@ -44,14 +76,19 @@ const mcpSendCounts = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
-// ── 聊天室成员追踪 ──────────────────────────────────────────
+// ── 聊天室成员追踪（委托到 sessionStore）──────────────────
 function addSessionMember(sessionId, character) {
-  if (!sessionMembers.has(sessionId)) sessionMembers.set(sessionId, new Set());
-  sessionMembers.get(sessionId).add(character);
+  const role = getRoleConfig(character);
+  if (role) {
+    sessionStore.inviteToSession(sessionId, role.id);
+  }
 }
 
 function isSessionMember(sessionId, character) {
-  return sessionMembers.get(sessionId)?.has(character) || false;
+  const role = getRoleConfig(character);
+  if (!role) return false;
+  const members = sessionStore.getSessionMembers(sessionId);
+  return members.includes(role.id);
 }
 
 function getMcpSendCount(sessionId, character) {
@@ -96,13 +133,87 @@ function consumeApproval(requestId, requiredToolName) {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ── API: 角色列表 ─────────────────────────────────────────
+// ── API: 角色列表（兼容旧前端 + 新前端）─────────────────
 app.get("/api/characters", (_req, res) => {
+  const roles = roleStore.listRoles({ includeArchived: true });
   const result = {};
-  for (const [name, config] of Object.entries(CHARACTERS)) {
-    result[name] = { cli: config.cli, avatar: config.avatar };
+  for (const role of roles) {
+    result[role.name] = { cli: role.cli, avatar: role.avatar, id: role.id, archived: role.archived, model: role.model };
   }
   res.json({ characters: result });
+});
+
+// ── API: 角色 CRUD ────────────────────────────────────────
+app.get("/api/roles", (_req, res) => {
+  const roles = roleStore.listRoles({ includeArchived: true });
+  res.json({ roles });
+});
+
+app.post("/api/roles", async (req, res) => {
+  try {
+    const role = await roleStore.createRole(req.body);
+    res.json({ role });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.patch("/api/roles/:roleId", async (req, res) => {
+  try {
+    const role = await roleStore.updateRole(req.params.roleId, req.body);
+    res.json({ role });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/roles/:roleId/archive", async (req, res) => {
+  try {
+    const role = await roleStore.archiveRole(req.params.roleId);
+    res.json({ role });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/roles/:roleId/restore", async (req, res) => {
+  try {
+    const role = await roleStore.restoreRole(req.params.roleId);
+    res.json({ role });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ── API: 会话成员 ─────────────────────────────────────────
+app.get("/api/sessions/:sessionId/members", (req, res) => {
+  const memberIds = sessionStore.getSessionMembers(req.params.sessionId);
+  const members = memberIds.map(id => roleStore.getRoleById(id)).filter(Boolean);
+  res.json({ members });
+});
+
+app.post("/api/sessions/:sessionId/members/:roleId/invite", (req, res) => {
+  const role = roleStore.getRoleById(req.params.roleId);
+  if (!role) return res.status(404).json({ error: "角色不存在" });
+  if (role.archived) return res.status(400).json({ error: "已归档角色不可邀请" });
+  sessionStore.inviteToSession(req.params.sessionId, req.params.roleId);
+  res.json({ ok: true });
+});
+
+app.delete("/api/sessions/:sessionId/members/:roleId", (req, res) => {
+  sessionStore.removeFromSession(req.params.sessionId, req.params.roleId);
+  res.json({ ok: true });
+});
+
+// ── API: 创建会话（带成员选择）───────────────────────────
+app.post("/api/sessions", (req, res) => {
+  const { sessionId, memberIds } = req.body;
+  if (!sessionId) return res.status(400).json({ error: "sessionId 不能为空" });
+
+  // 默认加入所有未归档角色
+  const defaultIds = memberIds || roleStore.listRoles().map(r => r.id);
+  sessionStore.getOrCreateSession(sessionId, defaultIds);
+  res.json({ ok: true, sessionId });
 });
 
 // ── API: SSE 事件流 ───────────────────────────────────────
@@ -258,25 +369,20 @@ app.post("/api/permission-response", (req, res) => {
 
 // ── API: 发送消息 ─────────────────────────────────────────
 app.post("/api/chat", (req, res) => {
-  const { text, sessionId, nicknames, models } = req.body;
+  const { text, sessionId } = req.body;
   if (!text || !sessionId) {
     return res.status(400).json({ error: "text 和 sessionId 不能为空" });
   }
 
-  // 保存用户设置的昵称映射
-  if (nicknames && typeof nicknames === "object") {
-    sessionNicknames.set(sessionId, nicknames);
-  }
-
-  // 保存用户设置的模型映射
-  if (models && typeof models === "object") {
-    sessionModels.set(sessionId, models);
-  }
+  // 确保会话存在（如果是旧会话没有 session 文件，用所有未归档角色初始化）
+  const allActiveIds = roleStore.listRoles().map(r => r.id);
+  sessionStore.getOrCreateSession(sessionId, allActiveIds);
 
   const mentions = parseMentions(text);
   if (mentions.length === 0) {
+    const activeRoles = getActiveRoles();
     return res.status(400).json({
-      error: "未找到有效的 @mention，可用角色: " + Object.keys(CHARACTERS).join(", "),
+      error: "未找到有效的 @mention，可用角色: " + Object.keys(activeRoles).join(", "),
     });
   }
 
@@ -304,7 +410,8 @@ app.post("/api/chat", (req, res) => {
 
   (async () => {
     for (const { character, prompt } of mentions) {
-      const config = CHARACTERS[character];
+      const config = getRoleConfig(character);
+      if (!config) continue;
       const contextPrompt = buildContextPrompt(sessionId, prompt, character, { depth: 0 });
 
       emitSSE(sessionId, "thinking", { character, messageId });
@@ -379,7 +486,7 @@ app.get("/api/sessions", (_req, res) => {
 
 // ── @mention 解析 ─────────────────────────────────────────
 function parseMentions(text) {
-  const names = Object.keys(CHARACTERS).sort((a, b) => b.length - a.length);
+  const names = Object.keys(getActiveRoles()).sort((a, b) => b.length - a.length);
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
 
@@ -436,26 +543,32 @@ function parseMentions(text) {
 
 // ── invoke 串行队列 ───────────────────────────────────────
 function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError) {
-  const key = `${browserSessionId}:${cli}`;
+  const roleConfig = getRoleConfig(character);
+  const roleId = roleConfig?.id || character;
+  const key = `${browserSessionId}:${roleId}`;
   const prev = invokeQueues.get(key) || Promise.resolve();
 
-  // 查找用户设置的模型（仅对支持的 CLI 生效）
-  const models = sessionModels.get(browserSessionId) || {};
-  const model = models[character] || undefined;
+  // 模型从角色配置读取
+  const model = roleConfig?.model || undefined;
+  // 注意：roleStore.getRoleByName 返回完整 role 对象（含 model）
+  const fullRole = roleStore.getRoleByName(character);
+  const roleModel = fullRole?.model || model;
 
   const next = prev.then(async () => {
-    const cliSessionId = cliSessions.get(key);
+    // 从落盘的 session-context 读取 provider sessionId
+    const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     try {
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
         verify: true,
         browserSessionId,
         character,
-        model,
+        model: roleModel,
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
-      cliSessions.set(key, result.sessionId);
+      // 落盘 provider sessionId
+      sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       onResult(result);
     } catch (err) {
       onError(err);
@@ -488,9 +601,12 @@ function appendToLog(sessionId, message) {
 // ── 共享记忆：为 AI 构建带上下文的 prompt ─────────────────
 function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromCharacter = null } = {}) {
   const logPath = path.join(LOG_DIR, `${sessionId}.json`);
-  const characterInfo = Object.entries(CHARACTERS)
-    .map(([name, cfg]) => `${name}(${cfg.cli})`)
-    .join(", ");
+  // 获取当前会话成员的角色信息
+  const memberIds = sessionStore.getSessionMembers(sessionId);
+  const memberRoles = memberIds.map(id => roleStore.getRoleById(id)).filter(Boolean);
+  const characterInfo = memberRoles.length > 0
+    ? memberRoles.map(r => `${r.name}(${r.cli})`).join(", ")
+    : Object.entries(getActiveRoles()).map(([name, cfg]) => `${name}(${cfg.cli})`).join(", ");
 
   let recentSummary = "(暂无历史)";
   try {
@@ -522,23 +638,14 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
     invokeContext = `\n\n【召唤上下文】${fromCharacter} 召唤了你，请结合聊天记录上下文回答。`;
   }
 
-  const myConfig = CHARACTERS[character];
+  const myConfig = getRoleConfig(character);
   const myCliName = myConfig?.cli || "unknown";
-
-  // 获取用户设置的昵称映射
-  const nicknames = sessionNicknames.get(sessionId) || {};
-  const myNickname = nicknames[character];
-  let nicknameHint = "";
-  if (Object.keys(nicknames).length > 0) {
-    const mapping = Object.entries(nicknames).map(([k, v]) => `${k} → ${v}`).join(", ");
-    nicknameHint = `\n用户给角色设置的昵称: ${mapping}`;
-  }
 
   return `${prompt}
 
 ---
 【你的身份】
-你是 ${character}${myNickname ? `（用户给你的昵称是「${myNickname}」）` : ""}，使用 ${myCliName} CLI。请牢记你的角色名是「${character}」，不要与其他角色混淆。${nicknameHint}
+你是 ${character}，使用 ${myCliName} CLI。请牢记你的角色名是「${character}」，不要与其他角色混淆。
 
 【共享聊天记录】
 - 聊天记录文件: ${logPath}
@@ -552,7 +659,7 @@ ${recentSummary}
 
 // ── AI 回复中的 @mention 检测 ─────────────────────────────
 function parseAIMentions(text) {
-  const names = Object.keys(CHARACTERS).sort((a, b) => b.length - a.length);
+  const names = Object.keys(getActiveRoles()).sort((a, b) => b.length - a.length);
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
 
@@ -591,7 +698,8 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     // 被召唤的角色加入聊天室成员
     addSessionMember(sessionId, targetChar);
 
-    const targetConfig = CHARACTERS[targetChar];
+    const targetConfig = getRoleConfig(targetChar);
+    if (!targetConfig) continue;
     const contextPrompt = buildContextPrompt(
       sessionId,
       `${fromCharacter} 在聊天中提到了你，请查看最近的聊天记录并回应。`,
@@ -652,7 +760,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     activeThinking.set(`${sessionId}:${fromCharacter}`, messageId);
 
     await new Promise((resolve) => {
-      enqueueInvoke(sessionId, CHARACTERS[fromCharacter].cli, followUpPrompt, fromCharacter, (followResult) => {
+      enqueueInvoke(sessionId, getRoleConfig(fromCharacter).cli, followUpPrompt, fromCharacter, (followResult) => {
         setCharStatus(sessionId, fromCharacter, "online");
         activeThinking.delete(`${sessionId}:${fromCharacter}`);
         removeThinking(sessionId, fromCharacter, messageId);
@@ -798,15 +906,16 @@ app.post("/api/mcp-send-message", (req, res) => {
   const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
   markMcpSend(browserSessionId, character);
   // 验证角色合法性
-  if (!CHARACTERS[character]) {
+  if (!getRoleConfig(character)) {
     return res.status(400).json({ error: `未知角色: ${character}` });
   }
 
   const messageId = crypto.randomUUID();
 
   // aiMentions 完全由 atTargets 决定，不从 text 中正则匹配
+  const activeRoles = getActiveRoles();
   const aiMentions = (atTargets || []).filter(t =>
-    CHARACTERS[t] && t !== character  // 排除自己，只允许合法角色
+    activeRoles[t] && t !== character  // 排除自己，只允许合法角色
   );
 
   // 确定线程 ID

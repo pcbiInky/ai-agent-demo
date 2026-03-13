@@ -1,11 +1,12 @@
 // ── 状态 ──────────────────────────────────────────────────
 const state = {
   sessionId: null,
-  characters: {},
-  profiles: {},
+  characters: {},      // name -> { cli, avatar, id, archived, model }
+  profiles: {},        // (deprecated, kept for backwards compat during transition)
+  sessionMembers: [],  // 当前会话的成员角色列表 [{ id, name, cli, ... }]
   eventSource: null,
-  // 右侧栏统计
-  stats: { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 },
+  // 右侧栏统计 - 动态按角色名统计
+  stats: { total: 0, byRole: {}, verified: 0 },
   // 角色状态: "online" | "thinking"
   charStatus: {},
   // thinking 中的 messageId -> Set<character>
@@ -15,9 +16,9 @@ const state = {
   isComposing: false,
   lastSpeaker: null,
   // Thread 相关
-  threads: {},          // threadId -> { originId, originChar, originText, replies: [{ id, character, text, verified, depth }] }
-  activeThreadId: null,  // 当前打开的 thread
-  // 消息 ID -> DOM 元素映射（用于定位和引用）
+  threads: {},
+  activeThreadId: null,
+  // 消息 ID -> DOM 元素映射
   messageElements: {},
 };
 
@@ -49,17 +50,13 @@ const $threadCloseBtn = $("#thread-close-btn");
 
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
-  const res = await fetch("/api/characters");
-  const data = await res.json();
-  state.characters = data.characters;
+  await loadCharacters();
   initProfiles();
 
   // 初始化角色状态
   for (const name of Object.keys(state.characters)) {
     state.charStatus[name] = "online";
   }
-  renderStaticCharacterTexts();
-  renderCharStatuses();
 
   // Session
   state.sessionId = sessionStorage.getItem("sessionId");
@@ -68,6 +65,10 @@ async function init() {
     sessionStorage.setItem("sessionId", state.sessionId);
   }
   $sessionDisplay.textContent = state.sessionId.slice(0, 8) + "...";
+
+  await loadSessionMembers();
+  renderStaticCharacterTexts();
+  renderCharStatuses();
 
   await loadHistory();
   await loadSessionList();
@@ -78,7 +79,37 @@ async function init() {
   setupSettings();
   setupThreadPanel();
 
-  $newSessionBtn.addEventListener("click", newSession);
+  $newSessionBtn.addEventListener("click", () => showNewSessionModal());
+}
+
+async function loadCharacters() {
+  const res = await fetch("/api/characters");
+  const data = await res.json();
+  state.characters = data.characters;
+}
+
+async function loadSessionMembers() {
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}/members`);
+    const data = await res.json();
+    state.sessionMembers = data.members || [];
+  } catch {
+    state.sessionMembers = [];
+  }
+}
+
+/**
+ * 获取当前会话的成员角色名列表
+ */
+function getSessionMemberNames() {
+  return state.sessionMembers.map(m => m.name);
+}
+
+/**
+ * 判断角色是否在当前会话成员中
+ */
+function isMemberInSession(characterName) {
+  return state.sessionMembers.some(m => m.name === characterName);
 }
 
 // ── SSE ───────────────────────────────────────────────────
@@ -149,12 +180,11 @@ function connectSSE() {
 
 // ── 发送消息 ──────────────────────────────────────────────
 function hasMention(text) {
-  // "@所有人" 视为有效 mention
   if (text.includes("@所有人")) return true;
-  const names = Object.keys(state.characters);
-  for (const name of names) {
-    const display = getDisplayName(name);
-    if (text.includes("@" + name) || text.includes("@" + display)) return true;
+  // 只检查当前会话成员
+  const memberNames = getSessionMemberNames();
+  for (const name of memberNames) {
+    if (text.includes("@" + name)) return true;
   }
   return false;
 }
@@ -165,17 +195,16 @@ async function sendMessage() {
 
   // 没有 @mention 时自动 @上一个说话的对象
   if (!hasMention(rawText) && state.lastSpeaker) {
-    const displayName = getDisplayName(state.lastSpeaker);
-    rawText = "@" + displayName + " " + rawText;
+    rawText = "@" + state.lastSpeaker + " " + rawText;
   }
 
-  // "@所有人" 展开为所有角色的 @mention
+  // "@所有人" 展开为当前会话成员的 @mention
   if (rawText.includes("@所有人")) {
-    const allMentions = Object.keys(state.characters).map(name => "@" + getDisplayName(name)).join(" ");
+    const allMentions = getSessionMemberNames().map(name => "@" + name).join(" ");
     rawText = rawText.replace(/@所有人/g, allMentions);
   }
 
-  const text = normalizeMentions(rawText);
+  const text = rawText;
 
   $input.value = "";
   autoResize($input);
@@ -190,16 +219,6 @@ async function sendMessage() {
       body: JSON.stringify({
           text,
           sessionId: state.sessionId,
-          nicknames: Object.fromEntries(
-            Object.keys(state.characters)
-              .filter(c => getDisplayName(c) !== c)
-              .map(c => [c, getDisplayName(c)])
-          ),
-          models: Object.fromEntries(
-            Object.keys(state.characters)
-              .filter(c => state.profiles[c]?.model)
-              .map(c => [c, state.profiles[c].model])
-          ),
         }),
     });
 
@@ -225,7 +244,7 @@ function appendUserMessage(text) {
         <span class="character-name user-name">铲屎官</span>
           <span class="msg-time">${time}</span>
       </div>
-      <div class="bubble">${escapeHtml(displayMentions(text))}</div>
+      <div class="bubble">${escapeHtml(text)}</div>
     </div>
   `;
   $messages.appendChild(div);
@@ -241,7 +260,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
   const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
-  const model = state.profiles[character]?.model;
+  const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
@@ -260,7 +279,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
+      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
     </div>
   `;
@@ -294,7 +313,7 @@ function appendThreadReply(data) {
   const displayName = getDisplayName(character);
   const time = formatTimeShort(Date.now());
   const cli = state.characters[character]?.cli || "";
-  const model = state.profiles[character]?.model;
+  const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
@@ -325,7 +344,7 @@ function appendThreadReply(data) {
     quoteHtml = `
       <div class="thread-quote" data-thread-id="${threadId}" onclick="openThread('${threadId}')">
         <span class="quote-char">${escapeHtml(originDisplayName)}:</span>
-        <span class="quote-text">${escapeHtml(displayMentions(firstLine))}</span>
+        <span class="quote-text">${escapeHtml(firstLine)}</span>
       </div>
     `;
   }
@@ -342,7 +361,7 @@ function appendThreadReply(data) {
         <span class="msg-time">${time}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(displayMentions(text))}</div>
+      <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
     </div>
   `;
@@ -475,7 +494,7 @@ function buildThreadMessage(character, text, isReply, verified) {
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
   const cli = state.characters[character]?.cli || "";
-  const model = state.profiles[character]?.model;
+  const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
 
   let verifiedHtml = "";
@@ -491,7 +510,7 @@ function buildThreadMessage(character, text, isReply, verified) {
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         ${verifiedHtml}
       </div>
-      <div class="bubble markdown-body">${renderMarkdown(displayMentions(text))}</div>
+      <div class="bubble markdown-body">${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
     </div>
   `;
@@ -787,7 +806,11 @@ function setCharStatus(name, status) {
 
 function renderCharStatuses() {
   $charStatuses.innerHTML = "";
-  for (const [name, config] of Object.entries(state.characters)) {
+
+  // 当前会话成员
+  const memberNames = getSessionMemberNames();
+  for (const member of state.sessionMembers) {
+    const name = member.name;
     const status = state.charStatus[name] || "online";
     const dotClass = status === "thinking" ? "thinking" : "online";
     const label = status === "thinking" ? "思考中" : "待命";
@@ -797,29 +820,68 @@ function renderCharStatuses() {
     div.className = "char-status";
     div.innerHTML = `
       <div class="status-dot ${dotClass}"></div>
-      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(getDisplayName(name))} (${state.profiles[name]?.model ? config.cli + ' · ' + state.profiles[name].model : config.cli})</span>
+      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(name)} (${member.model ? member.cli + ' · ' + member.model : member.cli})</span>
       <span class="char-status-label">${label}</span>
+      <button class="btn-remove-member" title="移出会话" data-role-id="${member.id}" data-name="${escapeHtml(name)}">×</button>
     `;
+    div.querySelector(".btn-remove-member").addEventListener("click", async (e) => {
+      const roleId = e.target.dataset.roleId;
+      await fetch(`/api/sessions/${state.sessionId}/members/${roleId}`, { method: "DELETE" });
+      await loadSessionMembers();
+      renderCharStatuses();
+      setupMentionHints();
+    });
     $charStatuses.appendChild(div);
+  }
+
+  // 可邀请角色（未归档且不在当前会话中）
+  const invitable = Object.entries(state.characters).filter(([name, cfg]) =>
+    !cfg.archived && !memberNames.includes(name)
+  );
+  if (invitable.length > 0) {
+    const divider = document.createElement("div");
+    divider.className = "invite-divider";
+    divider.textContent = "可邀请";
+    $charStatuses.appendChild(divider);
+
+    for (const [name, cfg] of invitable) {
+      const div = document.createElement("div");
+      div.className = "char-status invitable";
+      div.innerHTML = `
+        <span class="char-status-name">${escapeHtml(name)} (${cfg.cli})</span>
+        <button class="btn-invite-member" data-role-id="${cfg.id}">邀请</button>
+      `;
+      div.querySelector(".btn-invite-member").addEventListener("click", async (e) => {
+        const roleId = e.target.dataset.roleId;
+        await fetch(`/api/sessions/${state.sessionId}/members/${roleId}/invite`, { method: "POST" });
+        await loadSessionMembers();
+        renderCharStatuses();
+        setupMentionHints();
+      });
+      $charStatuses.appendChild(div);
+    }
   }
 }
 
 // ── 右侧栏：统计 ─────────────────────────────────────────
 function updateStats(character, verified) {
   state.stats.total++;
-  if (getCharClass(character) === "faker") state.stats.faker++;
-  if (getCharClass(character) === "qijige") state.stats.qijige++;
-  if (getCharClass(character) === "yyf") state.stats.yyf++;
+  if (!state.stats.byRole[character]) state.stats.byRole[character] = 0;
+  state.stats.byRole[character]++;
   if (verified === true) state.stats.verified++;
   renderStats();
 }
 
 function renderStats() {
-  $("#stat-total").textContent = state.stats.total;
-  $("#stat-faker").textContent = state.stats.faker;
-  $("#stat-qijige").textContent = state.stats.qijige;
-  $("#stat-yyf").textContent = state.stats.yyf;
-  $("#stat-verified").textContent = state.stats.verified;
+  const $statsContainer = $("#message-stats");
+  if (!$statsContainer) return;
+  $statsContainer.innerHTML = `
+    <div class="stat-row"><span>总数</span><span>${state.stats.total}</span></div>
+    ${Object.entries(state.stats.byRole).map(([name, count]) =>
+      `<div class="stat-row"><span>${escapeHtml(name)} 消息</span><span>${count}</span></div>`
+    ).join("")}
+    <div class="stat-row"><span>验证通过</span><span>${state.stats.verified}</span></div>
+  `;
 }
 
 // ── 左侧栏：会话列表 ─────────────────────────────────────
@@ -838,12 +900,14 @@ async function loadSessionList() {
       const isCurrent = s.sessionId === state.sessionId;
       const div = document.createElement("div");
       div.className = `session-item${isCurrent ? " active" : ""}`;
+      const activeRoles = Object.entries(state.characters).filter(([, c]) => !c.archived).slice(0, 3);
+      const avatarsHtml = activeRoles.map(([name, cfg]) => {
+        const charClass = getCharClass(name);
+        const av = getAvatar(name, cfg.avatar);
+        return '<span class="mini-avatar" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
+      }).join('');
       div.innerHTML = `
-        <div class="session-avatars">
-          <span class="mini-avatar" style="background:var(--faker-accent)">${escapeHtml(getAvatar(getCharacterByClass("faker"), "F"))}</span>
-          <span class="mini-avatar" style="background:var(--qijige-accent)">${escapeHtml(getAvatar(getCharacterByClass("qijige"), "奇"))}</span>
-          <span class="mini-avatar" style="background:var(--yyf-accent)">${escapeHtml(getAvatar(getCharacterByClass("yyf"), "Y"))}</span>
-        </div>
+        <div class="session-avatars">${avatarsHtml}</div>
         <div class="session-preview">${s.sessionId.slice(0, 12)}...${isCurrent ? " (当前)" : ""}</div>
         <div class="session-meta">
           <span>${s.messageCount} 条消息</span>
@@ -856,25 +920,70 @@ async function loadSessionList() {
   } catch { /* ignore */ }
 }
 
-function switchSession(id) {
+async function switchSession(id) {
   state.sessionId = id;
   sessionStorage.setItem("sessionId", id);
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
   clearUnreadIndicator();
   closeThread();
-  $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
-  state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
+  state.stats = { total: 0, byRole: {}, verified: 0 };
   state.threads = {};
   state.messageElements = {};
+
+  await loadSessionMembers();
+  $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   renderStats();
+  renderCharStatuses();
+  setupMentionHints();
+  renderStaticCharacterTexts();
   loadHistory();
   loadSessionList();
   connectSSE();
 }
 
-function newSession() {
-  const id = crypto.randomUUID();
-  switchSession(id);
+function showNewSessionModal() {
+  const roles = Object.entries(state.characters).filter(([, cfg]) => !cfg.archived);
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.id = "new-session-modal";
+  modal.innerHTML = `
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel">
+      <h3>新建会话</h3>
+      <p class="modal-desc">选择要加入的角色（可在会话中随时邀请/移除）</p>
+      <div id="new-session-roles">
+        ${roles.map(([name, cfg]) => `
+          <label class="role-checkbox">
+            <input type="checkbox" value="${cfg.id}" checked>
+            <span class="role-check-name">${escapeHtml(name)}</span>
+            <span class="role-check-cli">(${cfg.cli})</span>
+          </label>
+        `).join("")}
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="new-session-cancel">取消</button>
+        <button class="btn-primary" id="new-session-create">创建</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector("[data-close]").addEventListener("click", () => modal.remove());
+  modal.querySelector("#new-session-cancel").addEventListener("click", () => modal.remove());
+  modal.querySelector("#new-session-create").addEventListener("click", async () => {
+    const checked = modal.querySelectorAll('input[type="checkbox"]:checked');
+    const memberIds = [...checked].map(cb => cb.value);
+    const sessionId = crypto.randomUUID();
+
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, memberIds }),
+    });
+
+    modal.remove();
+    switchSession(sessionId);
+  });
 }
 
 // ── 历史记录加载 ──────────────────────────────────────────
@@ -887,7 +996,7 @@ async function loadHistory() {
     state.isLoadingHistory = true;
     clearUnreadIndicator();
     $messages.innerHTML = "";
-    state.stats = { total: 0, faker: 0, qijige: 0, yyf: 0, verified: 0 };
+    state.stats = { total: 0, byRole: {}, verified: 0 };
     state.threads = {};
     state.messageElements = {};
 
@@ -957,20 +1066,21 @@ async function loadHistory() {
 // ── @mention 提示 ─────────────────────────────────────────
 function setupMentionHints() {
   $mentionHints.innerHTML = "";
-  for (const [name] of Object.entries(state.characters)) {
-    const displayName = getDisplayName(name);
+  // 只显示当前会话成员
+  const memberNames = getSessionMemberNames();
+  for (const name of memberNames) {
     const chip = document.createElement("span");
     chip.className = `hint-chip ${getCharClass(name)}`;
-    chip.textContent = `@${displayName}`;
+    chip.textContent = `@${name}`;
     chip.addEventListener("click", () => {
       const cursor = $input.selectionStart;
       const before = $input.value.slice(0, cursor);
       const after = $input.value.slice(cursor);
       
       if (before.endsWith("@")) {
-        $input.value = before.slice(0, -1) + `@${displayName} ` + after;
+        $input.value = before.slice(0, -1) + `@${name} ` + after;
       } else {
-        $input.value = before + `@${displayName} ` + after;
+        $input.value = before + `@${name} ` + after;
       }
       
       $input.focus();
@@ -1053,33 +1163,12 @@ function renderMarkdown(text) {
 })();
 
 function initProfiles() {
-  let saved = {};
-  try {
-    saved = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
-  } catch { /* ignore */ }
-
-  // 从 V1 迁移（V1 只有 nickname）
-  if (Object.keys(saved).length === 0) {
-    try {
-      const v1 = JSON.parse(localStorage.getItem("characterProfilesV1") || "{}");
-      if (Object.keys(v1).length > 0) saved = v1;
-    } catch { /* ignore */ }
-  }
-
+  // Profiles are now managed server-side via role system
   state.profiles = {};
-  for (const [character] of Object.entries(state.characters)) {
-    const nickname = String(saved[character]?.nickname || character).trim() || character;
-    const model = String(saved[character]?.model || "").trim();
-    state.profiles[character] = { nickname, model };
-  }
-}
-
-function persistProfiles() {
-  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(state.profiles));
 }
 
 function getDisplayName(character) {
-  return state.profiles[character]?.nickname || character;
+  return character;
 }
 
 function getAvatar(character, fallback = "") {
@@ -1088,29 +1177,28 @@ function getAvatar(character, fallback = "") {
   return derived || fallback || character?.[0] || "?";
 }
 
-function getCharacterByClass(charClass) {
-  if (charClass === "qijige") return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "trae");
-  if (charClass === "yyf") return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "codex");
-  return Object.keys(state.characters).find((k) => state.characters[k]?.cli === "claude");
-}
 
 function buildSystemNoticeHtml() {
-  const claudeName = getDisplayName(getCharacterByClass("faker"));
-  const traeName = getDisplayName(getCharacterByClass("qijige"));
-  const codexName = getDisplayName(getCharacterByClass("yyf"));
-  return `输入 <code>@${escapeHtml(claudeName)}</code> 调用 Claude，<code>@${escapeHtml(traeName)}</code> 调用 Trae，<code>@${escapeHtml(codexName)}</code> 调用 Codex`;
+  const memberNames = getSessionMemberNames();
+  if (memberNames.length === 0) return "暂无角色，请在右侧栏邀请角色加入会话";
+  return "输入 " + memberNames.map(name => {
+    const cli = state.characters[name]?.cli || "";
+    return `<code>@${escapeHtml(name)}</code> 调用 ${cli}`;
+  }).join("，");
 }
 
 function renderStaticCharacterTexts() {
-  const claudeName = getDisplayName(getCharacterByClass("faker"));
-  const traeName = getDisplayName(getCharacterByClass("qijige"));
-  const codexName = getDisplayName(getCharacterByClass("yyf"));
-  $chatSubtitle.textContent = `${claudeName} (Claude) & ${traeName} (Trae) & ${codexName} (Codex)`;
+  const memberNames = getSessionMemberNames();
+  if (memberNames.length > 0) {
+    $chatSubtitle.textContent = memberNames.map(name => {
+      const cli = state.characters[name]?.cli || "";
+      return `${name} (${cli})`;
+    }).join(" & ");
+  } else {
+    $chatSubtitle.textContent = "AI Chat Arena";
+  }
   const noticeEl = $("#system-notice");
   if (noticeEl) noticeEl.innerHTML = buildSystemNoticeHtml();
-  $("#label-stat-faker").textContent = `${claudeName} 消息`;
-  $("#label-stat-qijige").textContent = `${traeName} 消息`;
-  $("#label-stat-yyf").textContent = `${codexName} 消息`;
 }
 
 function setupSettings() {
@@ -1129,38 +1217,56 @@ function setupSettings() {
       $settingsModal.classList.add("hidden");
     }
   });
-  $settingsSaveBtn.addEventListener("click", () => {
-    const rows = $settingsForm.querySelectorAll(".setting-row[data-character]");
-    const nextProfiles = {};
-    const nicknameMap = new Map();
-    for (const row of rows) {
-      const character = row.getAttribute("data-character");
-      const nickname = row.querySelector(".nickname-input")?.value?.trim();
-      const model = row.querySelector(".model-input")?.value?.trim() || "";
-      if (!character) continue;
-      const safeName = nickname || character;
-      nextProfiles[character] = { nickname: safeName, model };
+  $settingsSaveBtn.addEventListener("click", async () => {
+    const rows = $settingsForm.querySelectorAll(".setting-row[data-role-id]");
+    const nameMap = new Map();
+    const updates = [];
 
-      const key = safeName.toLocaleLowerCase();
-      if (!nicknameMap.has(key)) nicknameMap.set(key, []);
-      nicknameMap.get(key).push(character);
+    for (const row of rows) {
+      const roleId = row.getAttribute("data-role-id");
+      const name = row.querySelector(".name-input")?.value?.trim();
+      const model = row.querySelector(".model-input")?.value?.trim() || "";
+      if (!roleId || !name) continue;
+
+      const key = name.toLocaleLowerCase();
+      if (!nameMap.has(key)) nameMap.set(key, []);
+      nameMap.get(key).push(roleId);
+      updates.push({ roleId, name, model });
     }
 
-    for (const [key, characters] of nicknameMap.entries()) {
-      if (characters.length > 1) {
-        showSettingsError(`昵称重复：${key}。请给每个角色设置不同昵称。`);
+    for (const [key, ids] of nameMap.entries()) {
+      if (ids.length > 1) {
+        showSettingsError(`角色名重复：${key}。请给每个角色设置不同名称。`);
         return;
       }
     }
 
     hideSettingsError();
-    state.profiles = nextProfiles;
-    persistProfiles();
+
+    for (const { roleId, name, model } of updates) {
+      try {
+        const res = await fetch(`/api/roles/${roleId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, model }),
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          showSettingsError(data.error || "更新失败");
+          return;
+        }
+      } catch (err) {
+        showSettingsError(`更新失败: ${err.message}`);
+        return;
+      }
+    }
+
+    await loadCharacters();
+    await loadSessionMembers();
     renderStaticCharacterTexts();
     renderCharStatuses();
     setupMentionHints();
-    loadHistory();
-    loadSessionList();
+    renderStats();
     $settingsModal.classList.add("hidden");
   });
 }
@@ -1171,22 +1277,125 @@ function renderSettingsForm() {
   const header = document.createElement("div");
   header.className = "setting-row";
   header.style.cssText = "font-size:12px;color:var(--text-light);font-weight:500;";
-  header.innerHTML = `<div>CLI</div><div>昵称</div><div>模型</div>`;
+  header.innerHTML = `<div>CLI</div><div>角色名</div><div>模型</div><div></div>`;
   $settingsForm.appendChild(header);
 
-  for (const [character, config] of Object.entries(state.characters)) {
-    const currentModel = state.profiles[character]?.model || "";
-    const isTraeCli = config.cli === "trae";
+  const allRoles = Object.entries(state.characters).map(([name, cfg]) => ({
+    id: cfg.id, name, cli: cfg.cli, model: cfg.model || "", archived: cfg.archived || false,
+  }));
+
+  for (const role of allRoles) {
     const row = document.createElement("div");
-    row.className = "setting-row";
-    row.setAttribute("data-character", character);
+    row.className = `setting-row${role.archived ? " archived" : ""}`;
+    row.setAttribute("data-role-id", role.id);
     row.innerHTML = `
-      <div class="setting-cli">${config.cli}</div>
-      <input class="nickname-input" type="text" value="${escapeHtml(getDisplayName(character))}" placeholder="昵称">
-      <input class="model-input" type="text" value="${escapeHtml(currentModel)}" placeholder="${isTraeCli ? "例如 glm-5" : "暂不支持"}" ${isTraeCli ? "" : "disabled"}>
+      <div class="setting-cli">${role.cli}</div>
+      <input class="name-input" type="text" value="${escapeHtml(role.name)}" placeholder="角色名" ${role.archived ? "disabled" : ""}>
+      <input class="model-input" type="text" value="${escapeHtml(role.model)}" placeholder="模型" ${role.archived ? "disabled" : ""}>
+      <div class="setting-actions">
+        ${role.archived
+          ? `<button class="btn-restore" data-role-id="${role.id}" title="恢复">恢复</button>`
+          : `<button class="btn-archive" data-role-id="${role.id}" title="归档">归档</button>`
+        }
+      </div>
     `;
     $settingsForm.appendChild(row);
   }
+
+  // 归档/恢复按钮事件
+  $settingsForm.querySelectorAll(".btn-archive").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      await fetch(`/api/roles/${btn.dataset.roleId}/archive`, { method: "POST" });
+      await loadCharacters();
+      await loadSessionMembers();
+      renderSettingsForm();
+      renderCharStatuses();
+      setupMentionHints();
+      renderStaticCharacterTexts();
+    });
+  });
+  $settingsForm.querySelectorAll(".btn-restore").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      await fetch(`/api/roles/${btn.dataset.roleId}/restore`, { method: "POST" });
+      await loadCharacters();
+      await loadSessionMembers();
+      renderSettingsForm();
+      renderCharStatuses();
+      setupMentionHints();
+      renderStaticCharacterTexts();
+    });
+  });
+
+  // 新增角色按钮
+  const addBtn = document.createElement("button");
+  addBtn.className = "btn-add-role";
+  addBtn.textContent = "+ 新增角色";
+  addBtn.addEventListener("click", () => showCreateRoleModal());
+  $settingsForm.appendChild(addBtn);
+}
+
+function showCreateRoleModal() {
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.id = "create-role-modal";
+  modal.innerHTML = `
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel">
+      <h3>新增角色</h3>
+      <div class="create-role-form">
+        <label>角色名 <input type="text" id="new-role-name" placeholder="例如: 小助手"></label>
+        <label>CLI <select id="new-role-cli">
+          <option value="claude">claude</option>
+          <option value="trae">trae</option>
+          <option value="codex">codex</option>
+        </select></label>
+        <label>模型 <input type="text" id="new-role-model" placeholder="可选"></label>
+        <div id="create-role-error" class="settings-error hidden"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="create-role-cancel">取消</button>
+        <button class="btn-primary" id="create-role-submit">创建</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector("[data-close]").addEventListener("click", () => modal.remove());
+  modal.querySelector("#create-role-cancel").addEventListener("click", () => modal.remove());
+  modal.querySelector("#create-role-submit").addEventListener("click", async () => {
+    const name = modal.querySelector("#new-role-name").value.trim();
+    const cli = modal.querySelector("#new-role-cli").value;
+    const model = modal.querySelector("#new-role-model").value.trim();
+    const errEl = modal.querySelector("#create-role-error");
+
+    if (!name) {
+      errEl.textContent = "角色名不能为空";
+      errEl.classList.remove("hidden");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/roles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, cli, model }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "创建失败");
+      }
+
+      modal.remove();
+      await loadCharacters();
+      renderSettingsForm();
+      renderCharStatuses();
+      setupMentionHints();
+      renderStaticCharacterTexts();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    }
+  });
 }
 
 function deriveAvatarFromName(name) {
@@ -1210,34 +1419,7 @@ function hideSettingsError() {
   $settingsError.classList.add("hidden");
 }
 
-function normalizeMentions(raw) {
-  let text = raw;
-  const byLength = Object.keys(state.characters).sort((a, b) => {
-    const da = getDisplayName(a);
-    const db = getDisplayName(b);
-    return db.length - da.length;
-  });
-  for (const canonical of byLength) {
-    const display = getDisplayName(canonical);
-    if (!display || display === canonical) continue;
-    const escaped = display.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    text = text.replace(new RegExp(`@${escaped}`, "g"), `@${canonical}`);
-  }
-  return text;
-}
 
-// 反向：将 @原始角色名 替换为 @昵称（用于渲染显示）
-function displayMentions(raw) {
-  let text = raw;
-  const byLength = Object.keys(state.characters).sort((a, b) => b.length - a.length);
-  for (const canonical of byLength) {
-    const display = getDisplayName(canonical);
-    if (!display || display === canonical) continue;
-    const escaped = canonical.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    text = text.replace(new RegExp(`@${escaped}`, "g"), `@${display}`);
-  }
-  return text;
-}
 
 function getCharClass(character) {
   const cli = state.characters[character]?.cli;

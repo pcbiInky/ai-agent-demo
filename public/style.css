@@ -985,6 +985,56 @@ html, body {
   background: var(--border);
 }
 
+/* ── 角色管理：归档/恢复/新增 ─────────── */
+.setting-row { grid-template-columns: 60px 1fr 1fr 60px; }
+.setting-row.archived { opacity: 0.5; }
+.setting-actions { display: flex; gap: 4px; align-items: center; }
+.btn-archive, .btn-restore {
+  font-size: 11px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; background: transparent; color: var(--text-light);
+}
+.btn-archive:hover { background: #ff6b6b22; color: #ff6b6b; border-color: #ff6b6b; }
+.btn-restore:hover { background: #51cf6622; color: #51cf66; border-color: #51cf66; }
+.btn-add-role {
+  width: 100%; padding: 8px; margin-top: 8px; border: 1px dashed var(--border);
+  border-radius: 6px; background: transparent; color: var(--text-light);
+  cursor: pointer; font-size: 13px;
+}
+.btn-add-role:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── 邀请/移除按钮 ─────────── */
+.btn-remove-member {
+  background: none; border: none; color: var(--text-light); cursor: pointer;
+  font-size: 16px; padding: 0 4px; line-height: 1; opacity: 0.5;
+}
+.btn-remove-member:hover { opacity: 1; color: #ff6b6b; }
+.btn-invite-member {
+  font-size: 11px; padding: 2px 8px; border: 1px solid var(--accent);
+  border-radius: 4px; cursor: pointer; background: transparent; color: var(--accent);
+}
+.btn-invite-member:hover { background: var(--accent); color: white; }
+.invite-divider {
+  font-size: 11px; color: var(--text-light); padding: 8px 0 4px; margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.char-status { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+.char-status.invitable { opacity: 0.7; }
+
+/* ── 新建会话角色选择 ─────────── */
+.role-checkbox { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+.role-checkbox input[type="checkbox"] { width: 16px; height: 16px; }
+.role-check-name { font-weight: 500; }
+.role-check-cli { color: var(--text-light); font-size: 12px; }
+#new-session-roles { padding: 8px 0; }
+
+/* ── 创建角色弹窗 ─────────── */
+.create-role-form { display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
+.create-role-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-light); }
+.create-role-form input, .create-role-form select {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg-dark); color: var(--text-main); font-size: 13px;
+}
+
 /* ── 响应式：窄屏隐藏侧边栏 ─────────── */
 @media (max-width: 900px) {
   #app { grid-template-columns: 1fr; }
