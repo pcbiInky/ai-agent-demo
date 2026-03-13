@@ -246,6 +246,11 @@ function connectSSE() {
     loadSessionList();
   });
 
+  es.addEventListener("message-meta", (e) => {
+    const data = JSON.parse(e.data);
+    applyVerifiedMeta(data.messageId, data.verified);
+  });
+
   es.addEventListener("error", (e) => {
     if (e.data) {
       const data = JSON.parse(e.data);
@@ -357,6 +362,45 @@ function appendUserMessage(text) {
   renderStats();
 }
 
+function verifiedBadgeHtml(verified) {
+  if (verified === true) return '<span class="verified-badge pass">verified</span>';
+  if (verified === false) return '<span class="verified-badge fail">unverified</span>';
+  return "";
+}
+
+function applyVerifiedMeta(messageId, verified) {
+  const el = state.messageElements[messageId];
+  if (!el) return;
+
+  const previous = el.dataset.verified;
+  const next = verified === undefined ? "" : String(verified);
+  const header = el.querySelector(".msg-header");
+  if (!header) return;
+
+  header.querySelector(".verified-badge")?.remove();
+  const badge = verifiedBadgeHtml(verified);
+  if (badge) {
+    header.insertAdjacentHTML("beforeend", badge);
+  }
+
+  if (previous !== next) {
+    if (previous !== "true" && verified === true) state.stats.verified++;
+    if (previous === "true" && verified !== true) state.stats.verified = Math.max(0, state.stats.verified - 1);
+    renderStats();
+  }
+
+  el.dataset.verified = next;
+  if (el.dataset.threadId && state.threads[el.dataset.threadId]) {
+    const thread = state.threads[el.dataset.threadId];
+    if (thread.originId === messageId) {
+      thread.originVerified = verified;
+    }
+    const reply = thread.replies.find((item) => item.id === messageId);
+    if (reply) reply.verified = verified;
+    updateThreadPanelIfOpen(el.dataset.threadId);
+  }
+}
+
 function appendAssistantMessage(character, text, verified, replyId, threadId, aiMentions) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
@@ -368,9 +412,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
   const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
-  let verifiedHtml = "";
-  if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
-  else if (verified === false) verifiedHtml = '<span class="verified-badge fail">unverified</span>';
+  const verifiedHtml = verifiedBadgeHtml(verified);
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
@@ -391,6 +433,8 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
 
   // 追踪消息元素
   state.messageElements[msgId] = div;
+  div.dataset.verified = verified === undefined ? "" : String(verified);
+  if (threadId) div.dataset.threadId = threadId;
 
   // 如果这条消息中有 AI @mention，初始化 thread 数据（避免覆盖 loadHistory 已建好的）
   if (aiMentions && aiMentions.length > 0) {
@@ -400,6 +444,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
         originId: msgId,
         originChar: character,
         originText: text,
+        originVerified: verified,
         replies: [],
       };
     }
@@ -435,9 +480,7 @@ function appendThreadReply(data) {
     }
   }
 
-  let verifiedHtml = "";
-  if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
-  else if (verified === false) verifiedHtml = '<span class="verified-badge fail">unverified</span>';
+  const verifiedHtml = verifiedBadgeHtml(verified);
 
   // 引用条：显示原始消息的第一行
   let quoteHtml = "";
@@ -471,6 +514,7 @@ function appendThreadReply(data) {
   `;
   $messages.appendChild(div);
   state.messageElements[msgId] = div;
+  div.dataset.verified = verified === undefined ? "" : String(verified);
 
   handlePostAppend({ shouldAutoScroll });
 }
@@ -575,7 +619,7 @@ function renderThreadPanel(threadId) {
   $threadMessages.innerHTML = "";
 
   // 1. 原始消息
-  const originEl = buildThreadMessage(thread.originChar, thread.originText, false);
+  const originEl = buildThreadMessage(thread.originChar, thread.originText, false, thread.originVerified);
   $threadMessages.appendChild(originEl);
 
   // 分隔线
@@ -601,9 +645,7 @@ function buildThreadMessage(character, text, isReply, verified) {
   const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
 
-  let verifiedHtml = "";
-  if (verified === true) verifiedHtml = '<span class="verified-badge pass">verified</span>';
-  else if (verified === false) verifiedHtml = '<span class="verified-badge fail">unverified</span>';
+  const verifiedHtml = verifiedBadgeHtml(verified);
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
@@ -1115,6 +1157,7 @@ async function loadHistory() {
           originId: msg.id,
           originChar: msg.character,
           originText: msg.text,
+          originVerified: msg.verified,
           replies: [],
         };
       }

@@ -124,6 +124,8 @@ const activeThinking = new Map();
 const approvedRequests = new Map();
 // browserSessionId:character -> number（该角色在当前会话通过 MCP SendMessage 成功发消息次数）
 const mcpSendCounts = new Map();
+// browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
+const pendingMcpReplies = new Map();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -151,6 +153,55 @@ function markMcpSend(sessionId, character) {
   const next = getMcpSendCount(sessionId, character) + 1;
   mcpSendCounts.set(key, next);
   return next;
+}
+
+function getPendingMcpReplyKey(sessionId, character) {
+  return `${sessionId}:${character}`;
+}
+
+function registerPendingMcpReply(sessionId, character, messageId) {
+  pendingMcpReplies.set(getPendingMcpReplyKey(sessionId, character), messageId);
+}
+
+function clearPendingMcpReply(sessionId, character) {
+  pendingMcpReplies.delete(getPendingMcpReplyKey(sessionId, character));
+}
+
+function extractVerifyMeta(text) {
+  const rawText = typeof text === "string" ? text : String(text || "");
+  const matched = /\n?VERIFY:(\w+)\s*$/.test(rawText);
+  if (!matched) {
+    return { text: rawText, verified: undefined };
+  }
+
+  return {
+    text: rawText.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd(),
+    verified: true,
+  };
+}
+
+function finalizePendingMcpVerification(sessionId, character, verified) {
+  if (verified === undefined) return;
+
+  const key = getPendingMcpReplyKey(sessionId, character);
+  const messageId = pendingMcpReplies.get(key);
+  if (!messageId) return;
+
+  let effectiveVerified = verified;
+  const filePath = path.join(LOG_DIR, `${sessionId}.json`);
+  try {
+    const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const msg = log.messages.find((item) => item.id === messageId);
+    if (msg?.verified === true && verified === false) {
+      effectiveVerified = true;
+    }
+  } catch {
+    // ignore and fall back to invoke result
+  }
+
+  updateMessageInLog(sessionId, messageId, { verified: effectiveVerified });
+  emitSSE(sessionId, "message-meta", { messageId, verified: effectiveVerified });
+  pendingMcpReplies.delete(key);
 }
 
 // ── 审批记录管理（一次性消费 + TTL）────────────────────────
@@ -651,21 +702,26 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     // 从落盘的 session-context 读取 provider sessionId
     const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
+    clearPendingMcpReply(browserSessionId, character);
     try {
       const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
-        const result = await invoke(cli, prompt, cliSessionId || undefined, {
-          verify: true,
-          browserSessionId,
-          character,
-          model: roleModel,
-          workingDirectory,
-        });
+      const result = await invoke(cli, prompt, cliSessionId || undefined, {
+        verify: true,
+        browserSessionId,
+        character,
+        model: roleModel,
+        workingDirectory,
+      });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
+      if (result.usedMcpSendMessage) {
+        finalizePendingMcpVerification(browserSessionId, character, result.verified);
+      }
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       onResult(result);
     } catch (err) {
+      clearPendingMcpReply(browserSessionId, character);
       onError(err);
     }
   });
@@ -1001,6 +1057,7 @@ app.post("/api/mcp-send-message", (req, res) => {
 
   const { browserSessionId, character } = approval;
   const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  const verifyMeta = extractVerifyMeta(text);
   markMcpSend(browserSessionId, character);
   // 验证角色合法性
   if (!getRoleConfig(character)) {
@@ -1021,20 +1078,26 @@ app.post("/api/mcp-send-message", (req, res) => {
     id: messageId,
     role: "assistant",
     character,
-    text,
+    text: verifyMeta.text,
     ...(replyToMessageId && { replyTo: replyToMessageId }),
     timestamp: Date.now(),
     source: "mcp-tool",
+    ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
     ...(activeThreadId && { threadId: activeThreadId }),
     ...(aiMentions.length > 0 && { aiMentions }),
   });
+
+  if (replyToMessageId) {
+    registerPendingMcpReply(browserSessionId, character, messageId);
+  }
 
   emitSSE(browserSessionId, "reply", {
     character,
     ...(replyToMessageId && { messageId: replyToMessageId }),
     replyId: messageId,
-    text,
+    text: verifyMeta.text,
     source: "mcp-tool",
+    ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
     ...(activeThreadId && { threadId: activeThreadId }),
     ...(aiMentions.length > 0 && { aiMentions }),
   });
@@ -1080,6 +1143,10 @@ module.exports = {
     parseMentions,
     parseAIMentions,
     isMentionAllowedInSession,
+    appendToLog,
+    extractVerifyMeta,
+    registerPendingMcpReply,
+    finalizePendingMcpVerification,
     ensureRoleSystemInitializedForTests() {
       ensureRoleSystemInitialized();
       return roleStore.listRoles({ includeArchived: true });
