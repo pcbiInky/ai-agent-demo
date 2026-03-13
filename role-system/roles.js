@@ -22,18 +22,32 @@ function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+function normalizeRole(role) {
+  return {
+    ...role,
+    aliases: Array.isArray(role.aliases) ? [...new Set(role.aliases.filter(Boolean))] : [],
+  };
+}
+
+function normalizeRolesData(data) {
+  return {
+    version: data.version || 2,
+    roles: Array.isArray(data.roles) ? data.roles.map(normalizeRole) : [],
+  };
+}
+
 function readRolesFile() {
   ensureDataDir();
   try {
-    return JSON.parse(fs.readFileSync(ROLES_FILE, "utf-8"));
+    return normalizeRolesData(JSON.parse(fs.readFileSync(ROLES_FILE, "utf-8")));
   } catch {
-    return { version: 1, roles: [] };
+    return { version: 2, roles: [] };
   }
 }
 
 function writeRolesFile(data) {
   ensureDataDir();
-  fs.writeFileSync(ROLES_FILE, JSON.stringify(data, null, 2));
+  fs.writeFileSync(ROLES_FILE, JSON.stringify(normalizeRolesData(data), null, 2));
 }
 
 // ── 查询 ──
@@ -41,17 +55,22 @@ function writeRolesFile(data) {
 function listRoles({ includeArchived = false } = {}) {
   const data = readRolesFile();
   if (includeArchived) return data.roles;
-  return data.roles.filter(r => !r.archived);
+  return data.roles.filter((r) => !r.archived);
 }
 
 function getRoleById(id) {
   const data = readRolesFile();
-  return data.roles.find(r => r.id === id) || null;
+  return data.roles.find((r) => r.id === id) || null;
 }
 
 function getRoleByName(name) {
   const data = readRolesFile();
-  return data.roles.find(r => r.name === name) || null;
+  return data.roles.find((r) => r.name === name) || null;
+}
+
+function getRoleByAlias(name) {
+  const data = readRolesFile();
+  return data.roles.find((r) => r.aliases.includes(name)) || null;
 }
 
 // ── 创建 ──
@@ -60,8 +79,7 @@ function createRole({ name, cli, model = "", avatar = "" }) {
   return withLock(() => {
     const data = readRolesFile();
 
-    // name 全局唯一
-    if (data.roles.some(r => r.name === name)) {
+    if (data.roles.some((r) => r.name === name)) {
       throw new Error(`角色名 "${name}" 已存在`);
     }
 
@@ -73,6 +91,7 @@ function createRole({ name, cli, model = "", avatar = "" }) {
     const role = {
       id: `role_${crypto.randomUUID().slice(0, 8)}`,
       name,
+      aliases: [],
       cli,
       model,
       avatar: avatar || name[0] || "?",
@@ -92,14 +111,14 @@ function createRole({ name, cli, model = "", avatar = "" }) {
 function updateRole(id, updates) {
   return withLock(() => {
     const data = readRolesFile();
-    const role = data.roles.find(r => r.id === id);
+    const role = data.roles.find((r) => r.id === id);
     if (!role) throw new Error(`角色不存在: ${id}`);
 
-    // name 唯一性检查
     if (updates.name && updates.name !== role.name) {
-      if (data.roles.some(r => r.name === updates.name && r.id !== id)) {
+      if (data.roles.some((r) => r.name === updates.name && r.id !== id)) {
         throw new Error(`角色名 "${updates.name}" 已存在`);
       }
+      role.aliases = [...new Set([...(role.aliases || []), role.name])];
     }
 
     const allowed = ["name", "cli", "model", "avatar"];
@@ -109,7 +128,7 @@ function updateRole(id, updates) {
     role.updatedAt = Date.now();
 
     writeRolesFile(data);
-    return role;
+    return normalizeRole(role);
   });
 }
 
@@ -118,24 +137,24 @@ function updateRole(id, updates) {
 function archiveRole(id) {
   return withLock(() => {
     const data = readRolesFile();
-    const role = data.roles.find(r => r.id === id);
+    const role = data.roles.find((r) => r.id === id);
     if (!role) throw new Error(`角色不存在: ${id}`);
     role.archived = true;
     role.updatedAt = Date.now();
     writeRolesFile(data);
-    return role;
+    return normalizeRole(role);
   });
 }
 
 function restoreRole(id) {
   return withLock(() => {
     const data = readRolesFile();
-    const role = data.roles.find(r => r.id === id);
+    const role = data.roles.find((r) => r.id === id);
     if (!role) throw new Error(`角色不存在: ${id}`);
     role.archived = false;
     role.updatedAt = Date.now();
     writeRolesFile(data);
-    return role;
+    return normalizeRole(role);
   });
 }
 
@@ -143,10 +162,12 @@ module.exports = {
   listRoles,
   getRoleById,
   getRoleByName,
+  getRoleByAlias,
   createRole,
   updateRole,
   archiveRole,
   restoreRole,
   readRolesFile,
+  writeRolesFile,
   ROLES_FILE,
 };

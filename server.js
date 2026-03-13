@@ -43,16 +43,52 @@ function getAllRoles() {
  * 按角色名查找角色配置（兼容旧消息中的 character 字段）
  */
 function getRoleConfig(characterName) {
-  // 先查当前角色
-  const role = roleStore.getRoleByName(characterName);
-  if (role) return { cli: role.cli, avatar: role.avatar, id: role.id, name: role.name };
-  // 再查 legacyNameMap
+  const role = roleStore.getRoleByName(characterName) || roleStore.getRoleByAlias(characterName);
+  if (role) {
+    return {
+      cli: role.cli,
+      avatar: role.avatar,
+      id: role.id,
+      name: role.name,
+      model: role.model,
+      aliases: role.aliases || [],
+    };
+  }
+
   const roleId = legacyNameMap[characterName];
   if (roleId) {
     const legacyRole = roleStore.getRoleById(roleId);
-    if (legacyRole) return { cli: legacyRole.cli, avatar: legacyRole.avatar, id: legacyRole.id, name: legacyRole.name };
+    if (legacyRole) {
+      return {
+        cli: legacyRole.cli,
+        avatar: legacyRole.avatar,
+        id: legacyRole.id,
+        name: legacyRole.name,
+        model: legacyRole.model,
+        aliases: legacyRole.aliases || [],
+      };
+    }
   }
+
   return null;
+}
+
+function getSessionMentionableRoles(sessionId, { excludeCharacter = null } = {}) {
+  const memberIds = sessionStore.getSessionMembers(sessionId);
+  const excludedRoleId = excludeCharacter ? getRoleConfig(excludeCharacter)?.id : null;
+
+  return memberIds
+    .map((id) => roleStore.getRoleById(id))
+    .filter((role) => role && !role.archived)
+    .filter((role) => role.id !== excludedRoleId);
+}
+
+function getSessionMentionableNames(sessionId, options) {
+  return getSessionMentionableRoles(sessionId, options).map((role) => role.name);
+}
+
+function isMentionAllowedInSession(sessionId, characterName, { excludeCharacter = null } = {}) {
+  return getSessionMentionableNames(sessionId, { excludeCharacter }).includes(characterName);
 }
 
 // ── AI 互@ 链式调用限制 ──────────────────────────────────
@@ -375,14 +411,14 @@ app.post("/api/chat", (req, res) => {
   }
 
   // 确保会话存在（如果是旧会话没有 session 文件，用所有未归档角色初始化）
-  const allActiveIds = roleStore.listRoles().map(r => r.id);
+  const allActiveIds = roleStore.listRoles().map((r) => r.id);
   sessionStore.getOrCreateSession(sessionId, allActiveIds);
 
-  const mentions = parseMentions(text);
+  const mentions = parseMentions(text, sessionId);
   if (mentions.length === 0) {
-    const activeRoles = getActiveRoles();
+    const mentionableNames = getSessionMentionableNames(sessionId);
     return res.status(400).json({
-      error: "未找到有效的 @mention，可用角色: " + Object.keys(activeRoles).join(", "),
+      error: "未找到有效的 @mention，可用角色: " + mentionableNames.join(", "),
     });
   }
 
@@ -396,11 +432,6 @@ app.post("/api/chat", (req, res) => {
     mentions: mentions.map((m) => m.character),
     timestamp: Date.now(),
   });
-
-  // 将被@的角色加入聊天室成员
-  for (const { character } of mentions) {
-    addSessionMember(sessionId, character);
-  }
 
   // 立即返回，后台异步处理
   res.json({ messageId, mentions });
@@ -485,10 +516,18 @@ app.get("/api/sessions", (_req, res) => {
 });
 
 // ── @mention 解析 ─────────────────────────────────────────
-function parseMentions(text) {
-  const names = Object.keys(getActiveRoles()).sort((a, b) => b.length - a.length);
-  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
+function buildMentionPattern(names) {
+  if (names.length === 0) return null;
+  const escaped = names
+    .sort((a, b) => b.length - a.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`@(${escaped.join("|")})`, "g");
+}
+
+function parseMentions(text, sessionId) {
+  const names = getSessionMentionableNames(sessionId);
+  const pattern = buildMentionPattern(names);
+  if (!pattern) return [];
 
   const positions = [];
   let match;
@@ -500,15 +539,11 @@ function parseMentions(text) {
     });
   }
 
-  // 提取每个 @mention 各自的 prompt（到下一个 @mention 之间的文本）
   const mentionsWithPrompt = [];
   const mentionsWithoutPrompt = [];
-  // 全局 prompt：最后一个 @mention 之后的文本
-  const globalPrompt = positions.length > 0
-    ? text.slice(positions[positions.length - 1].end).trim()
-    : text.trim();
+  const globalPrompt = positions.length > 0 ? text.slice(positions[positions.length - 1].end).trim() : text.trim();
 
-  for (let i = 0; i < positions.length; i++) {
+  for (let i = 0; i < positions.length; i += 1) {
     const promptStart = positions[i].end;
     const promptEnd = i + 1 < positions.length ? positions[i + 1].start : text.length;
     const prompt = text.slice(promptStart, promptEnd).trim();
@@ -519,22 +554,19 @@ function parseMentions(text) {
     }
   }
 
-  // 没有独立 prompt 的 @mention 共享全局 prompt（无 prompt 时回退到空串，避免丢弃 mention）
-  for (const m of mentionsWithoutPrompt) {
-    mentionsWithPrompt.push({ character: m.character, prompt: globalPrompt || "" });
+  for (const mention of mentionsWithoutPrompt) {
+    mentionsWithPrompt.push({ character: mention.character, prompt: globalPrompt || "" });
   }
 
-  // 按原始出现顺序排序
-  const charOrder = positions.map(p => p.character);
+  const charOrder = positions.map((position) => position.character);
   mentionsWithPrompt.sort((a, b) => charOrder.indexOf(a.character) - charOrder.indexOf(b.character));
 
-  // 去重（同一角色只保留第一次出现）
   const seen = new Set();
   const mentions = [];
-  for (const m of mentionsWithPrompt) {
-    if (!seen.has(m.character)) {
-      seen.add(m.character);
-      mentions.push(m);
+  for (const mention of mentionsWithPrompt) {
+    if (!seen.has(mention.character)) {
+      seen.add(mention.character);
+      mentions.push(mention);
     }
   }
 
@@ -658,10 +690,9 @@ ${recentSummary}
 }
 
 // ── AI 回复中的 @mention 检测 ─────────────────────────────
-function parseAIMentions(text) {
-  const names = Object.keys(getActiveRoles()).sort((a, b) => b.length - a.length);
-  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
+function parseAIMentions(text, sessionId, fromCharacter) {
+  const pattern = buildMentionPattern(getSessionMentionableNames(sessionId, { excludeCharacter: fromCharacter }));
+  if (!pattern) return [];
 
   const found = new Set();
   let match;
@@ -694,9 +725,6 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
       break;
     }
     chainCounter.count++;
-
-    // 被召唤的角色加入聊天室成员
-    addSessionMember(sessionId, targetChar);
 
     const targetConfig = getRoleConfig(targetChar);
     if (!targetConfig) continue;
@@ -819,7 +847,7 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
 
   // 保存 AI 回复
   const replyId = crypto.randomUUID();
-  const aiMentions = depth < MAX_DEPTH ? parseAIMentions(result.text).filter(c => c !== character) : [];
+  const aiMentions = depth < MAX_DEPTH ? parseAIMentions(result.text, sessionId, character) : [];
 
   appendToLog(sessionId, {
     id: replyId,
@@ -912,10 +940,9 @@ app.post("/api/mcp-send-message", (req, res) => {
 
   const messageId = crypto.randomUUID();
 
-  // aiMentions 完全由 atTargets 决定，不从 text 中正则匹配
-  const activeRoles = getActiveRoles();
-  const aiMentions = (atTargets || []).filter(t =>
-    activeRoles[t] && t !== character  // 排除自己，只允许合法角色
+  // aiMentions 完全由 atTargets 决定，只允许当前会话成员
+  const aiMentions = (atTargets || []).filter(
+    (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
   );
 
   // 确定线程 ID
@@ -954,14 +981,40 @@ app.post("/api/mcp-send-message", (req, res) => {
   }
 });
 
+function closeServer() {
+  cleanupMcpRegistrations();
+  if (serverInstance) {
+    serverInstance.close();
+  }
+}
+
 // ── 启动服务 ──────────────────────────────────────────────
 // 服务启动时统一注册 Trae / Codex 的 MCP permission 服务器
 initMcpRegistrations(String(PORT));
 
 // 进程退出时清理 MCP 注册
-process.on("SIGINT", () => { cleanupMcpRegistrations(); process.exit(0); });
-process.on("SIGTERM", () => { cleanupMcpRegistrations(); process.exit(0); });
+process.on("SIGINT", () => { closeServer(); process.exit(0); });
+process.on("SIGTERM", () => { closeServer(); process.exit(0); });
 
-app.listen(PORT, () => {
-  console.log(`AI Chat Arena 已启动: http://localhost:${PORT}`);
+const serverInstance = app.listen(PORT, () => {
+  const address = serverInstance.address();
+  const actualPort = typeof address === "object" && address ? address.port : PORT;
+  console.log(`AI Chat Arena 已启动: http://localhost:${actualPort}`);
 });
+
+module.exports = {
+  app,
+  closeServer,
+  __test: {
+    roleStore,
+    getRoleConfig,
+    parseMentions,
+    parseAIMentions,
+    isMentionAllowedInSession,
+    ensureRoleSystemInitializedForTests() {
+      ensureRoleSystemInitialized();
+      return roleStore.listRoles({ includeArchived: true });
+    },
+    closeServer,
+  },
+};
