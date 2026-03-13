@@ -125,6 +125,50 @@ assert(!shouldAutoAllowPermission("Bash", { command: "rm -rf /" }), "危险命�
 assert(!shouldAutoAllowPermission("Write", {}), "Write 不自动通过");
 assert(!shouldAutoAllowPermission("Edit", {}), "Edit 不自动通过");
 
+// ── 工作目录自动放行 ─────────────────────────────────────────
+console.log("\n=== 工作目录自动放行 ===");
+const workdir = "/tmp/project";
+assert(
+  shouldAutoAllowPermission("Edit", { file_path: "/tmp/project/src/index.js" }, { workingDirectory: workdir }) === true,
+  "工作目录内 Edit 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Write", { file_path: "/tmp/project/docs/plan.md" }, { workingDirectory: workdir }) === true,
+  "工作目录内 Write 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Edit", { file_path: "/tmp/other/index.js" }, { workingDirectory: workdir }) === false,
+  "工作目录外 Edit 不自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Glob", { pattern: "**/*.js", path: "/tmp/project/src" }, { workingDirectory: workdir }) === true,
+  "工作目录内 Glob 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Grep", { pattern: "foo", path: "/tmp/project/src" }, { workingDirectory: workdir }) === true,
+  "工作目录内 Grep 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Grep", { pattern: "foo", path: "/tmp/outside" }, { workingDirectory: workdir }) === false,
+  "工作目录外 Grep 不自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Bash", { command: "rg TODO .", cwd: "/tmp/project" }, { workingDirectory: workdir }) === true,
+  "工作目录内 rg Bash 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Bash", { command: "sed -i '' 's/old/new/' src/index.js", cwd: "/tmp/project" }, { workingDirectory: workdir }) === true,
+  "工作目录内 sed Bash 自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Bash", { command: "rg TODO .", cwd: "/tmp/outside" }, { workingDirectory: workdir }) === false,
+  "工作目录外 Bash 不自动通过"
+);
+assert(
+  shouldAutoAllowPermission("Bash", { command: "cd /tmp/project && rg TODO ." }, { workingDirectory: workdir }) === false,
+  "依赖 cd && 的 Bash 不自动通过"
+);
+
 // ── 结果 ──────────────────────────────────────────────────
 console.log("\n══════════════════════════════════════");
 console.log(`结果: ${passed} 通过, ${failed} 失败`);

@@ -4,6 +4,7 @@ const state = {
   characters: {},      // name -> { cli, avatar, id, archived, model }
   profiles: {},        // (deprecated, kept for backwards compat during transition)
   sessionMembers: [],  // 当前会话的成员角色列表 [{ id, name, cli, ... }]
+    sessionMeta: { title: "新对话", workingDirectory: "" },
   eventSource: null,
   // 右侧栏统计 - 动态按角色名统计
   stats: { total: 0, byRole: {}, verified: 0 },
@@ -37,7 +38,9 @@ const $newSessionBtn = $("#new-session-btn");
 const $sessionList = $("#session-list");
 const $mentionHints = $("#mention-hints");
 const $charStatuses = $("#character-statuses");
+const $chatTitleText = $("#chat-title-text");
 const $chatSubtitle = $("#chat-subtitle");
+const $editSessionMetaBtn = $("#edit-session-meta-btn");
 const $settingsBtn = $("#settings-btn");
 const $settingsModal = $("#settings-modal");
 const $settingsForm = $("#settings-form");
@@ -66,6 +69,7 @@ async function init() {
   }
   $sessionDisplay.textContent = state.sessionId.slice(0, 8) + "...";
 
+  await loadSessionMeta();
   await loadSessionMembers();
   renderStaticCharacterTexts();
   renderCharStatuses();
@@ -77,6 +81,7 @@ async function init() {
   setupMentionHints();
   setupChatScroll();
   setupSettings();
+    setupSessionMetaEditor();
   setupThreadPanel();
 
   $newSessionBtn.addEventListener("click", () => showNewSessionModal());
@@ -96,6 +101,105 @@ async function loadSessionMembers() {
   } catch {
     state.sessionMembers = [];
   }
+}
+
+async function loadSessionMeta() {
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}`);
+    const data = await res.json();
+    state.sessionMeta = data.session || { title: "新对话", workingDirectory: "" };
+  } catch {
+    state.sessionMeta = { title: "新对话", workingDirectory: "" };
+  }
+  renderSessionMeta();
+}
+
+function renderSessionMeta() {
+  if ($chatTitleText) {
+    $chatTitleText.textContent = state.sessionMeta?.title || "新对话";
+  }
+  if ($chatSubtitle) {
+    $chatSubtitle.textContent = state.sessionMeta?.workingDirectory || "未设置";
+    $chatSubtitle.title = state.sessionMeta?.workingDirectory || "";
+  }
+}
+
+function setupSessionMetaEditor() {
+  $editSessionMetaBtn?.addEventListener("click", () => showSessionMetaModal());
+}
+
+async function chooseSystemDirectory($input, $error) {
+  try {
+    const res = await fetch("/api/system/select-directory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: state.sessionId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "选择目录失败");
+    $input.value = data.workingDirectory || "";
+    if ($error) $error.textContent = "";
+  } catch (err) {
+    if ($error) $error.textContent = err.message;
+  }
+}
+
+function showSessionMetaModal() {
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.id = "session-meta-modal";
+  modal.innerHTML = `
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel">
+      <h3>对话设置</h3>
+      <p class="modal-desc">设置当前对话的名称和工作目录。角色会优先在该目录内执行开发操作。</p>
+      <div class="session-meta-fields">
+        <label class="session-meta-label">对话名称</label>
+        <input id="session-title-input" class="session-meta-input" value="${escapeHtml(state.sessionMeta?.title || "新对话")}">
+        <label class="session-meta-label">工作目录</label>
+        <div class="session-meta-row">
+          <input id="session-workdir-input" class="session-meta-input" value="${escapeHtml(state.sessionMeta?.workingDirectory || "")}" placeholder="/absolute/path">
+          <button id="session-workdir-pick" class="btn-secondary" type="button">系统选择</button>
+        </div>
+        <div id="session-meta-error" class="settings-error"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="session-meta-cancel">取消</button>
+        <button class="btn-primary" id="session-meta-save">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  const $titleInput = modal.querySelector("#session-title-input");
+  const $workdirInput = modal.querySelector("#session-workdir-input");
+  const $error = modal.querySelector("#session-meta-error");
+
+  modal.querySelector("[data-close]").addEventListener("click", close);
+  modal.querySelector("#session-meta-cancel").addEventListener("click", close);
+  modal.querySelector("#session-workdir-pick").addEventListener("click", () => chooseSystemDirectory($workdirInput, $error));
+  modal.querySelector("#session-meta-save").addEventListener("click", async () => {
+    $error.textContent = "";
+    try {
+      const res = await fetch(`/api/sessions/${state.sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: ($titleInput.value || "").trim() || "新对话",
+          workingDirectory: ($workdirInput.value || "").trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "保存失败");
+      state.sessionMeta = data.session;
+      renderSessionMeta();
+      loadSessionList();
+      close();
+    } catch (err) {
+      $error.textContent = err.message;
+    }
+  });
 }
 
 /**
@@ -827,6 +931,7 @@ function renderCharStatuses() {
     div.querySelector(".btn-remove-member").addEventListener("click", async (e) => {
       const roleId = e.target.dataset.roleId;
       await fetch(`/api/sessions/${state.sessionId}/members/${roleId}`, { method: "DELETE" });
+    await loadSessionMeta();
       await loadSessionMembers();
       renderCharStatuses();
       setupMentionHints();
@@ -908,7 +1013,8 @@ async function loadSessionList() {
       }).join('');
       div.innerHTML = `
         <div class="session-avatars">${avatarsHtml}</div>
-        <div class="session-preview">${s.sessionId.slice(0, 12)}...${isCurrent ? " (当前)" : ""}</div>
+          <div class="session-preview">${escapeHtml(s.title || s.sessionId.slice(0, 12))}${isCurrent ? " (当前)" : ""}</div>
+          <div class="session-path">${escapeHtml(s.workingDirectory || s.sessionId)}</div>
         <div class="session-meta">
           <span>${s.messageCount} 条消息</span>
           <span>${formatTime(s.lastMessageAt)}</span>
@@ -930,6 +1036,7 @@ async function switchSession(id) {
   state.threads = {};
   state.messageElements = {};
 
+    await loadSessionMeta();
   await loadSessionMembers();
   $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   renderStats();
@@ -1188,15 +1295,7 @@ function buildSystemNoticeHtml() {
 }
 
 function renderStaticCharacterTexts() {
-  const memberNames = getSessionMemberNames();
-  if (memberNames.length > 0) {
-    $chatSubtitle.textContent = memberNames.map(name => {
-      const cli = state.characters[name]?.cli || "";
-      return `${name} (${cli})`;
-    }).join(" & ");
-  } else {
-    $chatSubtitle.textContent = "AI Chat Arena";
-  }
+  renderSessionMeta();
   const noticeEl = $("#system-notice");
   if (noticeEl) noticeEl.innerHTML = buildSystemNoticeHtml();
 }

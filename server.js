@@ -42,6 +42,21 @@ function getAllRoles() {
 /**
  * 按角色名查找角色配置（兼容旧消息中的 character 字段）
  */
+function normalizeWorkingDirectory(input) {
+  if (typeof input !== "string") return "";
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  const resolved = path.resolve(trimmed);
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    throw new Error("工作目录不存在");
+  }
+  if (!stat.isDirectory()) throw new Error("工作目录必须是目录");
+  return resolved;
+}
+
 function getRoleConfig(characterName) {
   const role = roleStore.getRoleByName(characterName) || roleStore.getRoleByAlias(characterName);
   if (role) {
@@ -241,6 +256,48 @@ app.delete("/api/sessions/:sessionId/members/:roleId", (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/sessions/:sessionId", (req, res) => {
+  const session = sessionStore.getOrCreateSession(req.params.sessionId);
+  const memberIds = sessionStore.getSessionMembers(req.params.sessionId);
+  const members = memberIds.map(id => roleStore.getRoleById(id)).filter(Boolean);
+  res.json({ session, members });
+});
+
+app.patch("/api/sessions/:sessionId", (req, res) => {
+  try {
+    const updates = {};
+    if (typeof req.body.title === "string") updates.title = req.body.title;
+    if (typeof req.body.workingDirectory === "string") {
+      updates.workingDirectory = normalizeWorkingDirectory(req.body.workingDirectory);
+    }
+    const session = sessionStore.updateSessionMeta(req.params.sessionId, updates);
+    res.json({ session });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/system/select-directory", (req, res) => {
+  if (process.platform !== "darwin") {
+    return res.status(501).json({ error: "当前系统不支持原生目录选择，请手动输入路径" });
+  }
+  try {
+    const { execFileSync } = require("child_process");
+    const selected = execFileSync("osascript", [
+      "-e",
+      'POSIX path of (choose folder with prompt "选择工作目录")',
+    ], { encoding: "utf-8" }).trim();
+    const workingDirectory = normalizeWorkingDirectory(selected);
+    res.json({ workingDirectory });
+  } catch (err) {
+    const message = String(err.message || "");
+    if (message.includes("User canceled") || message.includes("(-128)")) {
+      return res.status(400).json({ error: "用户取消了目录选择" });
+    }
+    res.status(500).json({ error: "打开系统目录选择失败" });
+  }
+});
+
 // ── API: 创建会话（带成员选择）───────────────────────────
 app.post("/api/sessions", (req, res) => {
   const { sessionId, memberIds } = req.body;
@@ -305,6 +362,7 @@ app.post("/api/permission-request", (req, res) => {
 
   const permContext = {
     isChatMember: isSessionMember(browserSessionId, character),
+    workingDirectory: sessionStore.readSession(browserSessionId)?.workingDirectory || "",
   };
 
   if (shouldAutoAllowPermission(toolName, input, permContext)) {
@@ -500,12 +558,15 @@ app.get("/api/sessions", (_req, res) => {
     try {
       const log = JSON.parse(fs.readFileSync(path.join(LOG_DIR, f), "utf-8"));
       const lastMsg = log.messages[log.messages.length - 1];
-      return {
-        sessionId: log.sessionId,
-        createdAt: log.createdAt,
-        lastMessageAt: lastMsg?.timestamp || log.createdAt,
-        messageCount: log.messages.length,
-      };
+      const sessionMeta = sessionStore.readSession(log.sessionId);
+        return {
+          sessionId: log.sessionId,
+          title: sessionMeta?.title || "新对话",
+          workingDirectory: sessionMeta?.workingDirectory || "",
+          createdAt: log.createdAt,
+          lastMessageAt: lastMsg?.timestamp || log.createdAt,
+          messageCount: log.messages.length,
+        };
     } catch {
       return null;
     }
@@ -591,12 +652,14 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     try {
-      const result = await invoke(cli, prompt, cliSessionId || undefined, {
-        verify: true,
-        browserSessionId,
-        character,
-        model: roleModel,
-      });
+      const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
+        const result = await invoke(cli, prompt, cliSessionId || undefined, {
+          verify: true,
+          browserSessionId,
+          character,
+          model: roleModel,
+          workingDirectory,
+        });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
       // 落盘 provider sessionId
@@ -672,6 +735,10 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
 
   const myConfig = getRoleConfig(character);
   const myCliName = myConfig?.cli || "unknown";
+  const sessionMeta = sessionStore.getOrCreateSession(sessionId);
+  const workdirNotice = sessionMeta.workingDirectory
+    ? `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: ${sessionMeta.workingDirectory}\n- 开发、扫描和文件修改应限制在该目录内\n- 调用 Bash 工具时优先传 cwd 参数，不要使用 cd /path && command`
+    : `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: (未设置)`;
 
   return `${prompt}
 
@@ -684,6 +751,8 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
 - 格式: JSON { sessionId, createdAt, messages: [{ id, role, character, text, timestamp, threadId?, replyToThread?, aiMentions? }] }
 - 参与角色: ${characterInfo}
 - 用户昵称: 铲屎官
+- 会话信息:
+${workdirNotice}
 - 最近消息:
 ${recentSummary}
 如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}`;

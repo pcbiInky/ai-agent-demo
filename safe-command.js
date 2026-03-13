@@ -1,9 +1,9 @@
 /**
- * Bash 命令安全检查模块
- *
- * 判断一条 Bash 命令是否可以自动授权（无需用户审批）。
- * 规则：首段必须是安全的 git 只读子命令，管道后续段只允许严格无副作用的过滤器。
+ * Bash / 文件工具安全检查模块
  */
+
+const fs = require("fs");
+const path = require("path");
 
 const SAFE_GIT_QUERY_SUBCOMMANDS = new Set([
   "status",
@@ -17,6 +17,21 @@ const SAFE_GIT_QUERY_SUBCOMMANDS = new Set([
   "grep",
   "help",
   "version",
+]);
+
+const SAFE_PIPE_COMMANDS = new Set([
+  "head", "tail", "wc", "sort", "uniq", "cat", "less", "more",
+  "cut", "tr", "grep",
+]);
+
+const SAFE_STANDALONE_COMMANDS = new Set([
+  "cd",
+]);
+
+const SAFE_WORKDIR_BASH_COMMANDS = new Set([
+  "rg",
+  "grep",
+  "sed",
 ]);
 
 function parseGitSubcommand(parts) {
@@ -36,25 +51,11 @@ function parseGitSubcommand(parts) {
   return parts[i] || null;
 }
 
-// 管道右侧允许的安全过滤命令（严格无副作用的纯过滤器）
-// 注意：sed/awk/xargs/tee 已移除，因为它们可执行任意命令或产生副作用
-const SAFE_PIPE_COMMANDS = new Set([
-  "head", "tail", "wc", "sort", "uniq", "cat", "less", "more",
-  "cut", "tr", "grep",
-]);
-
-// 独立安全命令（无副作用的非 git 命令）
-const SAFE_STANDALONE_COMMANDS = new Set([
-  "cd",
-]);
-
 function isSafeSingleCommand(cmd) {
   const trimmed = cmd.trim();
   if (!trimmed) return false;
-  // 单条命令内不允许 换行、&、;、<、>、反引号、$（防注入）
   if (/[\n\r&;<>`$]/.test(trimmed)) return false;
   const parts = trimmed.split(/\s+/);
-  // 独立安全命令（如 cd）
   if (SAFE_STANDALONE_COMMANDS.has(parts[0])) return true;
   if (parts[0] !== "git") return false;
   const subcommand = parseGitSubcommand(parts);
@@ -74,26 +75,85 @@ function isSafeBashCommand(command) {
   const trimmed = command.trim();
   if (!trimmed) return false;
 
-  // 先拦截 shell 命令连接符和危险语法（&&、||、;、&、反引号、$()、重定向、换行）
-  // 只允许单管道 | 作为分隔符
   if (/&&|\|\||[;\n\r\\`]|\$\(|[<>]|^\s*\(|\)\s*$/.test(trimmed)) return false;
 
-  // 按管道符拆分
   const segments = trimmed.split("|");
-  // 第一段必须是安全的 git 只读命令
   if (!isSafeSingleCommand(segments[0])) return false;
-  // 后续每段必须是安全的过滤命令
   for (let i = 1; i < segments.length; i++) {
     if (!isSafePipeTarget(segments[i])) return false;
   }
   return true;
 }
 
-function shouldAutoAllowPermission(toolName, input, context) {
+function getCommandName(command) {
+  if (typeof command !== "string") return "";
+  const trimmed = command.trim();
+  if (!trimmed || /&&|\|\||[;\n\r\\`]|\$\(|[<>]/.test(trimmed)) return "";
+  const parts = trimmed.split(/\s+/);
+  return parts[0] || "";
+}
+
+function normalizePath(targetPath) {
+  if (typeof targetPath !== "string" || !targetPath.trim()) return null;
+  const resolved = path.resolve(targetPath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    let probe = resolved;
+    const suffix = [];
+    while (probe && probe !== path.dirname(probe) && !fs.existsSync(probe)) {
+      suffix.unshift(path.basename(probe));
+      probe = path.dirname(probe);
+    }
+    try {
+      const realBase = fs.realpathSync.native(probe);
+      return path.join(realBase, ...suffix);
+    } catch {
+      return resolved;
+    }
+  }
+}
+
+function isPathWithin(baseDir, targetPath) {
+  const base = normalizePath(baseDir);
+  const target = normalizePath(targetPath);
+  if (!base || !target) return false;
+  return target === base || target.startsWith(base + path.sep);
+}
+
+function isWorkdirSearchAllowed(input, workingDirectory) {
+  const targetPath = input?.path || workingDirectory;
+  return isPathWithin(workingDirectory, targetPath);
+}
+
+function isAllowedWorkdirBash(command, cwd, workingDirectory) {
+  if (!workingDirectory || !cwd || !isPathWithin(workingDirectory, cwd)) return false;
+  const commandName = getCommandName(command);
+  if (!SAFE_WORKDIR_BASH_COMMANDS.has(commandName)) return false;
+  if (/&&|\|\||[;\n\r\\`]|\$\(|[<>]/.test(command || "")) return false;
+  return true;
+}
+
+function shouldAutoAllowPermission(toolName, input, context = {}) {
+  const workingDirectory = context.workingDirectory || "";
+
   if (toolName === "Read") return true;
-  if (toolName === "Glob") return true;
-  if (toolName === "Grep") return true;
-  if (toolName === "Bash" && isSafeBashCommand(input?.command)) return true;
+  if (toolName === "Glob") {
+    return workingDirectory ? isWorkdirSearchAllowed(input, workingDirectory) : true;
+  }
+  if (toolName === "Grep") {
+    return workingDirectory ? isWorkdirSearchAllowed(input, workingDirectory) : true;
+  }
+  if (toolName === "Edit") {
+    return workingDirectory ? isPathWithin(workingDirectory, input?.file_path) : false;
+  }
+  if (toolName === "Write") {
+    return workingDirectory ? isPathWithin(workingDirectory, input?.file_path) : false;
+  }
+  if (toolName === "Bash") {
+    if (workingDirectory && isAllowedWorkdirBash(input?.command, input?.cwd, workingDirectory)) return true;
+    return isSafeBashCommand(input?.command);
+  }
   if (toolName === "SendMessage" && context?.isChatMember) return true;
   return false;
 }
@@ -101,9 +161,12 @@ function shouldAutoAllowPermission(toolName, input, context) {
 module.exports = {
   SAFE_GIT_QUERY_SUBCOMMANDS,
   SAFE_PIPE_COMMANDS,
+  SAFE_WORKDIR_BASH_COMMANDS,
   parseGitSubcommand,
   isSafeSingleCommand,
   isSafePipeTarget,
   isSafeBashCommand,
+  isPathWithin,
+  normalizePath,
   shouldAutoAllowPermission,
 };

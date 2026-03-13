@@ -163,7 +163,8 @@ function initMcpRegistrations(port) {
         // 这里留空，permission-server 也会从 env 读取作为默认值
         PERMISSION_BROWSER_SESSION: "",
         PERMISSION_CHARACTER: "",
-      },
+          PERMISSION_WORKING_DIRECTORY: "",
+        },
     });
     execFileSync(CLI_CONFIG.trae.command, ["mcp", "add-json", "permission", mcpJson], { stdio: "ignore" });
     console.log("[MCP] Trae permission server 已注册");
@@ -180,6 +181,7 @@ function initMcpRegistrations(port) {
       "--env", `PERMISSION_SERVER_PORT=${port}`,
       "--env", "PERMISSION_BROWSER_SESSION=",
       "--env", "PERMISSION_CHARACTER=",
+        "--env", "PERMISSION_WORKING_DIRECTORY=",
       "--", "node", PERMISSION_SERVER_PATH,
     ], { stdio: "ignore" });
     console.log("[MCP] Codex permission server 已注册");
@@ -217,7 +219,7 @@ function cleanupMcpRegistrations() {
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
-  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model } = options;
+  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model, workingDirectory = "" } = options;
 
   const config = CLI_CONFIG[cli];
   if (!config) {
@@ -249,7 +251,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
       '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
       '内置工具已被禁用，不要尝试使用内置工具。' +
       '你的最终对外回复必须调用 mcp__permission__SendMessage 发送，不要直接输出正文。' +
-      '如需召唤其他角色，请在 SendMessage 的 atTargets 参数中显式给出角色名列表。'
+      '如需召唤其他角色，请在 SendMessage 的 atTargets 参数中显式给出角色名列表。' +
+        '调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。'
     : null;
 
   if (mcpHint) {
@@ -310,7 +313,11 @@ function invoke(cli, prompt, sessionId, options = {}) {
   if (config.supportsPermissionTool && browserSessionId) {
     // 写入共享上下文文件，供 Trae/Codex 的 MCP server 读取当前 session 和角色
     const contextFile = path.join(os.tmpdir(), "mcp-perm-context.json");
-    fs.writeFileSync(contextFile, JSON.stringify({ browserSessionId, character: character || "" }));
+    fs.writeFileSync(contextFile, JSON.stringify({
+        browserSessionId,
+        character: character || "",
+        workingDirectory: workingDirectory || "",
+      }));
 
     if (config.permissionStyle === "mcp-config-file") {
       // Claude: 生成临时 MCP 配置文件 + --tools "" 禁用所有内置工具
@@ -324,7 +331,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
               PERMISSION_SERVER_PORT: permissionServerPort,
               PERMISSION_BROWSER_SESSION: browserSessionId,
               PERMISSION_CHARACTER: character || "",
-            },
+                PERMISSION_WORKING_DIRECTORY: workingDirectory || "",
+              },
           },
         },
       };

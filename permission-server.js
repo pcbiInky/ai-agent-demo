@@ -32,13 +32,19 @@ function getContext() {
     return {
       browserSessionId: process.env.PERMISSION_BROWSER_SESSION,
       character: process.env.PERMISSION_CHARACTER || "",
+      workingDirectory: process.env.PERMISSION_WORKING_DIRECTORY || "",
     };
   }
   // 回退到共享状态文件
   try {
-    return JSON.parse(fs.readFileSync(CONTEXT_FILE, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(CONTEXT_FILE, "utf-8"));
+    return {
+      browserSessionId: raw.browserSessionId || "",
+      character: raw.character || "",
+      workingDirectory: raw.workingDirectory || "",
+    };
   } catch {
-    return { browserSessionId: "", character: "" };
+    return { browserSessionId: "", character: "", workingDirectory: "" };
   }
 }
 
@@ -125,13 +131,17 @@ server.tool(
   "在系统 shell 中执行命令",
   {
     command: z.string().describe("要执行的 bash 命令"),
+    cwd: z.string().optional().describe("命令执行目录"),
     description: z.string().optional().describe("命令的简短描述"),
     timeout: z.number().optional().describe("超时时间(ms)"),
   },
-  async ({ command, description, timeout }) => {
-    return withPermission("Bash", { command, description }, () => {
+  async ({ command, cwd, description, timeout }) => {
+    const ctx = getContext();
+    const effectiveCwd = cwd || ctx.workingDirectory || undefined;
+    return withPermission("Bash", { command, cwd: effectiveCwd, description }, () => {
       try {
         const result = execSync(command, {
+          cwd: effectiveCwd,
           encoding: "utf-8",
           timeout: timeout || 120_000,
           maxBuffer: 10 * 1024 * 1024,
@@ -139,7 +149,6 @@ server.tool(
         });
         return result || "(无输出)";
       } catch (err) {
-        // execSync 失败时 err 包含 stdout/stderr
         const stdout = err.stdout || "";
         const stderr = err.stderr || "";
         const msg = stderr || stdout || err.message;
@@ -226,9 +235,11 @@ server.tool(
     path: z.string().optional().describe("搜索目录"),
   },
   async ({ pattern, path: searchPath }) => {
-    return withPermission("Glob", { pattern, path: searchPath }, () => {
+    const ctx = getContext();
+    const effectivePath = searchPath || ctx.workingDirectory || process.cwd();
+    return withPermission("Glob", { pattern, path: effectivePath }, () => {
       // 使用 find 命令模拟 glob
-      const dir = searchPath || process.cwd();
+      const dir = effectivePath;
       try {
         const result = execSync(
           `find ${JSON.stringify(dir)} -type f -name ${JSON.stringify(pattern.replace(/\*\*\//g, ""))} 2>/dev/null | head -200`,
@@ -253,8 +264,10 @@ server.tool(
     output_mode: z.string().optional().describe("输出模式: content/files_with_matches/count"),
   },
   async ({ pattern, path: searchPath, glob: globFilter, output_mode }) => {
-    return withPermission("Grep", { pattern, path: searchPath, glob: globFilter }, () => {
-      const dir = searchPath || process.cwd();
+    const ctx = getContext();
+    const effectivePath = searchPath || ctx.workingDirectory || process.cwd();
+    return withPermission("Grep", { pattern, path: effectivePath, glob: globFilter }, () => {
+      const dir = effectivePath;
       let cmd = `rg --no-heading -n`;
       if (output_mode === "files_with_matches") cmd = `rg -l`;
       else if (output_mode === "count") cmd = `rg -c`;

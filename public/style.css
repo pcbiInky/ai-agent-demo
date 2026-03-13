@@ -92,7 +92,8 @@ html, body {
 .session-item:hover { background: var(--chat-bg); }
 .session-item.active { background: #ede8f5; }
 .session-item .session-preview { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 2px; display: flex; justify-content: space-between; }
+.session-item .session-path { font-size: 11px; color: var(--text-light); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 4px; display: flex; justify-content: space-between; }
 .session-item .session-avatars { display: flex; gap: -4px; margin-bottom: 4px; }
 .session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid white; }
 
@@ -111,8 +112,13 @@ html, body {
   background: var(--header-bg);
   color: white;
 }
+.chat-title { display: flex; flex-direction: column; gap: 6px; }
 .chat-title h1 { font-size: 17px; font-weight: 600; }
-.chat-subtitle { font-size: 12px; opacity: 0.6; }
+.chat-subtitle-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-subtitle-label { font-size: 11px; opacity: 0.72; flex-shrink: 0; }
+.chat-subtitle { font-size: 12px; opacity: 0.78; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-meta-edit-btn { border: 1px solid rgba(255,255,255,0.22); background: rgba(255,255,255,0.08); color: white; border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.chat-meta-edit-btn:hover { background: rgba(255,255,255,0.14); }
 
 #chat-container {
   flex: 1;
@@ -1046,3 +1052,8 @@ html, body {
   #app { grid-template-columns: 200px 1fr; }
   #sidebar-right { display: none; }
 }
+
+.session-meta-fields { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.session-meta-label { font-size: 12px; color: var(--text-light); }
+.session-meta-row { display: flex; gap: 8px; }
+.session-meta-input { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
