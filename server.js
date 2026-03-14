@@ -806,21 +806,21 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
     }
   } catch { /* 新会话，无历史 */ }
 
-  // AI 互@ 规则提示
+  // AI 召唤规则提示
   let mentionRules = "";
   if (depth < MAX_DEPTH) {
-    mentionRules = `\n\n【AI 互@规则】
-如果你认为需要向其他角色提问、求证或讨论，可以在回复中使用 @角色名 来召唤他们。
+    mentionRules = `\n\n【AI 召唤规则】
+如果你认为需要向其他角色提问、求证或讨论，请通过 mcp__permission__SendMessage 的 atTargets 显式召唤，不要在正文里使用 @角色名 触发召唤。
 可用角色: ${characterInfo}
-注意: 只在确实有必要时才@其他角色，不要为了展示而@。`;
+注意: 只在确实有必要时才召唤其他角色；正文里可以提到角色名，但不要把正文中的 @ 当作召唤方式。`;
   } else {
-    mentionRules = `\n\n【注意】你是被其他 AI 角色召唤的，请直接回答问题，不要在回复中@其他角色。`;
+    mentionRules = `\n\n【注意】你是被其他 AI 角色召唤的，请直接回答问题；如无必要，不要再次通过 SendMessage 的 atTargets 召唤其他角色。`;
   }
 
   // 被 AI 唤醒时的额外说明
   let invokeContext = "";
   if (fromCharacter) {
-    invokeContext = `\n\n【召唤上下文】${fromCharacter} 召唤了你，请结合聊天记录上下文回答。`;
+    invokeContext = `\n\n【召唤上下文】${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请结合聊天记录上下文回答。`;
   }
 
   const myConfig = getRoleConfig(character);
@@ -889,7 +889,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     if (!targetConfig) continue;
     const contextPrompt = buildContextPrompt(
       sessionId,
-      `${fromCharacter} 在聊天中提到了你，请查看最近的聊天记录并回应。`,
+      `${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请查看最近的聊天记录并回应。`,
       targetChar,
       { depth: depth + 1, fromCharacter }
     );
@@ -938,7 +938,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     chainCounter.count++;
     const followUpPrompt = buildContextPrompt(
       sessionId,
-      `你之前在回复中@了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。不要再@其他角色。`,
+      `你之前通过 SendMessage 的 atTargets 召唤了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。`,
       fromCharacter,
       { depth: 1 }
     );
@@ -1192,6 +1192,7 @@ module.exports = {
     getRoleConfig,
     parseMentions,
     parseAIMentions,
+    buildContextPrompt,
     isMentionAllowedInSession,
     appendToLog,
     extractVerifyMeta,

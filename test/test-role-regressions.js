@@ -70,6 +70,28 @@ async function testMentionParsingHonorsSessionMembers() {
   );
 }
 
+async function testBuildContextPromptUsesSendMessageSummonRules() {
+  resetDataDir();
+  delete require.cache[require.resolve("../role-system/roles")];
+  delete require.cache[require.resolve("../role-system/migrations")];
+  delete require.cache[require.resolve("../server")];
+
+  const server = require("../server");
+  const roles = server.__test.ensureRoleSystemInitializedForTests();
+  const yyfRole = roles.find((role) => role.name === "YYF");
+  const fakerRole = roles.find((role) => role.name === "Faker");
+
+  const sessionId = `session-${crypto.randomUUID()}`;
+  writeSession(sessionId, [yyfRole.id, fakerRole.id]);
+
+  const prompt = server.__test.buildContextPrompt(sessionId, "测试", "YYF", { depth: 0, fromCharacter: "Faker" });
+
+  assert(
+    prompt.includes("SendMessage 的 atTargets") && !prompt.includes("在回复中使用 @角色名 来召唤他们"),
+    "buildContextPrompt uses SendMessage-based summon instructions"
+  );
+}
+
 async function testRenamePreservesLegacyLookup() {
   resetDataDir();
   delete require.cache[require.resolve("../role-system/roles")];
@@ -105,6 +127,7 @@ async function main() {
 
   try {
     await testMentionParsingHonorsSessionMembers();
+    await testBuildContextPromptUsesSendMessageSummonRules();
     await testRenamePreservesLegacyLookup();
   } finally {
     try {
