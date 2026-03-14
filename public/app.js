@@ -231,14 +231,19 @@ function connectSSE() {
 
   es.addEventListener("reply", (e) => {
     const data = JSON.parse(e.data);
-    setCharStatus(data.character, "online");
     finalizeThinking(data.character, data.messageId, "done");
 
     if (data.threadId && data.depth > 0) {
-      // Thread 回复：带引用条显示在主流 + 更新 thread 数据
       appendThreadReply(data);
     } else {
       appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions);
+    }
+
+    // MCP 消息：invoke 可能还在运行（CLI 退出前），用处理中标记提示用户
+    if (data.source === "mcp-tool") {
+      markMessageProcessing(data.replyId, data.character);
+    } else {
+      setCharStatus(data.character, "online");
     }
 
     state.lastSpeaker = data.character;
@@ -273,6 +278,7 @@ function connectSSE() {
   es.addEventListener("abort", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "online");
+    clearMessageProcessing(data.character);
     // 找到所有该角色正在 thinking 的元素，标记为已终止
     const els = document.querySelectorAll(`[id^="thinking-${data.character}-"]`);
     for (const el of els) {
@@ -285,6 +291,10 @@ function connectSSE() {
   es.addEventListener("status", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, data.status);
+    // invoke 真正结束时清除消息上的"处理中"标记
+    if (data.status === "online") {
+      clearMessageProcessing(data.character);
+    }
   });
 
   // ── 权限请求事件 ──
@@ -773,6 +783,25 @@ async function abortInvoke(character) {
   } catch (err) {
     console.error("[abort] 请求失败:", err);
   }
+}
+
+// ── 消息级"处理中"标记（invoke 未结束时显示在消息上方）──
+function markMessageProcessing(msgId, character) {
+  const el = state.messageElements[msgId];
+  if (!el) return;
+  // 在消息 header 中追加处理中标记
+  const header = el.querySelector(".msg-header");
+  if (!header || header.querySelector(".msg-processing")) return;
+  const badge = document.createElement("span");
+  badge.className = "msg-processing";
+  badge.dataset.character = character;
+  badge.innerHTML = '<span class="thinking-spinner"></span>仍在处理中';
+  header.appendChild(badge);
+}
+
+function clearMessageProcessing(character) {
+  const badges = document.querySelectorAll(`.msg-processing[data-character="${character}"]`);
+  for (const badge of badges) badge.remove();
 }
 
 // ── 权限审批卡片（紧凑模式） ────────────────────────────

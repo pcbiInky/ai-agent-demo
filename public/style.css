@@ -1090,3 +1090,14 @@ html, body {
   background: var(--error-text);
   color: #fff;
 }
+.msg-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-light);
+  background: rgba(0,0,0,0.04);
+  padding: 1px 8px;
+  border-radius: 8px;
+  margin-left: 4px;
+}
