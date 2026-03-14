@@ -219,7 +219,7 @@ function cleanupMcpRegistrations() {
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
-  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model, workingDirectory = "" } = options;
+  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model, workingDirectory = "", signal } = options;
 
   const config = CLI_CONFIG[cli];
   if (!config) {
@@ -366,6 +366,25 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
     let result = "";
     let stderr = "";
+    let aborted = false; // signal 提前终止标记
+
+    // signal 支持：外部可通过 AbortSignal 提前终止 CLI 进程
+    if (signal) {
+      const onAbort = () => {
+        if (child.exitCode !== null) return; // 已退出，忽略
+        aborted = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) child.kill("SIGKILL");
+        }, 3000);
+      };
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        child.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
+    }
 
     // 活跃信号：同时监听 stdout 和 stderr
     // CLI 在 thinking/工具调用时只输出到 stderr，只监听 stdout 会误判超时
@@ -427,7 +446,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
       clearInterval(timer);
       clearTimeout(killTimer);
       cleanupTmpConfig();
-      if (child.killed) {
+      if (aborted) {
+        // 被 signal 提前终止 — 正常 resolve（消息已通过 MCP SendMessage 发出）
+        if (canary) {
+          const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result);
+          const text = result.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
+          resolve({ text, sessionId: reportedSessionId || id, verified });
+        } else {
+          resolve({ text: result, sessionId: reportedSessionId || id });
+        }
+      } else if (child.killed) {
         reject(new Error(`${config.command} 超时 (${timeoutMs}ms 无活跃输出)`));
       } else if (code !== 0) {
         const errorMsg = `${config.command} 退出码 ${code}`;

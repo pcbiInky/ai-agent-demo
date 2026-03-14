@@ -270,6 +270,18 @@ function connectSSE() {
     appendSystemNotice(data.text);
   });
 
+  es.addEventListener("abort", (e) => {
+    const data = JSON.parse(e.data);
+    setCharStatus(data.character, "online");
+    // 找到所有该角色正在 thinking 的元素，标记为已终止
+    const els = document.querySelectorAll(`[id^="thinking-${data.character}-"]`);
+    for (const el of els) {
+      if (el.dataset.archived) continue;
+      finalizeThinking(data.character, el.id.replace(`thinking-${data.character}-`, ""), "error");
+    }
+    appendSystemNotice(`${getDisplayName(data.character)} 的执行已被用户终止`);
+  });
+
   es.addEventListener("status", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, data.status);
@@ -710,7 +722,8 @@ function showThinking(character, messageId) {
     <div class="bubble-wrapper">
         <div class="msg-header">
           <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
-          <span class="msg-time">处理中...</span>
+          <span class="msg-time thinking-status"><span class="thinking-spinner"></span>处理中...</span>
+          <button class="abort-btn" title="终止执行" data-character="${escapeHtml(character)}">终止</button>
         </div>
         <div class="thinking-scroll-area">
           <div class="process-log"></div>
@@ -718,6 +731,10 @@ function showThinking(character, messageId) {
         </div>
       </div>
   `;
+  // 绑定终止按钮
+  div.querySelector(".abort-btn").addEventListener("click", () => {
+    abortInvoke(character);
+  });
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
 }
@@ -741,6 +758,21 @@ function finalizeThinking(character, messageId, status = "done") {
 
   const buttons = el.querySelectorAll(".perm-summary-actions .perm-btn");
   for (const btn of buttons) btn.disabled = true;
+}
+
+// ── 用户主动终止 AI 执行 ─────────────────────────────────
+async function abortInvoke(character) {
+  try {
+    const res = await fetch("/api/abort-invoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browserSessionId: state.sessionId, character }),
+    });
+    const data = await res.json();
+    if (!data.ok) console.warn("[abort]", data.error);
+  } catch (err) {
+    console.error("[abort] 请求失败:", err);
+  }
 }
 
 // ── 权限审批卡片（紧凑模式） ────────────────────────────

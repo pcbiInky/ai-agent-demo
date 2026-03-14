@@ -120,8 +120,10 @@ const sseClients = new Map();
 const pendingPermissions = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
-// requestId -> { browserSessionId, character, toolName, expireAt }（已批准的权限请求，一次性消费）
+// requestId -> { browserSessionId, character, toolName, replyToMessageId, expireAt }（已批准的权限请求，一次性消费）
 const approvedRequests = new Map();
+// browserSessionId:roleId -> AbortController（当前 invoke 的提前终止控制器）
+const invokeAbortControllers = new Map();
 // browserSessionId:character -> number（该角色在当前会话通过 MCP SendMessage 成功发消息次数）
 const mcpSendCounts = new Map();
 // browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
@@ -228,11 +230,12 @@ function finalizePendingMcpVerification(sessionId, character, verified) {
 // ── 审批记录管理（一次性消费 + TTL）────────────────────────
 const APPROVAL_TTL_MS = 30_000; // 30 秒过期
 
-function storeApproval(requestId, browserSessionId, character, toolName) {
+function storeApproval(requestId, browserSessionId, character, toolName, replyToMessageId) {
   approvedRequests.set(requestId, {
     browserSessionId,
     character,
     toolName,
+    replyToMessageId,
     expireAt: Date.now() + APPROVAL_TTL_MS,
   });
   // 自动清理过期记录
@@ -440,7 +443,7 @@ app.post("/api/permission-request", (req, res) => {
   if (shouldAutoAllowPermission(toolName, input, permContext)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
     // 存储审批记录（供 /api/mcp-send-message 校验身份）
-    storeApproval(requestId, browserSessionId, character, toolName);
+    storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId);
     // 先发 permission 事件让前端创建卡片（用户能看到 AI 在做什么）
     emitSSE(browserSessionId, "permission", {
       requestId,
@@ -520,7 +523,8 @@ app.post("/api/permission-response", (req, res) => {
 
   // 如果批准，存储审批记录（供 /api/mcp-send-message 等后续调用校验身份）
   if (behavior === "allow" && pending.toolName) {
-    storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName);
+    const thinkingMsgId = activeThinking.get(`${pending.browserSessionId}:${pending.character}`) || null;
+    storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName, thinkingMsgId);
   }
 
   // 返回给 MCP server
@@ -719,6 +723,9 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   const fullRole = roleStore.getRoleByName(character);
   const roleModel = fullRole?.model || model;
 
+  const abortController = new AbortController();
+  invokeAbortControllers.set(key, abortController);
+
   const next = prev.then(async () => {
     // 从落盘的 session-context 读取 provider sessionId
     const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
@@ -733,6 +740,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
         character,
         model: roleModel,
         workingDirectory,
+        signal: abortController.signal,
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
@@ -747,6 +755,8 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       clearPendingMcpReply(browserSessionId, character);
       resetInvokeSendGuard(browserSessionId, character);
       onError(err);
+    } finally {
+      invokeAbortControllers.delete(key);
     }
   });
 
@@ -924,7 +934,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
   }
 
   // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
-  if (!ENFORCE_MCP_SENDMESSAGE && depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
+  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
     chainCounter.count++;
     const followUpPrompt = buildContextPrompt(
       sessionId,
@@ -937,31 +947,12 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     activeThinking.set(`${sessionId}:${fromCharacter}`, messageId);
 
     await new Promise((resolve) => {
-      enqueueInvoke(sessionId, getRoleConfig(fromCharacter).cli, followUpPrompt, fromCharacter, (followResult) => {
+      enqueueInvoke(sessionId, getRoleConfig(fromCharacter).cli, followUpPrompt, fromCharacter, async (followResult) => {
         setCharStatus(sessionId, fromCharacter, "online");
         activeThinking.delete(`${sessionId}:${fromCharacter}`);
         removeThinking(sessionId, fromCharacter, messageId);
-        const followId = crypto.randomUUID();
-        appendToLog(sessionId, {
-          id: followId,
-          role: "assistant",
-          character: fromCharacter,
-          text: followResult.text,
-          replyTo: messageId,
-          timestamp: Date.now(),
-          ...(followResult.verified !== undefined && { verified: followResult.verified }),
-          threadId,
-          depth: 1,
-        });
-        emitSSE(sessionId, "reply", {
-          character: fromCharacter,
-          messageId,
-          replyId: followId,
-          text: followResult.text,
-          ...(followResult.verified !== undefined && { verified: followResult.verified }),
-          threadId,
-          depth: 1,
-        });
+        // 统一走 processAIChain：MCP 模式由 SendMessage 落日志，非 MCP 模式由 processAIChain 落日志
+        await processAIChain(sessionId, fromCharacter, followResult, messageId, threadId, 1, chainCounter);
         resolve();
       }, (err) => {
         setCharStatus(sessionId, fromCharacter, "online");
@@ -1079,8 +1070,7 @@ app.post("/api/mcp-send-message", (req, res) => {
     return res.status(403).json({ error: "无效、已过期或已使用的审批记录" });
   }
 
-  const { browserSessionId, character } = approval;
-  const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  const { browserSessionId, character, replyToMessageId } = approval;
   if (!replyToMessageId) {
     return res.status(409).json({ error: "当前不在可发送的 invoke 上下文" });
   }
@@ -1147,6 +1137,30 @@ app.post("/api/mcp-send-message", (req, res) => {
     releaseInvokeSendQuota(browserSessionId, character);
     return res.status(500).json({ error: `发送失败: ${err.message}` });
   }
+});
+
+// ── API: 用户主动终止 AI 角色执行 ─────────────────────────
+app.post("/api/abort-invoke", (req, res) => {
+  const { browserSessionId, character } = req.body;
+  if (!browserSessionId || !character) {
+    return res.status(400).json({ error: "缺少 browserSessionId 或 character" });
+  }
+  const roleConfig = getRoleConfig(character);
+  if (!roleConfig) {
+    return res.status(400).json({ error: `未知角色: ${character}` });
+  }
+  const roleId = roleConfig.id || character;
+  const abortKey = `${browserSessionId}:${roleId}`;
+  const controller = invokeAbortControllers.get(abortKey);
+  if (!controller) {
+    return res.json({ ok: true, aborted: false, reason: "该角色当前没有活跃的 invoke" });
+  }
+  controller.abort();
+  console.log(`[用户终止] ${character} (${abortKey})`);
+  // 清理 thinking 状态
+  activeThinking.delete(`${browserSessionId}:${character}`);
+  emitSSE(browserSessionId, "abort", { character });
+  res.json({ ok: true, aborted: true });
 });
 
 function closeServer() {
