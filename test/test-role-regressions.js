@@ -58,16 +58,38 @@ async function testMentionParsingHonorsSessionMembers() {
     "parseMentions only returns session members"
   );
 
-  const aiMentions = server.__test.parseAIMentions("先问 @YYF 再问 @Faker", sessionId, "Faker");
-  assert(
-    aiMentions.length === 1 && aiMentions[0] === "YYF",
-    "parseAIMentions only returns session members and excludes non-members"
-  );
-
   assert(
     server.__test.isMentionAllowedInSession(sessionId, fakerRole.name) === false,
     "non-member role is rejected by session mention guard"
   );
+}
+
+async function testFallbackReplyDoesNotDeriveAIMentions() {
+  resetDataDir();
+  delete require.cache[require.resolve("../role-system/roles")];
+  delete require.cache[require.resolve("../role-system/migrations")];
+  delete require.cache[require.resolve("../server")];
+
+  const server = require("../server");
+  const roles = server.__test.ensureRoleSystemInitializedForTests();
+  const yyfRole = roles.find((role) => role.name === "YYF");
+  const fakerRole = roles.find((role) => role.name === "Faker");
+
+  const sessionId = `session-${crypto.randomUUID()}`;
+  writeSession(sessionId, [yyfRole.id, fakerRole.id]);
+
+  assert(
+    typeof server.__test.getFallbackAIMentions === "function",
+    "server exposes fallback AI mention helper"
+  );
+
+  if (typeof server.__test.getFallbackAIMentions === "function") {
+    const aiMentions = server.__test.getFallbackAIMentions("先问 @YYF 再问 @Faker", sessionId, "Faker");
+    assert(
+      Array.isArray(aiMentions) && aiMentions.length === 0,
+      "non-MCP fallback reply text never triggers AI mentions"
+    );
+  }
 }
 
 async function testBuildContextPromptUsesSendMessageSummonRules() {
@@ -127,6 +149,7 @@ async function main() {
 
   try {
     await testMentionParsingHonorsSessionMembers();
+    await testFallbackReplyDoesNotDeriveAIMentions();
     await testBuildContextPromptUsesSendMessageSummonRules();
     await testRenamePreservesLegacyLookup();
   } finally {

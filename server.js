@@ -810,9 +810,9 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
   let mentionRules = "";
   if (depth < MAX_DEPTH) {
     mentionRules = `\n\n【AI 召唤规则】
-如果你认为需要向其他角色提问、求证或讨论，请通过 mcp__permission__SendMessage 的 atTargets 显式召唤，不要在正文里使用 @角色名 触发召唤。
+如果你认为需要向其他角色提问、求证或讨论，请通过 mcp__permission__SendMessage 的 atTargets 显式召唤。一轮只能Send一次，请不要重复尝试。收到回复之后会重新召唤你，视作新的一轮。
 可用角色: ${characterInfo}
-注意: 只在确实有必要时才召唤其他角色；正文里可以提到角色名，但不要把正文中的 @ 当作召唤方式。`;
+注意: 只在确实有必要时才召唤其他角色；正文里可以提到对方的角色名方便理解。一轮只能Send一次。`;
   } else {
     mentionRules = `\n\n【注意】你是被其他 AI 角色召唤的，请直接回答问题；如无必要，不要再次通过 SendMessage 的 atTargets 召唤其他角色。`;
   }
@@ -848,17 +848,9 @@ ${recentSummary}
 如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}`;
 }
 
-// ── AI 回复中的 @mention 检测 ─────────────────────────────
-function parseAIMentions(text, sessionId, fromCharacter) {
-  const pattern = buildMentionPattern(getSessionMentionableNames(sessionId, { excludeCharacter: fromCharacter }));
-  if (!pattern) return [];
-
-  const found = new Set();
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    found.add(match[1]);
-  }
-  return [...found];
+// ── 非 MCP fallback 回复不再从正文提取 AI 召唤 ──────────────
+function getFallbackAIMentions(_text, _sessionId, _fromCharacter) {
+  return [];
 }
 
 // ── AI 互@ 统一调度 ──────────────────────────────────────
@@ -985,9 +977,9 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
     return;
   }
 
-  // 保存 AI 回复
+  // 非 MCP fallback 只负责落消息，不再从正文派生 AI 召唤。
   const replyId = crypto.randomUUID();
-  const aiMentions = depth < MAX_DEPTH ? parseAIMentions(result.text, sessionId, character) : [];
+  const aiMentions = getFallbackAIMentions(result.text, sessionId, character);
 
   appendToLog(sessionId, {
     id: replyId,
@@ -1191,7 +1183,7 @@ module.exports = {
     roleStore,
     getRoleConfig,
     parseMentions,
-    parseAIMentions,
+    getFallbackAIMentions,
     buildContextPrompt,
     isMentionAllowedInSession,
     appendToLog,
