@@ -159,12 +159,9 @@ function initMcpRegistrations(port) {
       args: [PERMISSION_SERVER_PATH],
       env: {
         PERMISSION_SERVER_PORT: port,
-        // browserSessionId 和 character 由 Claude/Trae 每次调用时作为 MCP 工具参数传递
-        // 这里留空，permission-server 也会从 env 读取作为默认值
-        PERMISSION_BROWSER_SESSION: "",
-        PERMISSION_CHARACTER: "",
-          PERMISSION_WORKING_DIRECTORY: "",
-        },
+        // 不再注册空的 PERMISSION_BROWSER_SESSION / PERMISSION_CHARACTER / PERMISSION_WORKING_DIRECTORY
+        // 这些值由 spawn env 在每次 invoke 时动态注入，避免并发串号
+      },
     });
     execFileSync(CLI_CONFIG.trae.command, ["mcp", "add-json", "permission", mcpJson], { stdio: "ignore" });
     console.log("[MCP] Trae permission server 已注册");
@@ -179,9 +176,8 @@ function initMcpRegistrations(port) {
     execFileSync(codexCmd, [
       "mcp", "add", "permission",
       "--env", `PERMISSION_SERVER_PORT=${port}`,
-      "--env", "PERMISSION_BROWSER_SESSION=",
-      "--env", "PERMISSION_CHARACTER=",
-        "--env", "PERMISSION_WORKING_DIRECTORY=",
+      // 不再注册空的 PERMISSION_BROWSER_SESSION / PERMISSION_CHARACTER / PERMISSION_WORKING_DIRECTORY
+      // 这些值由 spawn env 在每次 invoke 时动态注入，避免并发串号
       "--", "node", PERMISSION_SERVER_PATH,
     ], { stdio: "ignore" });
     console.log("[MCP] Codex permission server 已注册");
@@ -358,8 +354,23 @@ function invoke(cli, prompt, sessionId, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
+    // 构建进程环境变量：注入角色上下文，解决并发 invoke 串号问题
+    const childEnv = {
+      ...process.env,
+    };
+    if (browserSessionId) {
+      childEnv.PERMISSION_BROWSER_SESSION = browserSessionId;
+    }
+    if (character) {
+      childEnv.PERMISSION_CHARACTER = character;
+    }
+    if (workingDirectory) {
+      childEnv.PERMISSION_WORKING_DIRECTORY = workingDirectory;
+    }
+
     const child = spawn(config.command, args, {
       stdio: ["ignore", "pipe", "pipe"],
+      env: childEnv,
     });
 
     activeChildren.add(child);
