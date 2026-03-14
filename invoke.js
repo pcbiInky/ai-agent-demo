@@ -251,6 +251,9 @@ function invoke(cli, prompt, sessionId, options = {}) {
       '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
       '内置工具已被禁用，不要尝试使用内置工具。' +
       '你的最终对外回复必须调用 mcp__permission__SendMessage 发送，不要直接输出正文。' +
+      '调用 SendMessage 成功后，本轮任务即结束；工具返回(如“消息已发送/发送失败”)只是工具执行结果，不是需要回复的系统消息。' +
+      '若 SendMessage 返回失败，请根据错误原因修正参数后再尝试发送；成功后不要再次调用 SendMessage。' +
+      '每次被召唤(单次 invoke)最多只能成功发送一条消息。' +
       '如需召唤其他角色，请在 SendMessage 的 atTargets 参数中显式给出角色名列表。' +
         '调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。'
     : null;

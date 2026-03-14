@@ -126,6 +126,8 @@ const approvedRequests = new Map();
 const mcpSendCounts = new Map();
 // browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
 const pendingMcpReplies = new Map();
+// browserSessionId:character（当前 invoke 是否已成功使用过一次 SendMessage）
+const invokeSendGuards = new Set();
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -157,6 +159,25 @@ function markMcpSend(sessionId, character) {
 
 function getPendingMcpReplyKey(sessionId, character) {
   return `${sessionId}:${character}`;
+}
+
+function getInvokeSendGuardKey(sessionId, character) {
+  return `${sessionId}:${character}`;
+}
+
+function resetInvokeSendGuard(sessionId, character) {
+  invokeSendGuards.delete(getInvokeSendGuardKey(sessionId, character));
+}
+
+function consumeInvokeSendQuota(sessionId, character) {
+  const key = getInvokeSendGuardKey(sessionId, character);
+  if (invokeSendGuards.has(key)) return false;
+  invokeSendGuards.add(key);
+  return true;
+}
+
+function releaseInvokeSendQuota(sessionId, character) {
+  invokeSendGuards.delete(getInvokeSendGuardKey(sessionId, character));
 }
 
 function registerPendingMcpReply(sessionId, character, messageId) {
@@ -703,6 +724,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     clearPendingMcpReply(browserSessionId, character);
+    resetInvokeSendGuard(browserSessionId, character);
     try {
       const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
@@ -720,8 +742,10 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       onResult(result);
+      resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
       clearPendingMcpReply(browserSessionId, character);
+      resetInvokeSendGuard(browserSessionId, character);
       onError(err);
     }
   });
@@ -1057,59 +1081,71 @@ app.post("/api/mcp-send-message", (req, res) => {
 
   const { browserSessionId, character } = approval;
   const replyToMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  if (!replyToMessageId) {
+    return res.status(409).json({ error: "当前不在可发送的 invoke 上下文" });
+  }
+
   const verifyMeta = extractVerifyMeta(text);
-  markMcpSend(browserSessionId, character);
   // 验证角色合法性
   if (!getRoleConfig(character)) {
     return res.status(400).json({ error: `未知角色: ${character}` });
   }
-
-  const messageId = crypto.randomUUID();
-
-  // aiMentions 完全由 atTargets 决定，只允许当前会话成员
-  const aiMentions = (atTargets || []).filter(
-    (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
-  );
-
-  // 确定线程 ID
-  const activeThreadId = threadId || (aiMentions.length > 0 ? messageId : null);
-
-  appendToLog(browserSessionId, {
-    id: messageId,
-    role: "assistant",
-    character,
-    text: verifyMeta.text,
-    ...(replyToMessageId && { replyTo: replyToMessageId }),
-    timestamp: Date.now(),
-    source: "mcp-tool",
-    ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
-    ...(activeThreadId && { threadId: activeThreadId }),
-    ...(aiMentions.length > 0 && { aiMentions }),
-  });
-
-  if (replyToMessageId) {
-    registerPendingMcpReply(browserSessionId, character, messageId);
+  if (!consumeInvokeSendQuota(browserSessionId, character)) {
+    return res.status(409).json({ error: "同一轮 invoke 只能成功发送一条消息；若首次发送失败，可根据错误原因修正后重试" });
   }
 
-  emitSSE(browserSessionId, "reply", {
-    character,
-    ...(replyToMessageId && { messageId: replyToMessageId }),
-    replyId: messageId,
-    text: verifyMeta.text,
-    source: "mcp-tool",
-    ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
-    ...(activeThreadId && { threadId: activeThreadId }),
-    ...(aiMentions.length > 0 && { aiMentions }),
-  });
+  try {
+    markMcpSend(browserSessionId, character);
+    const messageId = crypto.randomUUID();
 
-  res.json({ ok: true, messageId });
+    // aiMentions 完全由 atTargets 决定，只允许当前会话成员
+    const aiMentions = (atTargets || []).filter(
+      (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
+    );
 
-  // 如果有 atTargets，异步触发 AI 召唤链
-  if (aiMentions.length > 0) {
-    const chainCounter = { count: 0 };
-    // depth=0 表示这是一个新的召唤起点（类似用户 @ 触发的 depth=0）
-    dispatchAIMentions(browserSessionId, character, aiMentions, messageId, activeThreadId, 0, chainCounter, messageId)
-      .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
+    // 确定线程 ID
+    const activeThreadId = threadId || (aiMentions.length > 0 ? messageId : null);
+
+    appendToLog(browserSessionId, {
+      id: messageId,
+      role: "assistant",
+      character,
+      text: verifyMeta.text,
+      ...(replyToMessageId && { replyTo: replyToMessageId }),
+      timestamp: Date.now(),
+      source: "mcp-tool",
+      ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
+      ...(activeThreadId && { threadId: activeThreadId }),
+      ...(aiMentions.length > 0 && { aiMentions }),
+    });
+
+    if (replyToMessageId) {
+      registerPendingMcpReply(browserSessionId, character, messageId);
+    }
+
+    emitSSE(browserSessionId, "reply", {
+      character,
+      ...(replyToMessageId && { messageId: replyToMessageId }),
+      replyId: messageId,
+      text: verifyMeta.text,
+      source: "mcp-tool",
+      ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
+      ...(activeThreadId && { threadId: activeThreadId }),
+      ...(aiMentions.length > 0 && { aiMentions }),
+    });
+
+    res.json({ ok: true, messageId });
+
+    // 如果有 atTargets，异步触发 AI 召唤链
+    if (aiMentions.length > 0) {
+      const chainCounter = { count: 0 };
+      // depth=0 表示这是一个新的召唤起点（类似用户 @ 触发的 depth=0）
+      dispatchAIMentions(browserSessionId, character, aiMentions, messageId, activeThreadId, 0, chainCounter, messageId)
+        .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
+    }
+  } catch (err) {
+    releaseInvokeSendQuota(browserSessionId, character);
+    return res.status(500).json({ error: `发送失败: ${err.message}` });
   }
 });
 
