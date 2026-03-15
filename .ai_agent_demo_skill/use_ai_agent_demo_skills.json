@@ -1,0 +1,5 @@
+{
+  "global": ["use-ai-agent-demo-skill", "code-review", "mcp-file-ops", "create-ai-agent-demo-skill"],
+  "roles": {},
+  "loadOrder": "global-first"
+}

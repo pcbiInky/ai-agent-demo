@@ -6,6 +6,7 @@ const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./inv
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
+const { loadSkills, printSkillStartupLog, getSkillsForCharacter, getSkillContentByType, getAllSkills, getSkillById } = require("./skill-loader");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -830,6 +831,10 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
     ? `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: ${sessionMeta.workingDirectory}\n- 开发、扫描和文件修改应限制在该目录内\n- 调用 Bash 工具时优先传 cwd 参数，不要使用 cd /path && command`
     : `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: (未设置)`;
 
+  // 行为类 Skill 注入
+  const skills = getSkillsForCharacter(character);
+  const behaviorSkillContent = getSkillContentByType(skills, "behavior");
+
   return `${prompt}
 
 ---
@@ -845,7 +850,7 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
 ${workdirNotice}
 - 最近消息:
 ${recentSummary}
-如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}`;
+如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}${behaviorSkillContent}`;
 }
 
 // ── 非 MCP fallback 回复不再从正文提取 AI 召唤 ──────────────
@@ -1068,7 +1073,6 @@ app.post("/api/mcp-send-message", (req, res) => {
   }
 
   const verifyMeta = extractVerifyMeta(text);
-  // 验证角色合法性
   if (!getRoleConfig(character)) {
     return res.status(400).json({ error: `未知角色: ${character}` });
   }
@@ -1080,12 +1084,10 @@ app.post("/api/mcp-send-message", (req, res) => {
     markMcpSend(browserSessionId, character);
     const messageId = crypto.randomUUID();
 
-    // aiMentions 完全由 atTargets 决定，只允许当前会话成员
     const aiMentions = (atTargets || []).filter(
       (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
     );
 
-    // 确定线程 ID
     const activeThreadId = threadId || (aiMentions.length > 0 ? messageId : null);
 
     appendToLog(browserSessionId, {
@@ -1118,10 +1120,8 @@ app.post("/api/mcp-send-message", (req, res) => {
 
     res.json({ ok: true, messageId });
 
-    // 如果有 atTargets，异步触发 AI 召唤链
     if (aiMentions.length > 0) {
       const chainCounter = { count: 0 };
-      // depth=0 表示这是一个新的召唤起点（类似用户 @ 触发的 depth=0）
       dispatchAIMentions(browserSessionId, character, aiMentions, messageId, activeThreadId, 0, chainCounter, messageId)
         .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
     }
@@ -1149,10 +1149,22 @@ app.post("/api/abort-invoke", (req, res) => {
   }
   controller.abort();
   console.log(`[用户终止] ${character} (${abortKey})`);
-  // 清理 thinking 状态
   activeThinking.delete(`${browserSessionId}:${character}`);
   emitSSE(browserSessionId, "abort", { character });
   res.json({ ok: true, aborted: true });
+});
+
+// ── Skill API（只读）────────────────────────────────────────
+app.get("/api/skills", (_req, res) => {
+  res.json({ skills: getAllSkills() });
+});
+
+app.get("/api/skills/:id", (req, res) => {
+  const skill = getSkillById(req.params.id);
+  if (!skill) {
+    return res.status(404).json({ error: `Skill not found: ${req.params.id}` });
+  }
+  res.json({ skill });
 });
 
 function closeServer() {
@@ -1163,6 +1175,21 @@ function closeServer() {
 }
 
 // ── 启动服务 ──────────────────────────────────────────────
+// 加载 Skill 系统
+const MCP_TOOL_NAMES = [
+  "mcp__permission__Bash", "mcp__permission__Read", "mcp__permission__Edit",
+  "mcp__permission__Write", "mcp__permission__Glob", "mcp__permission__Grep",
+  "mcp__permission__WebFetch", "mcp__permission__WebSearch", "mcp__permission__NotebookEdit",
+];
+const { errors: skillErrors } = loadSkills(MCP_TOOL_NAMES);
+printSkillStartupLog();
+
+// Skill Error 级别问题阻断启动
+if (skillErrors.length > 0) {
+  console.error(`[Skill] 存在 ${skillErrors.length} 个 Error 级别问题，服务启动中止。`);
+  process.exit(1);
+}
+
 // 服务启动时统一注册 Trae / Codex 的 MCP permission 服务器
 initMcpRegistrations(String(PORT));
 

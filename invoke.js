@@ -4,6 +4,7 @@ const { randomUUID } = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { getSkillsForCharacter, getSkillContentByType } = require("./skill-loader");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -254,13 +255,34 @@ function invoke(cli, prompt, sessionId, options = {}) {
         '调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。'
     : null;
 
-  if (mcpHint) {
+  // Skill 注入：tooling 类（与 mcpHint 同条件）和 global_constraint 类
+  const skills = getSkillsForCharacter(character);
+  const toolingContent = (config.supportsPermissionTool && browserSessionId)
+    ? getSkillContentByType(skills, "tooling")
+    : "";
+  const globalConstraintContent = getSkillContentByType(skills, "global_constraint");
+
+  // 合并 mcpHint + tooling Skill
+  const combinedMcpHint = mcpHint
+    ? mcpHint + toolingContent
+    : null;
+
+  if (combinedMcpHint) {
     if (config.supportsSystemPrompt) {
-      // 支持 system prompt 的 CLI：追加到 system prompt
-      systemPrompt = systemPrompt ? systemPrompt + mcpHint : mcpHint.trimStart();
+      systemPrompt = systemPrompt ? systemPrompt + combinedMcpHint : combinedMcpHint.trimStart();
     } else {
-      // 不支持 system prompt 的 CLI：追加到 user prompt
-      finalPrompt += mcpHint;
+      finalPrompt += combinedMcpHint;
+    }
+  }
+
+  // global_constraint 类 Skill 注入到 systemPrompt
+  if (globalConstraintContent) {
+    if (config.supportsSystemPrompt) {
+      systemPrompt = systemPrompt
+        ? systemPrompt + globalConstraintContent
+        : globalConstraintContent.trimStart();
+    } else {
+      finalPrompt += globalConstraintContent;
     }
   }
 

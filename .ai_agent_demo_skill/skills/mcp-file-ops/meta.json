@@ -1,0 +1,5 @@
+{
+  "owner": "system",
+  "model_support": ["claude", "trae", "codex"],
+  "max_chars": 2000
+}
