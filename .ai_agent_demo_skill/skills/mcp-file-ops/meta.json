@@ -1,5 +1,7 @@
 {
   "owner": "system",
   "model_support": ["claude", "trae", "codex"],
-  "max_chars": 2000
+  "priority": 70,
+  "requireTools": ["Read", "Write", "Edit", "Glob", "Grep"],
+  "defaultEnabled": true
 }

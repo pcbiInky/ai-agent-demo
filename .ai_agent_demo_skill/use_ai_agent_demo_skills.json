@@ -1,5 +1,10 @@
 {
-  "global": ["use-ai-agent-demo-skill", "code-review", "mcp-file-ops", "create-ai-agent-demo-skill"],
+  "global": ["use-ai-agent-demo-skill"],
   "roles": {},
+  "scenes": {
+    "code_review": ["code-review"],
+    "skill_creation": ["create-ai-agent-demo-skill"],
+    "file_ops": ["mcp-file-ops"]
+  },
   "loadOrder": "global-first"
 }

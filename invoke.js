@@ -4,7 +4,7 @@ const { randomUUID } = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { getSkillsForCharacter, getSkillContentByType } = require("./skill-loader");
+const { buildSkillTypeInjection } = require("./skill-loader");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -125,6 +125,22 @@ const TRAE_BUILTIN_TOOLS = [
 // Trae CLI 的配置文件路径
 const TRAE_CONFIG_PATH = path.join(os.homedir(), "Library", "Application Support", "trae_cli", "trae_cli.yaml");
 
+function recordSkillInjection(skillDecision, type, injection) {
+  if (!skillDecision) return;
+  if (!skillDecision.trace) skillDecision.trace = {};
+  if (!skillDecision.trace.injectedByType) skillDecision.trace.injectedByType = {};
+  skillDecision.trace.injectedByType[type] = {
+    ids: injection.injected,
+    totalChars: injection.totalChars,
+  };
+  if (!Array.isArray(skillDecision.trace.skipped)) {
+    skillDecision.trace.skipped = [];
+  }
+  for (const skipped of injection.skipped || []) {
+    skillDecision.trace.skipped.push(skipped);
+  }
+}
+
 /**
  * 构建 Trae CLI 的权限代理参数
  * 通过 --disallowed-tool 禁用内置工具 + --allowed-tool 预授权 MCP 工具
@@ -216,7 +232,16 @@ function cleanupMcpRegistrations() {
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
-  const { timeoutMs = 600_000, verify = false, browserSessionId, character, model, workingDirectory = "", signal } = options;
+  const {
+    timeoutMs = 600_000,
+    verify = false,
+    browserSessionId,
+    character,
+    model,
+    workingDirectory = "",
+    signal,
+    skillDecision = null,
+  } = options;
 
   const config = CLI_CONFIG[cli];
   if (!config) {
@@ -255,16 +280,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
         '调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。'
     : null;
 
-  // Skill 注入：tooling 类（与 mcpHint 同条件）和 global_constraint 类
-  const skills = getSkillsForCharacter(character);
-  const toolingContent = (config.supportsPermissionTool && browserSessionId)
-    ? getSkillContentByType(skills, "tooling")
-    : "";
-  const globalConstraintContent = getSkillContentByType(skills, "global_constraint");
+  // Skill 注入：只消费请求入口已经决策好的 skillDecision
+  const toolingInjection = (config.supportsPermissionTool && browserSessionId)
+    ? buildSkillTypeInjection(skillDecision?.toolingSkills || [])
+    : { content: "", injected: [], skipped: [], totalChars: 0 };
+  const globalConstraintInjection = buildSkillTypeInjection(skillDecision?.globalConstraintSkills || []);
+  recordSkillInjection(skillDecision, "tooling", toolingInjection);
+  recordSkillInjection(skillDecision, "global_constraint", globalConstraintInjection);
 
-  // 合并 mcpHint + tooling Skill
   const combinedMcpHint = mcpHint
-    ? mcpHint + toolingContent
+    ? mcpHint + toolingInjection.content
     : null;
 
   if (combinedMcpHint) {
@@ -276,13 +301,13 @@ function invoke(cli, prompt, sessionId, options = {}) {
   }
 
   // global_constraint 类 Skill 注入到 systemPrompt
-  if (globalConstraintContent) {
+  if (globalConstraintInjection.content) {
     if (config.supportsSystemPrompt) {
       systemPrompt = systemPrompt
-        ? systemPrompt + globalConstraintContent
-        : globalConstraintContent.trimStart();
+        ? systemPrompt + globalConstraintInjection.content
+        : globalConstraintInjection.content.trimStart();
     } else {
-      finalPrompt += globalConstraintContent;
+      finalPrompt += globalConstraintInjection.content;
     }
   }
 

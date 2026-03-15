@@ -21,6 +21,10 @@ const state = {
   activeThreadId: null,
   // 消息 ID -> DOM 元素映射
   messageElements: {},
+  skills: [],
+  skillConfig: null,
+  skillTraces: [],
+  settingsTab: "roles",
 };
 
 const PROFILE_STORAGE_KEY = "characterProfilesV2";
@@ -47,9 +51,14 @@ const $settingsForm = $("#settings-form");
 const $settingsError = $("#settings-error");
 const $settingsSaveBtn = $("#settings-save-btn");
 const $settingsCancelBtn = $("#settings-cancel-btn");
+const $settingsTitle = $("#settings-title");
+const $settingsSubtitle = $("#settings-subtitle");
+const $settingsSkillsPanel = $("#settings-skills-panel");
 const $threadPanel = $("#thread-panel");
 const $threadMessages = $("#thread-messages");
 const $threadCloseBtn = $("#thread-close-btn");
+const $skillTraceList = $("#skill-trace-list");
+const $skillList = $("#skill-list");
 
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
@@ -76,6 +85,8 @@ async function init() {
 
   await loadHistory();
   await loadSessionList();
+  await loadSkillsOverview();
+  await loadSkillTraces();
   connectSSE();
   setupInput();
   setupMentionHints();
@@ -126,6 +137,83 @@ function renderSessionMeta() {
 
 function setupSessionMetaEditor() {
   $editSessionMetaBtn?.addEventListener("click", () => showSessionMetaModal());
+}
+
+async function loadSkillsOverview() {
+  try {
+    const res = await fetch("/api/skills");
+    const data = await res.json();
+    state.skills = data.skills || [];
+    state.skillConfig = data.config || null;
+  } catch {
+    state.skills = [];
+    state.skillConfig = null;
+  }
+  renderSkillList();
+}
+
+async function loadSkillTraces() {
+  if (!state.sessionId) return;
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}/skill-traces?limit=6`);
+    const data = await res.json();
+    state.skillTraces = data.traces || [];
+  } catch {
+    state.skillTraces = [];
+  }
+  renderSkillTraces();
+}
+
+function renderSkillTraces() {
+  if (!$skillTraceList) return;
+  if (!state.skillTraces.length) {
+    $skillTraceList.innerHTML = '<div class="empty-panel">暂无命中记录</div>';
+    return;
+  }
+
+  $skillTraceList.innerHTML = state.skillTraces.map((trace) => {
+    const scenes = trace.matchedScenes?.length ? trace.matchedScenes.join(", ") : "(none)";
+    const hits = trace.hitSkills?.length ? trace.hitSkills.join(", ") : "(none)";
+    const skipped = trace.skipped?.length
+      ? trace.skipped.map((item) => `${item.id}:${item.reason}`).join(", ")
+      : "-";
+    return `
+      <div class="skill-trace-item">
+        <div class="skill-trace-head">
+          <span class="skill-trace-role">${escapeHtml(trace.character || "-")}</span>
+          <span class="skill-trace-time">${formatTimeShort(trace.timestamp || Date.now())}</span>
+        </div>
+        <div class="skill-trace-line"><span>scenes</span><code>${escapeHtml(scenes)}</code></div>
+        <div class="skill-trace-line"><span>hits</span><code>${escapeHtml(hits)}</code></div>
+        <div class="skill-trace-line"><span>skipped</span><code>${escapeHtml(skipped)}</code></div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderSkillList() {
+  if (!$skillList) return;
+  if (!state.skills.length) {
+    $skillList.innerHTML = '<div class="empty-panel">暂无 Skill</div>';
+    return;
+  }
+
+  $skillList.innerHTML = state.skills.map((skill) => {
+    const bindings = [];
+    if (skill.bindings?.global) bindings.push("global");
+    if (skill.bindings?.scenes?.length) bindings.push(...skill.bindings.scenes.map((scene) => `scene:${scene}`));
+    if (skill.bindings?.roles?.length) bindings.push(...skill.bindings.roles.map((role) => `role:${role}`));
+    return `
+      <div class="skill-list-item">
+        <div class="skill-list-head">
+          <span class="skill-id">${escapeHtml(skill.id)}</span>
+          <span class="skill-type">${escapeHtml(skill.type)}</span>
+        </div>
+        <div class="skill-desc">${escapeHtml(skill.description || "")}</div>
+        <div class="skill-bindings">${escapeHtml(bindings.join(" · ") || "unbound")}</div>
+      </div>
+    `;
+  }).join("");
 }
 
 async function chooseSystemDirectory($input, $error) {
@@ -249,6 +337,7 @@ function connectSSE() {
     state.lastSpeaker = data.character;
     updateStats(data.character, data.verified);
     loadSessionList();
+    loadSkillTraces();
   });
 
   es.addEventListener("message-meta", (e) => {
@@ -262,6 +351,7 @@ function connectSSE() {
       setCharStatus(data.character, "online");
       finalizeThinking(data.character, data.messageId, "error");
       appendErrorMessage(data.character, data.error);
+      loadSkillTraces();
     }
   });
 
@@ -1146,8 +1236,9 @@ async function switchSession(id) {
   renderCharStatuses();
   setupMentionHints();
   renderStaticCharacterTexts();
-  loadHistory();
-  loadSessionList();
+  await loadHistory();
+  await loadSessionList();
+  await loadSkillTraces();
   connectSSE();
 }
 
@@ -1405,22 +1496,42 @@ function renderStaticCharacterTexts() {
 }
 
 function setupSettings() {
-  $settingsBtn.addEventListener("click", () => {
+  $settingsBtn.addEventListener("click", async () => {
+    await loadSkillsOverview();
+    await loadSkillTraces();
     renderSettingsForm();
+    setSettingsTab(state.settingsTab || "roles");
     hideSettingsError();
     $settingsModal.classList.remove("hidden");
   });
+
   $settingsCancelBtn.addEventListener("click", () => {
     hideSettingsError();
     $settingsModal.classList.add("hidden");
   });
+
   $settingsModal.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "1") {
       hideSettingsError();
       $settingsModal.classList.add("hidden");
     }
   });
+
+  document.querySelectorAll(".settings-tab[data-settings-tab]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const nextTab = btn.dataset.settingsTab || "roles";
+      if (nextTab === "skills") {
+        await loadSkillsOverview();
+        await loadSkillTraces();
+      }
+      setSettingsTab(nextTab);
+      hideSettingsError();
+    });
+  });
+
   $settingsSaveBtn.addEventListener("click", async () => {
+    if (state.settingsTab !== "roles") return;
+
     const rows = $settingsForm.querySelectorAll(".setting-row[data-role-id]");
     const nameMap = new Map();
     const updates = [];
@@ -1470,8 +1581,35 @@ function setupSettings() {
     renderCharStatuses();
     setupMentionHints();
     renderStats();
+    renderSettingsForm();
     $settingsModal.classList.add("hidden");
   });
+}
+
+function setSettingsTab(tab) {
+  state.settingsTab = tab;
+  document.querySelectorAll(".settings-tab[data-settings-tab]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.settingsTab === tab);
+  });
+
+  const isRolesTab = tab === "roles";
+  if ($settingsTitle) {
+    $settingsTitle.textContent = isRolesTab ? "角色管理" : "SKILL 面板";
+  }
+  if ($settingsSubtitle) {
+    $settingsSubtitle.textContent = isRolesTab
+      ? "管理角色名称、模型配置。可归档、恢复和新增角色。"
+      : "查看最近命中的 Skill 和当前已加载的 Skill 绑定关系。";
+  }
+  if ($settingsForm) {
+    $settingsForm.style.display = isRolesTab ? "grid" : "none";
+  }
+  if ($settingsSkillsPanel) {
+    $settingsSkillsPanel.style.display = isRolesTab ? "none" : "grid";
+  }
+  if ($settingsSaveBtn) {
+    $settingsSaveBtn.style.display = isRolesTab ? "inline-flex" : "none";
+  }
 }
 
 function renderSettingsForm() {

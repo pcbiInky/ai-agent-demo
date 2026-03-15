@@ -11,6 +11,7 @@ const path = require("path");
 // 调整 __dirname 让 skill-loader 能正确定位 .ai_agent_demo_skill/
 // skill-loader.js 使用自己的 __dirname 定位，所以直接 require 即可
 const { loadSkills, printSkillStartupLog } = require(path.join(__dirname, "..", "skill-loader"));
+const roleStore = require(path.join(__dirname, "..", "role-system", "roles"));
 
 // 已知 MCP 工具名列表（与 invoke.js 中的 MCP_TOOL_NAMES 保持一致）
 const MCP_TOOL_NAMES = [
@@ -27,7 +28,10 @@ const MCP_TOOL_NAMES = [
 
 console.log("🔍 Validating skills...\n");
 
-const { errors, warnings } = loadSkills(MCP_TOOL_NAMES);
+const { errors, warnings } = loadSkills({
+  knownMcpTools: MCP_TOOL_NAMES,
+  knownRoles: roleStore.listRoles({ includeArchived: true }).map((role) => role.name),
+});
 printSkillStartupLog();
 
 if (errors.length > 0) {

@@ -1101,3 +1101,239 @@ html, body {
   border-radius: 8px;
   margin-left: 4px;
 }
+
+/* ── Skill 面板 ─────────────────────────── */
+#skill-trace-list,
+#skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-trace-item,
+.skill-list-item {
+  background: #f6f4fb;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.skill-trace-head,
+.skill-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.skill-trace-role,
+.skill-id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.skill-trace-time,
+.skill-type {
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.skill-trace-line {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.skill-trace-line code {
+  background: #ece8f5;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.skill-desc {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.skill-bindings {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.empty-panel {
+  font-size: 12px;
+  color: var(--text-light);
+  padding: 4px 0;
+}
+
+/* ── Header Settings Refresh ───────────────── */
+#chat-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chat-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#settings-btn,
+.chat-settings-btn {
+  position: static;
+  width: auto;
+  height: auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  box-shadow: none;
+  cursor: pointer;
+  z-index: auto;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#settings-btn svg,
+.chat-settings-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Settings Layout ───────────────────────── */
+.modal-panel.settings-layout {
+  width: min(980px, calc(100vw - 32px));
+  margin: 6vh auto 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.settings-sidebar {
+  background: #f4f2f9;
+  border-right: 1px solid var(--border);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-sidebar-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-light);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.settings-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-light);
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-tab.active {
+  background: white;
+  color: var(--text);
+  box-shadow: 0 6px 18px rgba(24, 22, 38, 0.08);
+}
+
+.settings-main {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-main-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.settings-main-header h3 {
+  margin-bottom: 6px;
+}
+
+#settings-form {
+  display: grid;
+  gap: 10px;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-skills-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.settings-skills-block {
+  min-width: 0;
+}
+
+.settings-skills-block h4 {
+  font-size: 13px;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 980px) {
+  .modal-panel.settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .settings-sidebar-title {
+    width: 100%;
+  }
+
+  .settings-skills-panel {
+    grid-template-columns: 1fr;
+  }
+}

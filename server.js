@@ -6,7 +6,15 @@ const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./inv
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
-const { loadSkills, printSkillStartupLog, getSkillsForCharacter, getSkillContentByType, getAllSkills, getSkillById } = require("./skill-loader");
+const {
+  loadSkills,
+  printSkillStartupLog,
+  getSkillConfig,
+  getAllSkills,
+  getSkillDetailById,
+  buildSkillTypeInjection,
+} = require("./skill-loader");
+const { resolveRequestSkills } = require("./skill-router");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -131,6 +139,9 @@ const mcpSendCounts = new Map();
 const pendingMcpReplies = new Map();
 // browserSessionId:character（当前 invoke 是否已成功使用过一次 SendMessage）
 const invokeSendGuards = new Set();
+// sessionId -> 最近的 Skill 路由命中记录
+const recentSkillTraces = new Map();
+const MAX_SKILL_TRACE_PER_SESSION = 20;
 
 const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
 
@@ -578,7 +589,11 @@ app.post("/api/chat", (req, res) => {
     for (const { character, prompt } of mentions) {
       const config = getRoleConfig(character);
       if (!config) continue;
-      const contextPrompt = buildContextPrompt(sessionId, prompt, character, { depth: 0 });
+      const skillDecision = buildSkillDecision(sessionId, prompt, character);
+      const contextPrompt = buildContextPrompt(sessionId, prompt, character, {
+        depth: 0,
+        skillDecision,
+      });
 
       emitSSE(sessionId, "thinking", { character, messageId });
       activeThinking.set(`${sessionId}:${character}`, messageId);
@@ -607,7 +622,7 @@ app.post("/api/chat", (req, res) => {
             timestamp: Date.now(),
           });
           resolve();
-        });
+        }, { skillDecision });
       });
     }
   })();
@@ -712,7 +727,8 @@ function parseMentions(text, sessionId) {
 }
 
 // ── invoke 串行队列 ───────────────────────────────────────
-function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError) {
+function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError, options = {}) {
+  const { skillDecision = null } = options;
   const roleConfig = getRoleConfig(character);
   const roleId = roleConfig?.id || character;
   const key = `${browserSessionId}:${roleId}`;
@@ -742,6 +758,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
         model: roleModel,
         workingDirectory,
         signal: abortController.signal,
+        skillDecision,
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
@@ -750,10 +767,12 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       }
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
+      recordSkillTrace(browserSessionId, skillDecision, "ok");
       onResult(result);
       resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
       clearPendingMcpReply(browserSessionId, character);
+      recordSkillTrace(browserSessionId, skillDecision, "error");
       resetInvokeSendGuard(browserSessionId, character);
       onError(err);
     } finally {
@@ -784,8 +803,74 @@ function appendToLog(sessionId, message) {
   fs.writeFileSync(filePath, JSON.stringify(log, null, 2));
 }
 
+function getSkillBindings(skillId) {
+  const config = getSkillConfig();
+  const roles = Object.entries(config.roles || {})
+    .filter(([, skillIds]) => skillIds.includes(skillId))
+    .map(([roleName]) => roleName);
+  const scenes = Object.entries(config.scenes || {})
+    .filter(([, skillIds]) => skillIds.includes(skillId))
+    .map(([sceneName]) => sceneName);
+
+  return {
+    global: (config.global || []).includes(skillId),
+    roles,
+    scenes,
+  };
+}
+
+function buildSkillDecision(sessionId, prompt, character) {
+  const roleConfig = getRoleConfig(character);
+  const supportsPermissionTool = ["claude", "trae", "codex"].includes(roleConfig?.cli || "");
+  const skillDecision = resolveRequestSkills({
+    prompt,
+    character,
+    model: roleConfig?.cli || undefined,  // model_support は CLI タイプ名で比較
+    supportsPermissionTool,
+  });
+
+  skillDecision.trace = {
+    ...skillDecision.trace,
+    sessionId,
+    character,
+    model: roleConfig?.model || "",
+    injectedByType: {},
+  };
+
+  return skillDecision;
+}
+
+function recordSkillTrace(browserSessionId, skillDecision, status) {
+  if (!skillDecision?.trace) return;
+
+  const trace = {
+    ...skillDecision.trace,
+    status,
+    timestamp: Date.now(),
+    hitSkills: skillDecision.hitSkills.map((skill) => skill.id),
+  };
+
+  // trace.sessionId 是聊天会话 ID，前端查询时也用这个 key
+  const key = skillDecision.trace.sessionId || browserSessionId;
+  const traces = recentSkillTraces.get(key) || [];
+  traces.unshift(trace);
+  if (traces.length > MAX_SKILL_TRACE_PER_SESSION) {
+    traces.length = MAX_SKILL_TRACE_PER_SESSION;
+  }
+  recentSkillTraces.set(key, traces);
+
+  console.log(
+    `[SkillTrace] character=${trace.character} scenes=${trace.matchedScenes.join(",") || "(none)"} hits=${trace.hitSkills.join(",") || "(none)"}`
+  );
+}
+
+function getSkillTraces(sessionId, limit = MAX_SKILL_TRACE_PER_SESSION) {
+  const traces = recentSkillTraces.get(sessionId) || [];
+  return traces.slice(0, Math.max(0, limit));
+}
+
 // ── 共享记忆：为 AI 构建带上下文的 prompt ─────────────────
-function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromCharacter = null } = {}) {
+function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromCharacter = null, skillDecision = null } = {}) {
   const logPath = path.join(LOG_DIR, `${sessionId}.json`);
   // 获取当前会话成员的角色信息
   const memberIds = sessionStore.getSessionMembers(sessionId);
@@ -832,8 +917,14 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
     : `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: (未设置)`;
 
   // 行为类 Skill 注入
-  const skills = getSkillsForCharacter(character);
-  const behaviorSkillContent = getSkillContentByType(skills, "behavior");
+  const behaviorInjection = buildSkillTypeInjection(skillDecision?.behaviorSkills || []);
+  if (skillDecision?.trace) {
+    skillDecision.trace.injectedByType.behavior = {
+      ids: behaviorInjection.injected,
+      totalChars: behaviorInjection.totalChars,
+    };
+    skillDecision.trace.skipped.push(...behaviorInjection.skipped);
+  }
 
   return `${prompt}
 
@@ -850,7 +941,7 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
 ${workdirNotice}
 - 最近消息:
 ${recentSummary}
-如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}${behaviorSkillContent}`;
+如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}${behaviorInjection.content}`;
 }
 
 // ── 非 MCP fallback 回复不再从正文提取 AI 召唤 ──────────────
@@ -884,11 +975,13 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
 
     const targetConfig = getRoleConfig(targetChar);
     if (!targetConfig) continue;
+    const targetPrompt = `${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请查看最近的聊天记录并回应。`;
+    const targetSkillDecision = buildSkillDecision(sessionId, targetPrompt, targetChar);
     const contextPrompt = buildContextPrompt(
       sessionId,
-      `${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请查看最近的聊天记录并回应。`,
+      targetPrompt,
       targetChar,
-      { depth: depth + 1, fromCharacter }
+      { depth: depth + 1, fromCharacter, skillDecision: targetSkillDecision }
     );
 
     // 通知前端：AI 发起了召唤
@@ -926,18 +1019,20 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
           depth: depth + 1,
         });
         resolve();
-      });
+      }, { skillDecision: targetSkillDecision });
     });
   }
 
   // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
   if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
     chainCounter.count++;
+    const followUpSourcePrompt = `你之前通过 SendMessage 的 atTargets 召唤了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。`;
+    const followUpSkillDecision = buildSkillDecision(sessionId, followUpSourcePrompt, fromCharacter);
     const followUpPrompt = buildContextPrompt(
       sessionId,
-      `你之前通过 SendMessage 的 atTargets 召唤了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。`,
+      followUpSourcePrompt,
       fromCharacter,
-      { depth: 1 }
+      { depth: 1, skillDecision: followUpSkillDecision }
     );
 
     emitSSE(sessionId, "thinking", { character: fromCharacter, messageId, threadId });
@@ -957,7 +1052,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
         removeThinking(sessionId, fromCharacter, messageId);
         emitSSE(sessionId, "error", { character: fromCharacter, messageId, error: err.message, threadId });
         resolve();
-      });
+      }, { skillDecision: followUpSkillDecision });
     });
   }
 }
@@ -1156,15 +1251,29 @@ app.post("/api/abort-invoke", (req, res) => {
 
 // ── Skill API（只读）────────────────────────────────────────
 app.get("/api/skills", (_req, res) => {
-  res.json({ skills: getAllSkills() });
+  const skills = getAllSkills().map((skill) => ({
+    ...skill,
+    bindings: getSkillBindings(skill.id),
+  }));
+  res.json({ skills, config: getSkillConfig() });
 });
 
 app.get("/api/skills/:id", (req, res) => {
-  const skill = getSkillById(req.params.id);
+  const skill = getSkillDetailById(req.params.id);
   if (!skill) {
     return res.status(404).json({ error: `Skill not found: ${req.params.id}` });
   }
-  res.json({ skill });
+  res.json({
+    skill: {
+      ...skill,
+      bindings: getSkillBindings(skill.id),
+    },
+  });
+});
+
+app.get("/api/sessions/:sessionId/skill-traces", (req, res) => {
+  const limit = Number.parseInt(String(req.query.limit || MAX_SKILL_TRACE_PER_SESSION), 10);
+  res.json({ traces: getSkillTraces(req.params.sessionId, Number.isNaN(limit) ? MAX_SKILL_TRACE_PER_SESSION : limit) });
 });
 
 function closeServer() {
@@ -1181,7 +1290,10 @@ const MCP_TOOL_NAMES = [
   "mcp__permission__Write", "mcp__permission__Glob", "mcp__permission__Grep",
   "mcp__permission__WebFetch", "mcp__permission__WebSearch", "mcp__permission__NotebookEdit",
 ];
-const { errors: skillErrors } = loadSkills(MCP_TOOL_NAMES);
+const { errors: skillErrors } = loadSkills({
+  knownMcpTools: MCP_TOOL_NAMES,
+  knownRoles: roleStore.listRoles({ includeArchived: true }).map((role) => role.name),
+});
 printSkillStartupLog();
 
 // Skill Error 级别问题阻断启动
@@ -1212,6 +1324,9 @@ module.exports = {
     parseMentions,
     getFallbackAIMentions,
     buildContextPrompt,
+    buildSkillDecision,
+    getSkillBindings,
+    getSkillTraces,
     isMentionAllowedInSession,
     appendToLog,
     extractVerifyMeta,

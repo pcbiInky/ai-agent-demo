@@ -1,65 +1,68 @@
 /**
  * Skill Loader - File-based Skill V1
- * 负责加载、校验、缓存 .ai_agent_demo_skill/ 目录中的 Skill 文件
- * 不负责 prompt 拼接（拼接逻辑在 server.js / invoke.js）
+ * 负责加载、校验、缓存 .ai_agent_demo_skill/ 目录中的 Skill 文件。
+ * 请求级命中选择由 skill-router.js 负责。
  */
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const { z } = require("zod");
 
 const SKILL_DIR = path.join(__dirname, ".ai_agent_demo_skill");
 const SKILLS_DIR = path.join(SKILL_DIR, "skills");
 const CONFIG_FILE = path.join(SKILL_DIR, "use_ai_agent_demo_skills.json");
 
-// frontmatter 必填字段
 const REQUIRED_FRONTMATTER = ["name", "description", "type"];
-// 合法的 type 值
 const VALID_TYPES = ["behavior", "tooling", "global_constraint"];
-// 单 Skill 内容上限（字符数）
+const VALID_MODELS = ["claude", "trae", "codex"];
+const VALID_LOAD_ORDERS = ["global-first", "role-first"];
 const MAX_SKILL_CHARS = 2000;
-// 一次请求注入的 Skill 总量上限（字符数）
 const MAX_TOTAL_CHARS = 8000;
 
-// ── 内存 Registry ─────────────────────────────────────────
-let skillRegistry = new Map();   // skill_id -> { id, name, description, type, content, meta, filePath }
-let skillConfig = null;          // use_ai_agent_demo_skills.json 解析结果
-let loadErrors = [];             // Error 级别的问题
-let loadWarnings = [];           // Warning 级别的问题
+const skillMetaSchema = z.object({
+  owner: z.string().optional(),
+  model_support: z.array(z.enum(VALID_MODELS)).default(VALID_MODELS),
+  priority: z.number().int().min(0).max(1000).default(0),
+  requireTools: z.array(z.string()).default([]),
+  defaultEnabled: z.boolean().default(true),
+  max_chars: z.number().int().positive().max(MAX_SKILL_CHARS).optional(),
+}).strict();
 
-/**
- * 解析 SKILL.md 的 YAML frontmatter
- * @param {string} raw - 文件原始内容
- * @returns {{ frontmatter: object, content: string }}
- */
+const skillConfigSchema = z.object({
+  global: z.array(z.string()).default([]),
+  roles: z.record(z.string(), z.array(z.string())).default({}),
+  scenes: z.record(z.string(), z.array(z.string())).default({}),
+  loadOrder: z.enum(VALID_LOAD_ORDERS).default("global-first"),
+}).strict();
+
+let skillRegistry = new Map();
+let skillConfig = { global: [], roles: {}, scenes: {}, loadOrder: "global-first" };
+let loadErrors = [];
+let loadWarnings = [];
+
 function parseFrontmatter(raw) {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, content: raw };
+  if (!match) return { frontmatter: {}, content: raw.trim() };
 
   const frontmatter = {};
   for (const line of match[1].split("\n")) {
-    const idx = line.indexOf(":");
-    if (idx > 0) {
-      const key = line.slice(0, idx).trim();
-      const val = line.slice(idx + 1).trim();
-      frontmatter[key] = val;
-    }
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf(":");
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const val = trimmed.slice(idx + 1).trim();
+    frontmatter[key] = val;
   }
   return { frontmatter, content: match[2].trim() };
 }
 
-/**
- * 从 SKILL.md 内容中提取声明的 MCP 工具列表
- * 格式: "Required MCP Tools: Read, Write, Glob"
- */
 function extractRequiredTools(content) {
   const match = content.match(/Required MCP Tools:\s*(.+)/i);
   if (!match) return [];
-  return match[1].split(",").map(t => t.trim()).filter(Boolean);
+  return match[1].split(",").map((tool) => tool.trim()).filter(Boolean);
 }
 
-/**
- * 获取当前 git commit hash（短格式）
- */
 function getGitCommitHash() {
   try {
     return execSync("git rev-parse --short HEAD", {
@@ -71,42 +74,54 @@ function getGitCommitHash() {
   }
 }
 
-/**
- * 启动时加载所有 Skill
- * @param {string[]} knownMcpTools - 已知的 MCP 工具名列表（用于校验 tooling 类 Skill 的工具引用）
- * @returns {{ errors: string[], warnings: string[] }}
- */
-function loadSkills(knownMcpTools = []) {
+function normalizeLoadOptions(optionsOrKnownTools = {}) {
+  if (Array.isArray(optionsOrKnownTools)) {
+    return { knownMcpTools: optionsOrKnownTools, knownRoles: [] };
+  }
+  return {
+    knownMcpTools: optionsOrKnownTools.knownMcpTools || [],
+    knownRoles: optionsOrKnownTools.knownRoles || [],
+  };
+}
+
+function loadSkills(optionsOrKnownTools = {}) {
+  const { knownMcpTools, knownRoles } = normalizeLoadOptions(optionsOrKnownTools);
+
   skillRegistry = new Map();
   loadErrors = [];
   loadWarnings = [];
+  skillConfig = { global: [], roles: {}, scenes: {}, loadOrder: "global-first" };
 
-  // 1. 读取配置文件
   if (!fs.existsSync(CONFIG_FILE)) {
     loadWarnings.push(`配置文件不存在: ${CONFIG_FILE}，将使用空配置`);
-    skillConfig = { global: [], roles: {}, loadOrder: "global-first" };
   } else {
     try {
-      skillConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      const parsedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      const configResult = skillConfigSchema.safeParse(parsedConfig);
+      if (!configResult.success) {
+        for (const issue of configResult.error.issues) {
+          loadErrors.push(`配置文件字段非法: ${issue.path.join(".") || "(root)"} - ${issue.message}`);
+        }
+        return { errors: loadErrors, warnings: loadWarnings };
+      }
+      skillConfig = configResult.data;
     } catch (err) {
       loadErrors.push(`配置文件解析失败: ${CONFIG_FILE} - ${err.message}`);
       return { errors: loadErrors, warnings: loadWarnings };
     }
   }
 
-  // 2. 扫描 skills 目录
   if (!fs.existsSync(SKILLS_DIR)) {
     loadWarnings.push(`Skills 目录不存在: ${SKILLS_DIR}`);
     return { errors: loadErrors, warnings: loadWarnings };
   }
 
   const skillDirs = fs.readdirSync(SKILLS_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name);
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
 
-  // 提取 MCP 工具短名用于校验（mcp__permission__Read -> Read）
-  const mcpToolShortNames = knownMcpTools.map(t => {
-    const parts = t.split("__");
+  const mcpToolShortNames = knownMcpTools.map((toolName) => {
+    const parts = toolName.split("__");
     return parts[parts.length - 1];
   });
 
@@ -115,54 +130,59 @@ function loadSkills(knownMcpTools = []) {
     const skillMdPath = path.join(skillPath, "SKILL.md");
     const metaPath = path.join(skillPath, "meta.json");
 
-    // Error: 缺少 SKILL.md
     if (!fs.existsSync(skillMdPath)) {
       loadErrors.push(`[${skillId}] 缺少 SKILL.md: ${skillMdPath}`);
       continue;
     }
 
-    // 读取并解析 SKILL.md
     const raw = fs.readFileSync(skillMdPath, "utf-8");
     const { frontmatter, content } = parseFrontmatter(raw);
 
-    // Error: frontmatter 缺少必填字段
     for (const field of REQUIRED_FRONTMATTER) {
       if (!frontmatter[field]) {
         loadErrors.push(`[${skillId}] SKILL.md frontmatter 缺少必填字段: ${field}`);
       }
     }
 
-    // Error: type 值不合法
     if (frontmatter.type && !VALID_TYPES.includes(frontmatter.type)) {
-      loadErrors.push(`[${skillId}] SKILL.md type 值不合法: "${frontmatter.type}"，合法值: ${VALID_TYPES.join(", ")}`);
+      loadErrors.push(
+        `[${skillId}] SKILL.md type 值不合法: "${frontmatter.type}"，合法值: ${VALID_TYPES.join(", ")}`
+      );
     }
 
-    // Error: skill_id 重复
     if (skillRegistry.has(skillId)) {
       loadErrors.push(`[${skillId}] skill_id 重复`);
       continue;
     }
 
-    // Warning: 内容超过长度限制
-    if (content.length > MAX_SKILL_CHARS) {
-      loadWarnings.push(`[${skillId}] SKILL.md 内容超过 ${MAX_SKILL_CHARS} 字符限制 (${content.length} 字符)，将被截断`);
-    }
+    const requiredToolsFromContent = frontmatter.type === "tooling"
+      ? extractRequiredTools(content)
+      : [];
 
-    // 校验 tooling 类 Skill 引用的 MCP 工具是否存在
-    if (frontmatter.type === "tooling" && mcpToolShortNames.length > 0) {
-      const requiredTools = extractRequiredTools(content);
-      for (const tool of requiredTools) {
-        if (!mcpToolShortNames.includes(tool)) {
-          loadErrors.push(`[${skillId}] 引用了不存在的 MCP 工具: ${tool}`);
-        }
-      }
-    }
+    let meta = {
+      model_support: [...VALID_MODELS],
+      priority: 0,
+      requireTools: requiredToolsFromContent,
+      defaultEnabled: true,
+    };
 
-    // 读取可选 meta.json
-    let meta = {};
     if (fs.existsSync(metaPath)) {
       try {
-        meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+        const parsedMeta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+        const metaResult = skillMetaSchema.safeParse(parsedMeta);
+        if (!metaResult.success) {
+          for (const issue of metaResult.error.issues) {
+            loadErrors.push(`[${skillId}] meta.json 字段非法: ${issue.path.join(".") || "(root)"} - ${issue.message}`);
+          }
+        } else {
+          meta = {
+            ...meta,
+            ...metaResult.data,
+            requireTools: metaResult.data.requireTools.length > 0
+              ? metaResult.data.requireTools
+              : requiredToolsFromContent,
+          };
+        }
       } catch (err) {
         loadWarnings.push(`[${skillId}] meta.json 解析失败: ${err.message}`);
       }
@@ -170,22 +190,44 @@ function loadSkills(knownMcpTools = []) {
       loadWarnings.push(`[${skillId}] 缺少可选 meta.json`);
     }
 
-    // 注册到 registry
+    if (content.length > MAX_SKILL_CHARS) {
+      loadWarnings.push(`[${skillId}] SKILL.md 内容超过 ${MAX_SKILL_CHARS} 字符限制 (${content.length} 字符)，将被截断`);
+    }
+
+    if (frontmatter.type === "tooling" && mcpToolShortNames.length > 0) {
+      for (const toolName of meta.requireTools) {
+        if (!mcpToolShortNames.includes(toolName)) {
+          loadErrors.push(`[${skillId}] 引用了不存在的 MCP 工具: ${toolName}`);
+        }
+      }
+    }
+
+    const maxChars = Math.min(meta.max_chars || MAX_SKILL_CHARS, MAX_SKILL_CHARS);
+
     skillRegistry.set(skillId, {
       id: skillId,
       name: frontmatter.name || skillId,
       description: frontmatter.description || "",
       type: frontmatter.type || "behavior",
-      content: content.slice(0, MAX_SKILL_CHARS),
+      content: content.slice(0, maxChars),
       meta,
       filePath: skillMdPath,
     });
   }
 
-  // 3. 校验配置中引用的 skill_id 是否都存在
+  const configuredRoleNames = Object.keys(skillConfig.roles || {});
+  if (knownRoles.length > 0) {
+    for (const roleName of configuredRoleNames) {
+      if (!knownRoles.includes(roleName)) {
+        loadErrors.push(`配置中引用了不存在的角色名: "${roleName}"`);
+      }
+    }
+  }
+
   const allConfiguredIds = [
     ...(skillConfig.global || []),
     ...Object.values(skillConfig.roles || {}).flat(),
+    ...Object.values(skillConfig.scenes || {}).flat(),
   ];
   for (const id of allConfiguredIds) {
     if (!skillRegistry.has(id)) {
@@ -196,9 +238,6 @@ function loadSkills(knownMcpTools = []) {
   return { errors: loadErrors, warnings: loadWarnings };
 }
 
-/**
- * 打印启动日志
- */
 function printSkillStartupLog() {
   const commitHash = getGitCommitHash();
   const skillCount = skillRegistry.size;
@@ -210,91 +249,87 @@ function printSkillStartupLog() {
   console.log(`[Skill] Git Commit: ${commitHash}`);
 
   if (loadWarnings.length > 0) {
-    for (const w of loadWarnings) {
-      console.warn(`[Skill][Warning] ${w}`);
+    for (const warning of loadWarnings) {
+      console.warn(`[Skill][Warning] ${warning}`);
     }
   }
   if (loadErrors.length > 0) {
-    for (const e of loadErrors) {
-      console.error(`[Skill][Error] ${e}`);
+    for (const error of loadErrors) {
+      console.error(`[Skill][Error] ${error}`);
     }
   }
   console.log(`[Skill] ──────────────\n`);
 }
 
-/**
- * 根据角色获取应注入的 Skill 列表
- * @param {string} [character] - 角色名（可选）
- * @returns {object[]} 按 loadOrder 排列的 Skill 对象数组
- */
-function getSkillsForCharacter(character) {
+function getSkillById(id) {
+  return skillRegistry.get(id) || null;
+}
+
+function getSkillConfig() {
+  return skillConfig;
+}
+
+function getBaseSkillsForCharacter(character) {
   if (!skillConfig) return [];
 
   const globalIds = skillConfig.global || [];
   const roleIds = (character && skillConfig.roles?.[character]) || [];
+  const orderedIds = skillConfig.loadOrder === "role-first"
+    ? [...roleIds, ...globalIds]
+    : [...globalIds, ...roleIds];
 
-  let orderedIds;
-  if (skillConfig.loadOrder === "global-first") {
-    orderedIds = [...globalIds, ...roleIds];
-  } else {
-    orderedIds = [...roleIds, ...globalIds];
-  }
-
-  // 去重，保留后出现的（后加载覆盖前加载）
   const seen = new Set();
   const deduped = [];
-  for (let i = orderedIds.length - 1; i >= 0; i--) {
-    if (!seen.has(orderedIds[i])) {
-      seen.add(orderedIds[i]);
-      deduped.unshift(orderedIds[i]);
-    }
+  for (let index = orderedIds.length - 1; index >= 0; index -= 1) {
+    const skillId = orderedIds[index];
+    if (seen.has(skillId)) continue;
+    seen.add(skillId);
+    deduped.unshift(skillId);
   }
 
-  return deduped
-    .map(id => skillRegistry.get(id))
-    .filter(Boolean);
+  return deduped.map((id) => skillRegistry.get(id)).filter(Boolean);
 }
 
-/**
- * 按类型筛选 Skill 并拼接内容，遵守总量上限
- * @param {object[]} skills - Skill 对象数组
- * @param {string} type - Skill 类型
- * @returns {string} 拼接后的 Skill 内容
- */
-function getSkillContentByType(skills, type) {
-  const filtered = skills.filter(s => s.type === type);
-  if (filtered.length === 0) return "";
+function buildSkillTypeInjection(skills = []) {
+  if (!Array.isArray(skills) || skills.length === 0) {
+    return { content: "", injected: [], skipped: [], totalChars: 0 };
+  }
 
   let totalChars = 0;
   const parts = [];
-  for (const skill of filtered) {
+  const injected = [];
+  const skipped = [];
+
+  for (const skill of skills) {
     if (totalChars + skill.content.length > MAX_TOTAL_CHARS) {
-      console.warn(`[Skill] 注入总量超过 ${MAX_TOTAL_CHARS} 字符限制，跳过: ${skill.id}`);
-      break;
+      skipped.push({ id: skill.id, reason: "char-budget" });
+      continue;
     }
     parts.push(`\n\n【技能: ${skill.name}】\n${skill.content}`);
     totalChars += skill.content.length;
+    injected.push(skill.id);
   }
-  return parts.join("");
+
+  return {
+    content: parts.join(""),
+    injected,
+    skipped,
+    totalChars,
+  };
 }
 
-/**
- * 获取所有已加载的 Skill（用于 API）
- */
 function getAllSkills() {
-  return [...skillRegistry.values()].map(s => ({
-    id: s.id,
-    name: s.name,
-    description: s.description,
-    type: s.type,
-    meta: s.meta,
+  return [...skillRegistry.values()].map((skill) => ({
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    type: skill.type,
+    meta: skill.meta,
+    filePath: skill.filePath,
   }));
 }
 
-/**
- * 获取单个 Skill 详情（用于 API）
- */
-function getSkillById(id) {
+function getSkillDetailById(id) {
   const skill = skillRegistry.get(id);
   if (!skill) return null;
   return {
@@ -311,14 +346,19 @@ function getSkillById(id) {
 module.exports = {
   loadSkills,
   printSkillStartupLog,
-  getSkillsForCharacter,
-  getSkillContentByType,
-  getAllSkills,
+  getSkillConfig,
+  getBaseSkillsForCharacter,
   getSkillById,
-  // 导出常量供 CI 脚本复用
+  getAllSkills,
+  getSkillDetailById,
+  buildSkillTypeInjection,
+  parseFrontmatter,
+  extractRequiredTools,
   SKILL_DIR,
   SKILLS_DIR,
   CONFIG_FILE,
   MAX_SKILL_CHARS,
   MAX_TOTAL_CHARS,
+  VALID_TYPES,
+  VALID_MODELS,
 };

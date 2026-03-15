@@ -5,17 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Chat Arena</title>
   <link rel="stylesheet" href="style.css">
-  <!-- Markdown 渲染 -->
   <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked-highlight@2/lib/index.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-  <!-- 代码高亮 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
   <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
 </head>
 <body>
   <div id="app">
-    <!-- ── 左侧栏：会话列表 ──────────────── -->
     <aside id="sidebar-left">
       <div class="sidebar-header">
         <h2>对话</h2>
@@ -24,7 +21,6 @@
       <div id="session-list"></div>
     </aside>
 
-    <!-- ── 中间：聊天区 ──────────────────── -->
     <section id="center">
       <header id="chat-header">
         <div class="chat-title">
@@ -34,6 +30,15 @@
             <span id="chat-subtitle" class="chat-subtitle">未设置</span>
             <button id="edit-session-meta-btn" class="chat-meta-edit-btn" type="button">编辑</button>
           </div>
+        </div>
+        <div class="chat-header-actions">
+          <button id="settings-btn" class="chat-settings-btn" title="设置" aria-label="设置" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.12A1.7 1.7 0 0 0 9.2 20a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.08-.4H2.8a2 2 0 1 1 0-4h.12A1.7 1.7 0 0 0 4 9.2a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9.2 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.08V2.8a2 2 0 1 1 4 0v.12A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.34.3.54.72.6 1.18.01.2.01.41 0 .62-.06.46-.26.88-.6 1.18z"></path>
+            </svg>
+            <span>设置</span>
+          </button>
         </div>
       </header>
 
@@ -57,7 +62,6 @@
       </footer>
     </section>
 
-    <!-- ── 右侧栏：状态面板 ──────────────── -->
     <aside id="sidebar-right">
       <div class="panel">
         <h3>角色状态</h3>
@@ -78,7 +82,6 @@
     </aside>
   </div>
 
-  <!-- ── Thread 面板（飞书风格回复链） ── -->
   <div id="thread-panel" class="thread-panel">
     <div class="thread-panel-header">
       <h3>回复</h3>
@@ -87,24 +90,38 @@
     <div id="thread-messages" class="thread-messages"></div>
   </div>
 
-  <button id="settings-btn" title="角色设置" aria-label="角色设置">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <circle cx="12" cy="12" r="3"></circle>
-      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.12A1.7 1.7 0 0 0 9.2 20a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.08-.4H2.8a2 2 0 1 1 0-4h.12A1.7 1.7 0 0 0 4 9.2a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9.2 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.08V2.8a2 2 0 1 1 4 0v.12A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.34.3.54.72.6 1.18.01.2.01.41 0 .62-.06.46-.26.88-.6 1.18z"></path>
-    </svg>
-  </button>
-
   <div id="settings-modal" class="modal hidden">
     <div class="modal-backdrop" data-close="1"></div>
-    <div class="modal-panel">
-      <h3>角色管理</h3>
-      <p class="modal-desc">管理角色名称、模型配置。可归档/恢复角色，或创建新角色。</p>
-      <div id="settings-error" class="settings-error hidden"></div>
-      <div id="settings-form"></div>
-      <div class="modal-actions">
-        <button id="settings-cancel-btn" class="btn-secondary">取消</button>
-        <button id="settings-save-btn" class="btn-primary">保存</button>
-      </div>
+    <div class="modal-panel settings-layout">
+      <aside class="settings-sidebar">
+        <div class="settings-sidebar-title">设置</div>
+        <button class="settings-tab active" data-settings-tab="roles" type="button">创建角色</button>
+        <button class="settings-tab" data-settings-tab="skills" type="button">SKILL</button>
+      </aside>
+      <section class="settings-main">
+        <div class="settings-main-header">
+          <div>
+            <h3 id="settings-title">角色管理</h3>
+            <p id="settings-subtitle" class="modal-desc">管理角色名称、模型配置。可归档、恢复和新增角色。</p>
+          </div>
+        </div>
+        <div id="settings-error" class="settings-error hidden"></div>
+        <div id="settings-form"></div>
+        <div id="settings-skills-panel" class="settings-skills-panel hidden">
+          <div class="settings-skills-block">
+            <h4>Recent Skill Hits</h4>
+            <div id="skill-trace-list"></div>
+          </div>
+          <div class="settings-skills-block">
+            <h4>Loaded Skills</h4>
+            <div id="skill-list"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="settings-cancel-btn" class="btn-secondary">关闭</button>
+          <button id="settings-save-btn" class="btn-primary">保存角色</button>
+        </div>
+      </section>
     </div>
   </div>
 
