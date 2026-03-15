@@ -913,7 +913,7 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
   const myCliName = myConfig?.cli || "unknown";
   const sessionMeta = sessionStore.getOrCreateSession(sessionId);
   const workdirNotice = sessionMeta.workingDirectory
-    ? `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: ${sessionMeta.workingDirectory}\n- 开发、扫描和文件修改应限制在该目录内\n- 调用 Bash 工具时优先传 cwd 参数，不要使用 cd /path && command`
+    ? `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: ${sessionMeta.workingDirectory}\n- 开发、扫描和文件修改应限制在该目录内\n- 调用 Bash 工具时优先传 cwd 参数，不要使用 cd /path && command\n- 注意：如果系统级 CurrentDirectory 与此处的"当前工作目录"不一致，请以此处的"当前工作目录"为准`
     : `- 会话名称: ${sessionMeta.title}\n- 当前工作目录: (未设置)`;
 
   // 行为类 Skill 注入
