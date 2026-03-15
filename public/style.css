@@ -1197,28 +1197,38 @@ html, body {
 #settings-btn,
 .chat-settings-btn {
   position: static;
-  width: auto;
-  height: auto;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: white;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 6px 10px;
+  padding: 0;
   box-shadow: none;
   cursor: pointer;
   z-index: auto;
-  font-size: 12px;
-  font-weight: 600;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+#settings-btn:hover,
+.chat-settings-btn:hover {
+  opacity: 0.86;
+}
+
+#settings-btn:focus,
+.chat-settings-btn:focus {
+  outline: none;
+  box-shadow: none;
 }
 
 #settings-btn svg,
 .chat-settings-btn svg {
-  width: 14px;
-  height: 14px;
+  width: 28px;
+  height: 28px;
 }
 
 /* ── Settings Layout ───────────────────────── */
@@ -1241,12 +1251,18 @@ html, body {
 }
 
 .settings-sidebar-title {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-light);
-  text-transform: uppercase;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+}
+
+.settings-sidebar-title svg {
+  width: 18px;
+  height: 18px;
 }
 
 .settings-tab {
@@ -1336,4 +1352,66 @@ html, body {
   .settings-skills-panel {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Header Icon Controls Refresh ─────────── */
+.chat-subtitle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-subtitle {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-subtitle-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
+}
+
+.chat-icon-btn:hover {
+  color: white;
+  opacity: 1;
+}
+
+.chat-icon-btn:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.chat-icon-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ── Session Meta Picker Button ───────────── */
+.session-meta-row .btn-secondary {
+  flex: 0 0 auto;
+  min-width: 64px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
 }

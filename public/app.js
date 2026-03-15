@@ -247,7 +247,7 @@ function showSessionMetaModal() {
         <label class="session-meta-label">工作目录</label>
         <div class="session-meta-row">
           <input id="session-workdir-input" class="session-meta-input" value="${escapeHtml(state.sessionMeta?.workingDirectory || "")}" placeholder="/absolute/path">
-          <button id="session-workdir-pick" class="btn-secondary" type="button">系统选择</button>
+          <button id="session-workdir-pick" class="btn-secondary" type="button">选择</button>
         </div>
         <div id="session-meta-error" class="settings-error"></div>
       </div>

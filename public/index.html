@@ -28,17 +28,21 @@
           <div class="chat-subtitle-row">
             <span class="chat-subtitle-label">工作目录</span>
             <span id="chat-subtitle" class="chat-subtitle">未设置</span>
-            <button id="edit-session-meta-btn" class="chat-meta-edit-btn" type="button">编辑</button>
+            <div class="chat-subtitle-actions">
+              <button id="edit-session-meta-btn" class="chat-icon-btn" title="编辑会话设置" aria-label="编辑会话设置" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9"></path>
+                  <path d="M16.5 3.5a2.12 2.12 0 113 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+                </svg>
+              </button>
+              <button id="settings-btn" class="chat-icon-btn" title="设置" aria-label="设置" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11.983 5.5c.291-1.52 2.463-1.52 2.754 0a1.41 1.41 0 001.99 1.007c1.35-.756 2.886.78 2.13 2.13a1.41 1.41 0 001.007 1.99c1.52.291 1.52 2.463 0 2.754a1.41 1.41 0 00-1.007 1.99c.756 1.35-.78 2.886-2.13 2.13a1.41 1.41 0 00-1.99 1.007c-.291 1.52-2.463 1.52-2.754 0a1.41 1.41 0 00-1.99-1.007c-1.35.756-2.886-.78-2.13-2.13a1.41 1.41 0 00-1.007-1.99c-1.52-.291-1.52-2.463 0-2.754a1.41 1.41 0 001.007-1.99c-.756-1.35.78-2.886 2.13-2.13a1.41 1.41 0 001.99-1.007z"></path>
+                  <circle cx="13.36" cy="12" r="2.5"></circle>
+                </svg>
+              </button>
+            </div>
           </div>
-        </div>
-        <div class="chat-header-actions">
-          <button id="settings-btn" class="chat-settings-btn" title="设置" aria-label="设置" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.12A1.7 1.7 0 0 0 9.2 20a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.08-.4H2.8a2 2 0 1 1 0-4h.12A1.7 1.7 0 0 0 4 9.2a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9.2 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.08V2.8a2 2 0 1 1 4 0v.12A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.34.3.54.72.6 1.18.01.2.01.41 0 .62-.06.46-.26.88-.6 1.18z"></path>
-            </svg>
-            <span>设置</span>
-          </button>
         </div>
       </header>
 
@@ -94,7 +98,12 @@
     <div class="modal-backdrop" data-close="1"></div>
     <div class="modal-panel settings-layout">
       <aside class="settings-sidebar">
-        <div class="settings-sidebar-title">设置</div>
+        <div class="settings-sidebar-title" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11.983 5.5c.291-1.52 2.463-1.52 2.754 0a1.41 1.41 0 001.99 1.007c1.35-.756 2.886.78 2.13 2.13a1.41 1.41 0 001.007 1.99c1.52.291 1.52 2.463 0 2.754a1.41 1.41 0 00-1.007 1.99c.756 1.35-.78 2.886-2.13 2.13a1.41 1.41 0 00-1.99 1.007c-.291 1.52-2.463 1.52-2.754 0a1.41 1.41 0 00-1.99-1.007c-1.35.756-2.886-.78-2.13-2.13a1.41 1.41 0 00-1.007-1.99c-1.52-.291-1.52-2.463 0-2.754a1.41 1.41 0 001.007-1.99c-.756-1.35.78-2.886 2.13-2.13a1.41 1.41 0 001.99-1.007z"></path>
+            <circle cx="13.36" cy="12" r="2.5"></circle>
+          </svg>
+        </div>
         <button class="settings-tab active" data-settings-tab="roles" type="button">创建角色</button>
         <button class="settings-tab" data-settings-tab="skills" type="button">SKILL</button>
       </aside>
