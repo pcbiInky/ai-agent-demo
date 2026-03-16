@@ -70,5 +70,6 @@ type: behavior
 - `code_review`
 - `skill_creation`
 - `file_ops`
+- `gitcode_pr`
 
 当前 V1 的场景识别规则写在 `skill-router.js`，暂不做可配置 trigger。

@@ -1,0 +1,6 @@
+{
+  "owner": "system",
+  "model_support": ["claude", "trae", "codex"],
+  "priority": 85,
+  "defaultEnabled": true
+}

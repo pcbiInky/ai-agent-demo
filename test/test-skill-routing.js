@@ -38,6 +38,7 @@ assert(errors.length === 0, "Skill 加载无 Error");
 assert(detectScenes("请帮我做一次代码审查").includes("code_review"), "代码审查场景识别正常");
 assert(detectScenes("帮我创建一个新的 skill").includes("skill_creation"), "Skill 创建场景识别正常");
 assert(detectScenes("请读取这个文件并修改函数").includes("file_ops"), "文件操作场景识别正常");
+assert(detectScenes("帮我看这个 GitCode PR 链接 https://gitcode.com/foo/bar/pull/27").includes("gitcode_pr"), "GitCode PR 场景识别正常");
 
 const reviewDecision = resolveRequestSkills({
   prompt: "请帮我做一次代码审查",
@@ -54,6 +55,13 @@ const creationDecision = resolveRequestSkills({
   supportsPermissionTool: true,
 });
 assert(creationDecision.hitSkills.some((skill) => skill.id === "create-ai-agent-demo-skill"), "创建 Skill 请求命中 create-ai-agent-demo-skill");
+
+const prDecision = resolveRequestSkills({
+  prompt: "帮我看这个 GitCode PR 链接 https://gitcode.com/foo/bar/pull/27 做一轮代码检视",
+  character: "YYF",
+  supportsPermissionTool: true,
+});
+assert(prDecision.hitSkills.some((skill) => skill.id === "gitcode-pr-helper"), "GitCode PR 请求命中 gitcode-pr-helper");
 
 const genericDecision = resolveRequestSkills({
   prompt: "你好，简单介绍一下你自己",

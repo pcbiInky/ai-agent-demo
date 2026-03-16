@@ -4,6 +4,7 @@ const SCENE_MATCHERS = {
   code_review: /(code\s*review|review\s+code|代码审查|审查代码|review\b)/i,
   skill_creation: /(创建.*skill|新增.*skill|新建.*skill|create\s+.*skill|skill\s*模块|skill\s*系统|skill\s*机制)/i,
   file_ops: /(修改.*文件|编辑.*文件|读取.*文件|搜索.*文件|查看.*文件|代码实现|修复.*bug|重构|调试|写测试|\bgrep\b|\bglob\b|目录|路径|文件操作|代码.*修改|代码.*实现)/i,
+  gitcode_pr: /(gitcode.*(pr|pull|merge[-_ ]?request)|gitcode.*pull\/\d+|pr链接.*gitcode|gitcode.*pr链接|代码检视.*gitcode|refs\/merge-requests)/i,
 };
 
 function normalizeText(text) {

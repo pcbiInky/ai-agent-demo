@@ -39,6 +39,8 @@ assert(getAllSkills().length >= 4, "Skill registry 已加载示例 Skill");
 assert(getSkillConfig().global.includes("use-ai-agent-demo-skill"), "global 配置已收缩为基础 Skill");
 assert(getSkillConfig().scenes.code_review.includes("code-review"), "scene 绑定包含 code-review");
 assert(getSkillConfig().scenes.skill_creation.includes("create-ai-agent-demo-skill"), "scene 绑定包含 create-ai-agent-demo-skill");
+assert(getSkillConfig().scenes.gitcode_pr.includes("gitcode-pr-helper"), "scene 绑定包含 gitcode-pr-helper");
+assert(getAllSkills().some((skill) => skill.id === "gitcode-pr-helper"), "Skill registry 已加载 gitcode-pr-helper");
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

@@ -4,7 +4,8 @@
   "scenes": {
     "code_review": ["code-review"],
     "skill_creation": ["create-ai-agent-demo-skill"],
-    "file_ops": ["mcp-file-ops"]
+    "file_ops": ["mcp-file-ops"],
+    "gitcode_pr": ["gitcode-pr-helper"]
   },
   "loadOrder": "global-first"
 }
