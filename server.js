@@ -118,7 +118,7 @@ function isMentionAllowedInSession(sessionId, characterName, { excludeCharacter 
 // ── AI 互@ 链式调用限制 ──────────────────────────────────
 const MAX_AI_CHAIN_CALLS = 5;  // 每轮用户消息最多触发的 AI→AI 交互次数
 const MAX_DEPTH = 2;           // 最大唤醒深度（depth=0: 用户@, depth=1: AI@, depth=2: 被AI@的回复，不能再@）
-const ENFORCE_MCP_SENDMESSAGE = process.env.ENFORCE_MCP_SENDMESSAGE !== "false";
+// 所有 CLI 统一走 MCP SendMessage 发消息（不再支持非 MCP fallback 的旧路径）
 
 // ── 状态管理 ──────────────────────────────────────────────
 // browserSessionId:roleId -> Promise 链（串行队列）
@@ -137,6 +137,8 @@ const invokeAbortControllers = new Map();
 const mcpSendCounts = new Map();
 // browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
 const pendingMcpReplies = new Map();
+// browserSessionId:character -> fromCharacter（当前 invoke 是被谁召唤的，用于强制回归通路）
+const invokeChainCallers = new Map();
 // browserSessionId:character（当前 invoke 是否已成功使用过一次 SendMessage）
 const invokeSendGuards = new Set();
 // sessionId -> 最近的 Skill 路由命中记录
@@ -569,6 +571,7 @@ app.post("/api/chat", (req, res) => {
   }
 
   const messageId = crypto.randomUUID();
+  const userTimestamp = Date.now();
 
   // 保存用户消息
   appendToLog(sessionId, {
@@ -576,11 +579,11 @@ app.post("/api/chat", (req, res) => {
     role: "user",
     text,
     mentions: mentions.map((m) => m.character),
-    timestamp: Date.now(),
+    timestamp: userTimestamp,
   });
 
   // 立即返回，后台异步处理
-  res.json({ messageId, mentions });
+  res.json({ messageId, mentions, timestamp: userTimestamp });
 
   // 串行处理每个 @mention，带共享记忆 + AI 互@ 链式唤醒
   const chainCounter = { count: 0 };
@@ -728,7 +731,7 @@ function parseMentions(text, sessionId) {
 
 // ── invoke 串行队列 ───────────────────────────────────────
 function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError, options = {}) {
-  const { skillDecision = null } = options;
+  const { skillDecision = null, chainCaller = null, chainThreadId = null, chainDepth = 0 } = options;
   const roleConfig = getRoleConfig(character);
   const roleId = roleConfig?.id || character;
   const key = `${browserSessionId}:${roleId}`;
@@ -749,6 +752,13 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     clearPendingMcpReply(browserSessionId, character);
     resetInvokeSendGuard(browserSessionId, character);
+    // 链式回归：在串行队列内绑定 chainCaller，确保不会被并发覆盖
+    const chainKey = `${browserSessionId}:${character}`;
+    if (chainCaller) {
+      invokeChainCallers.set(chainKey, { caller: chainCaller, threadId: chainThreadId, depth: chainDepth });
+    } else {
+      invokeChainCallers.delete(chainKey);
+    }
     try {
       const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
@@ -777,6 +787,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       onError(err);
     } finally {
       invokeAbortControllers.delete(key);
+      invokeChainCallers.delete(chainKey);
     }
   });
 
@@ -906,7 +917,7 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
   // 被 AI 唤醒时的额外说明
   let invokeContext = "";
   if (fromCharacter) {
-    invokeContext = `\n\n【召唤上下文】${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请结合聊天记录上下文回答。`;
+    invokeContext = `\n\n【召唤上下文】${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请结合聊天记录上下文回答。你的回复会自动通知 ${fromCharacter}（系统会自动将 ${fromCharacter} 加入 atTargets，无需手动设置）。`;
   }
 
   const myConfig = getRoleConfig(character);
@@ -944,10 +955,7 @@ ${recentSummary}
 如需更早的上下文，可读取上述文件。${mentionRules}${invokeContext}${behaviorInjection.content}`;
 }
 
-// ── 非 MCP fallback 回复不再从正文提取 AI 召唤 ──────────────
-function getFallbackAIMentions(_text, _sessionId, _fromCharacter) {
-  return [];
-}
+
 
 // ── AI 互@ 统一调度 ──────────────────────────────────────
 /**
@@ -995,7 +1003,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId });
     activeThinking.set(`${sessionId}:${targetChar}`, messageId);
 
-    // 等待被@角色的回复
+    // 等待被@角色的回复（chainCaller 在队列内绑定，不会被并发覆盖）
     await new Promise((resolve) => {
       enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
         setCharStatus(sessionId, targetChar, "online");
@@ -1019,107 +1027,28 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
           depth: depth + 1,
         });
         resolve();
-      }, { skillDecision: targetSkillDecision });
-    });
-  }
-
-  // 所有被@的角色回复完后，原始角色做 follow-up（仅 depth=0 时）
-  if (depth === 0 && aiMentions.length > 0 && chainCounter.count < MAX_AI_CHAIN_CALLS) {
-    chainCounter.count++;
-    const followUpSourcePrompt = `你之前通过 SendMessage 的 atTargets 召唤了其他角色讨论，他们已经回复了。请查看最新的聊天记录，对他们的回复发表你的意见或总结下一步。`;
-    const followUpSkillDecision = buildSkillDecision(sessionId, followUpSourcePrompt, fromCharacter);
-    const followUpPrompt = buildContextPrompt(
-      sessionId,
-      followUpSourcePrompt,
-      fromCharacter,
-      { depth: 1, skillDecision: followUpSkillDecision }
-    );
-
-    emitSSE(sessionId, "thinking", { character: fromCharacter, messageId, threadId });
-    activeThinking.set(`${sessionId}:${fromCharacter}`, messageId);
-
-    await new Promise((resolve) => {
-      enqueueInvoke(sessionId, getRoleConfig(fromCharacter).cli, followUpPrompt, fromCharacter, async (followResult) => {
-        setCharStatus(sessionId, fromCharacter, "online");
-        activeThinking.delete(`${sessionId}:${fromCharacter}`);
-        removeThinking(sessionId, fromCharacter, messageId);
-        // 统一走 processAIChain：MCP 模式由 SendMessage 落日志，非 MCP 模式由 processAIChain 落日志
-        await processAIChain(sessionId, fromCharacter, followResult, messageId, threadId, 1, chainCounter);
-        resolve();
-      }, (err) => {
-        setCharStatus(sessionId, fromCharacter, "online");
-        activeThinking.delete(`${sessionId}:${fromCharacter}`);
-        removeThinking(sessionId, fromCharacter, messageId);
-        emitSSE(sessionId, "error", { character: fromCharacter, messageId, error: err.message, threadId });
-        resolve();
-      }, { skillDecision: followUpSkillDecision });
+      }, { skillDecision: targetSkillDecision, chainCaller: fromCharacter, chainThreadId: threadId, chainDepth: depth + 1 });
     });
   }
 }
 
 // ── AI 互@ 链式处理 ──────────────────────────────────────
 async function processAIChain(sessionId, character, result, messageId, threadId, depth, chainCounter) {
-  if (ENFORCE_MCP_SENDMESSAGE) {
-    if (!result.usedMcpSendMessage) {
-      const errorMsg = "协议违规：本轮未通过 mcp__permission__SendMessage 发送消息";
-      emitSSE(sessionId, "error", { character, messageId, error: errorMsg, ...(threadId && { threadId }) });
-      appendToLog(sessionId, {
-        id: crypto.randomUUID(),
-        role: "error",
-        character,
-        error: errorMsg,
-        replyTo: messageId,
-        timestamp: Date.now(),
-        ...(threadId && { threadId }),
-        ...(depth > 0 && { depth }),
-      });
-    }
-    return;
+  // 所有 CLI 统一走 MCP SendMessage，invoke 返回后只需校验是否合规
+  if (!result.usedMcpSendMessage) {
+    const errorMsg = "协议违规：本轮未通过 mcp__permission__SendMessage 发送消息";
+    emitSSE(sessionId, "error", { character, messageId, error: errorMsg, ...(threadId && { threadId }) });
+    appendToLog(sessionId, {
+      id: crypto.randomUUID(),
+      role: "error",
+      character,
+      error: errorMsg,
+      replyTo: messageId,
+      timestamp: Date.now(),
+      ...(threadId && { threadId }),
+      ...(depth > 0 && { depth }),
+    });
   }
-
-  // 非 MCP fallback 只负责落消息，不再从正文派生 AI 召唤。
-  const replyId = crypto.randomUUID();
-  const aiMentions = getFallbackAIMentions(result.text, sessionId, character);
-
-  appendToLog(sessionId, {
-    id: replyId,
-    role: "assistant",
-    character,
-    text: result.text,
-    replyTo: messageId,
-    timestamp: Date.now(),
-    ...(result.verified !== undefined && { verified: result.verified }),
-    ...(threadId && { threadId }),
-    ...(depth > 0 && { depth }),
-    ...(aiMentions.length > 0 && { aiMentions }),
-  });
-
-  // 如果 depth=0 且有 aiMentions，这条消息将成为 thread origin
-  // 提前计算 activeThreadId 以便在 SSE 中传递
-  const hasAIMentions = aiMentions.length > 0;
-  const activeThreadId = threadId || (hasAIMentions ? replyId : null);
-
-  // 回写 threadId 到日志
-  if (hasAIMentions && !threadId) {
-    updateMessageInLog(sessionId, replyId, { threadId: activeThreadId });
-  }
-
-  emitSSE(sessionId, "reply", {
-    character,
-    messageId,
-    replyId,
-    text: result.text,
-    ...(result.verified !== undefined && { verified: result.verified }),
-    ...(activeThreadId && { threadId: activeThreadId }),
-    ...(depth > 0 && { depth }),
-    ...(hasAIMentions && { aiMentions }),
-  });
-
-  // depth 超限或无 mentions 则停止
-  if (depth >= MAX_DEPTH || !hasAIMentions) return;
-
-  // 委托统一调度函数处理召唤链
-  await dispatchAIMentions(sessionId, character, aiMentions, messageId, activeThreadId, depth, chainCounter, replyId);
 }
 
 // ── 辅助：更新已写入的消息字段 ───────────────────────────
@@ -1178,12 +1107,25 @@ app.post("/api/mcp-send-message", (req, res) => {
   try {
     markMcpSend(browserSessionId, character);
     const messageId = crypto.randomUUID();
+    const mcpTimestamp = Date.now();
 
-    const aiMentions = (atTargets || []).filter(
+    // 链式回归通路：如果 B 是被 A 召唤的，确保 A 在 atTargets 中（merge，不丢弃 B 原有目标）
+    const chainContext = invokeChainCallers.get(`${browserSessionId}:${character}`);
+    const chainCaller = chainContext?.caller || null;
+    const chainThreadId = chainContext?.threadId || null;
+    const chainDepth = chainContext?.depth || 0;
+    let effectiveAtTargets = atTargets || [];
+    if (chainCaller && !effectiveAtTargets.includes(chainCaller)) {
+      effectiveAtTargets = [chainCaller, ...effectiveAtTargets];
+    }
+
+    const aiMentions = effectiveAtTargets.filter(
       (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
     );
 
-    const activeThreadId = threadId || (aiMentions.length > 0 ? messageId : null);
+    // 自动回填线程上下文：优先用模型传入的 threadId，其次用链式回归上下文
+    const effectiveThreadId = threadId || chainThreadId || (aiMentions.length > 0 ? messageId : null);
+    const effectiveDepth = chainDepth;
 
     appendToLog(browserSessionId, {
       id: messageId,
@@ -1191,10 +1133,11 @@ app.post("/api/mcp-send-message", (req, res) => {
       character,
       text: verifyMeta.text,
       ...(replyToMessageId && { replyTo: replyToMessageId }),
-      timestamp: Date.now(),
+      timestamp: mcpTimestamp,
       source: "mcp-tool",
       ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
-      ...(activeThreadId && { threadId: activeThreadId }),
+      ...(effectiveThreadId && { threadId: effectiveThreadId }),
+      ...(effectiveDepth > 0 && { depth: effectiveDepth }),
       ...(aiMentions.length > 0 && { aiMentions }),
     });
 
@@ -1207,9 +1150,11 @@ app.post("/api/mcp-send-message", (req, res) => {
       ...(replyToMessageId && { messageId: replyToMessageId }),
       replyId: messageId,
       text: verifyMeta.text,
+      timestamp: mcpTimestamp,
       source: "mcp-tool",
       ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
-      ...(activeThreadId && { threadId: activeThreadId }),
+      ...(effectiveThreadId && { threadId: effectiveThreadId }),
+      ...(effectiveDepth > 0 && { depth: effectiveDepth }),
       ...(aiMentions.length > 0 && { aiMentions }),
     });
 
@@ -1217,7 +1162,7 @@ app.post("/api/mcp-send-message", (req, res) => {
 
     if (aiMentions.length > 0) {
       const chainCounter = { count: 0 };
-      dispatchAIMentions(browserSessionId, character, aiMentions, messageId, activeThreadId, 0, chainCounter, messageId)
+      dispatchAIMentions(browserSessionId, character, aiMentions, messageId, effectiveThreadId, effectiveDepth, chainCounter, messageId)
         .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
     }
   } catch (err) {
@@ -1322,7 +1267,6 @@ module.exports = {
     roleStore,
     getRoleConfig,
     parseMentions,
-    getFallbackAIMentions,
     buildContextPrompt,
     buildSkillDecision,
     getSkillBindings,
@@ -1332,6 +1276,7 @@ module.exports = {
     extractVerifyMeta,
     registerPendingMcpReply,
     finalizePendingMcpVerification,
+    invokeChainCallers,
     ensureRoleSystemInitializedForTests() {
       ensureRoleSystemInitialized();
       return roleStore.listRoles({ includeArchived: true });

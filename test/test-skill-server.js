@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 process.env.PORT = String(3210 + Math.floor(Math.random() * 200));
-process.env.ENFORCE_MCP_SENDMESSAGE = "false";
 
 const server = require("../server");
 

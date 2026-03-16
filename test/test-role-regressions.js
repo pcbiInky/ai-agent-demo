@@ -78,18 +78,11 @@ async function testFallbackReplyDoesNotDeriveAIMentions() {
   const sessionId = `session-${crypto.randomUUID()}`;
   writeSession(sessionId, [yyfRole.id, fakerRole.id]);
 
+  // getFallbackAIMentions 已被移除，非 MCP fallback 路径已清理
   assert(
-    typeof server.__test.getFallbackAIMentions === "function",
-    "server exposes fallback AI mention helper"
+    typeof server.__test.getFallbackAIMentions === "undefined",
+    "getFallbackAIMentions should no longer be exported (old fallback removed)"
   );
-
-  if (typeof server.__test.getFallbackAIMentions === "function") {
-    const aiMentions = server.__test.getFallbackAIMentions("先问 @YYF 再问 @Faker", sessionId, "Faker");
-    assert(
-      Array.isArray(aiMentions) && aiMentions.length === 0,
-      "non-MCP fallback reply text never triggers AI mentions"
-    );
-  }
 }
 
 async function testBuildContextPromptUsesSendMessageSummonRules() {
@@ -145,7 +138,6 @@ async function testRenamePreservesLegacyLookup() {
 
 async function main() {
   process.env.PORT = "0";
-  process.env.ENFORCE_MCP_SENDMESSAGE = "false";
 
   try {
     await testMentionParsingHonorsSessionMembers();

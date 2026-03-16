@@ -324,7 +324,7 @@ function connectSSE() {
     if (data.threadId && data.depth > 0) {
       appendThreadReply(data);
     } else {
-      appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions);
+      appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions, data.timestamp);
     }
 
     // MCP 消息：invoke 可能还在运行（CLI 退出前），用处理中标记提示用户
@@ -431,7 +431,7 @@ async function sendMessage() {
   autoResize($input);
   $mentionHints.classList.add("hidden");
 
-  appendUserMessage(rawText);
+  const userMsgEl = appendUserMessage(rawText);
 
   try {
     const res = await fetch("/api/chat", {
@@ -446,6 +446,12 @@ async function sendMessage() {
     if (!res.ok) {
       const err = await res.json();
       appendErrorMessage("系统", err.error);
+    } else {
+      const data = await res.json();
+      if (data.timestamp && userMsgEl) {
+        const timeEl = userMsgEl.querySelector(".msg-time");
+        if (timeEl) timeEl.textContent = formatTimeShort(data.timestamp);
+      }
     }
   } catch {
     appendErrorMessage("系统", "网络错误，无法发送消息");
@@ -453,9 +459,9 @@ async function sendMessage() {
 }
 
 // ── 消息渲染 ──────────────────────────────────────────────
-function appendUserMessage(text) {
+function appendUserMessage(text, timestamp) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
-  const time = formatTimeShort(Date.now());
+  const time = formatTimeShort(timestamp || Date.now());
   const div = document.createElement("div");
   div.className = "message user";
   div.innerHTML = `
@@ -472,6 +478,7 @@ function appendUserMessage(text) {
   handlePostAppend({ shouldAutoScroll, force: true });
   state.stats.total++;
   renderStats();
+  return div;
 }
 
 function verifiedBadgeHtml(verified) {
@@ -513,12 +520,12 @@ function applyVerifiedMeta(messageId, verified) {
   }
 }
 
-function appendAssistantMessage(character, text, verified, replyId, threadId, aiMentions) {
+function appendAssistantMessage(character, text, verified, replyId, threadId, aiMentions, timestamp) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
-  const time = formatTimeShort(Date.now());
+  const time = formatTimeShort(timestamp || Date.now());
   const cli = state.characters[character]?.cli || "";
   const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
@@ -567,12 +574,12 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
 
 // ── Thread 回复渲染（主聊天流中，带引用条） ──────────────
 function appendThreadReply(data) {
-  const { character, text, verified, replyId, threadId, depth } = data;
+  const { character, text, verified, replyId, threadId, depth, timestamp } = data;
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
-  const time = formatTimeShort(Date.now());
+  const time = formatTimeShort(timestamp || Date.now());
   const cli = state.characters[character]?.cli || "";
   const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
@@ -1329,7 +1336,7 @@ async function loadHistory() {
     // 第二遍：渲染消息
     for (const msg of log.messages) {
       if (msg.role === "user") {
-        appendUserMessage(msg.text);
+        appendUserMessage(msg.text, msg.timestamp);
       } else if (msg.role === "assistant") {
         if (msg.threadId && msg.depth > 0) {
           appendThreadReply({
@@ -1339,9 +1346,10 @@ async function loadHistory() {
             replyId: msg.id,
             threadId: msg.threadId,
             depth: msg.depth,
+            timestamp: msg.timestamp,
           });
         } else {
-          appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions);
+          appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
         }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;

@@ -5,7 +5,6 @@ const path = require("path");
 const crypto = require("crypto");
 
 process.env.PORT = "0";
-process.env.ENFORCE_MCP_SENDMESSAGE = "true";
 
 const server = require("../server");
 
