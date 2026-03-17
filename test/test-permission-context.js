@@ -128,8 +128,11 @@ function testClaudeUsesInvokeEnvForPermissionServer() {
     "claude temp MCP config still points to permission-server entrypoint"
   );
   assert(
-    !Object.prototype.hasOwnProperty.call(permissionConfig || {}, "env"),
-    "claude temp MCP config no longer hardcodes permission env overrides"
+    permissionConfig?.env?.PERMISSION_SERVER_PORT === "3777" &&
+      permissionConfig.env.PERMISSION_BROWSER_SESSION === "session-claude" &&
+      permissionConfig.env.PERMISSION_CHARACTER === "Faker" &&
+      permissionConfig.env.PERMISSION_WORKING_DIRECTORY === "/tmp/worktree-claude",
+    "claude temp MCP config includes explicit permission env overrides"
   );
 }
 
@@ -154,8 +157,16 @@ function testCodexUsesPerInvokePermissionConfig() {
     "codex invoke includes per-invoke MCP command override"
   );
   assert(
-    !prepared.args.some((value) => value.includes("mcp_servers.permission.env.")),
-    "codex invoke no longer injects per-invoke permission env overrides"
+    prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_SERVER_PORT") && value.includes("4999")),
+    "codex invoke includes per-invoke permission port override"
+  );
+  assert(
+    prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_CHARACTER") && value.includes("奇迹哥")),
+    "codex invoke includes per-invoke character env override"
+  );
+  assert(
+    prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_BROWSER_SESSION") && value.includes("session-codex")),
+    "codex invoke includes per-invoke session env override"
   );
 }
 
