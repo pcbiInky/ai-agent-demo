@@ -1131,6 +1131,9 @@ async function processAIChain(sessionId, character, result, messageId, threadId,
   // 所有 CLI 统一走 MCP SendMessage，invoke 返回后只需校验是否合规
   if (!result.usedMcpSendMessage) {
     const errorMsg = "协议违规：本轮未通过 mcp__permission__SendMessage 发送消息";
+    if (result.text) {
+      console.error(`[${character}] 协议违规，Invoke 原始输出:\n${result.text}`);
+    }
     emitSSE(sessionId, "error", { character, messageId, error: errorMsg, ...(threadId && { threadId }) });
     appendToLog(sessionId, {
       id: crypto.randomUUID(),

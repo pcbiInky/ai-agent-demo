@@ -932,7 +932,10 @@ function getPermIntent(toolName, input) {
 function buildPermDetail(toolName, input) {
   let detail = "";
   if (toolName === "Bash" && input?.command) {
-    detail = `<div class="perm-detail-label">命令</div><pre class="perm-code">${escapeHtml(input.command)}</pre>`;
+    if (input.cwd) {
+      detail = `<div class="perm-detail-label">目录</div><div class="perm-desc mono">${escapeHtml(input.cwd)}</div>`;
+    }
+    detail += `<div class="perm-detail-label">命令</div><pre class="perm-code">${escapeHtml(input.command)}</pre>`;
     if (input.description) {
       detail += `<div class="perm-detail-label">说明</div><div class="perm-desc">${escapeHtml(input.description)}</div>`;
     }
