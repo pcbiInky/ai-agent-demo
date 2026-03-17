@@ -141,12 +141,12 @@ function buildPermissionEnv(permissionServerPort, browserSessionId, character = 
   };
 }
 
-function buildPermissionServerConfig(permissionServerPort, browserSessionId, character = "", workingDirectory = "") {
+function buildPermissionServerConfig() {
   return {
     type: "stdio",
     command: "node",
     args: [PERMISSION_SERVER_PATH],
-    env: buildPermissionEnv(permissionServerPort, browserSessionId, character, workingDirectory),
+    // 运行时上下文统一由 invoke() 的 child env 注入，避免多处配置分叉。
   };
 }
 
@@ -155,10 +155,6 @@ function buildPerInvokePermissionOverrides(permissionConfig) {
     "-c", `mcp_servers.permission.type=${toTomlString(permissionConfig.type)}`,
     "-c", `mcp_servers.permission.command=${toTomlString(permissionConfig.command)}`,
     "-c", `mcp_servers.permission.args=${toTomlStringArray(permissionConfig.args)}`,
-    "-c", `mcp_servers.permission.env.PERMISSION_SERVER_PORT=${toTomlString(permissionConfig.env.PERMISSION_SERVER_PORT)}`,
-    "-c", `mcp_servers.permission.env.PERMISSION_BROWSER_SESSION=${toTomlString(permissionConfig.env.PERMISSION_BROWSER_SESSION)}`,
-    "-c", `mcp_servers.permission.env.PERMISSION_CHARACTER=${toTomlString(permissionConfig.env.PERMISSION_CHARACTER)}`,
-    "-c", `mcp_servers.permission.env.PERMISSION_WORKING_DIRECTORY=${toTomlString(permissionConfig.env.PERMISSION_WORKING_DIRECTORY)}`,
   ];
 }
 
@@ -182,12 +178,7 @@ function preparePermissionTransport(cli, { browserSessionId, character = "", wor
     return { args: [], cleanupPaths: [] };
   }
 
-  const permissionConfig = buildPermissionServerConfig(
-    permissionServerPort,
-    browserSessionId,
-    character,
-    workingDirectory
-  );
+  const permissionConfig = buildPermissionServerConfig();
 
   if (config.permissionStyle === "mcp-config-file") {
     const mcpConfig = {

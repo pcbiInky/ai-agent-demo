@@ -97,6 +97,42 @@ function testTraeUsesPerInvokePermissionConfig() {
   );
 }
 
+function testClaudeUsesInvokeEnvForPermissionServer() {
+  assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
+  if (typeof __test?.preparePermissionTransport !== "function") return;
+
+  const prepared = __test.preparePermissionTransport("claude", {
+    browserSessionId: "session-claude",
+    character: "Faker",
+    workingDirectory: "/tmp/worktree-claude",
+    permissionServerPort: "3777",
+  });
+
+  const configIndex = prepared.args.indexOf("--mcp-config");
+  assert(configIndex >= 0, "claude invoke still passes a temporary MCP config file");
+  if (configIndex < 0) return;
+
+  const configPath = prepared.args[configIndex + 1];
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  } finally {
+    cleanup(configPath);
+  }
+
+  const permissionConfig = parsed?.mcpServers?.permission;
+  assert(
+    permissionConfig?.command === "node" &&
+      Array.isArray(permissionConfig?.args) &&
+      permissionConfig.args[0] === path.join(__dirname, "..", "permission-server.js"),
+    "claude temp MCP config still points to permission-server entrypoint"
+  );
+  assert(
+    !Object.prototype.hasOwnProperty.call(permissionConfig || {}, "env"),
+    "claude temp MCP config no longer hardcodes permission env overrides"
+  );
+}
+
 function testCodexUsesPerInvokePermissionConfig() {
   assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
   if (typeof __test?.preparePermissionTransport !== "function") return;
@@ -118,17 +154,14 @@ function testCodexUsesPerInvokePermissionConfig() {
     "codex invoke includes per-invoke MCP command override"
   );
   assert(
-    prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_CHARACTER") && value.includes("奇迹哥")),
-    "codex invoke includes per-invoke character env override"
-  );
-  assert(
-    prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_BROWSER_SESSION") && value.includes("session-codex")),
-    "codex invoke includes per-invoke session env override"
+    !prepared.args.some((value) => value.includes("mcp_servers.permission.env.")),
+    "codex invoke no longer injects per-invoke permission env overrides"
   );
 }
 
 function main() {
   testTraeUsesPerInvokePermissionConfig();
+  testClaudeUsesInvokeEnvForPermissionServer();
   testCodexUsesPerInvokePermissionConfig();
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
