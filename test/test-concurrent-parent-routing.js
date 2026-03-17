@@ -23,13 +23,44 @@ const invokeModule = require("../invoke");
 let baseUrl = "";
 let activeSessionId = "";
 let activeNames = {};
+let activeScenario = "";
 let allowFirstCReply = false;
 let cInvokeCount = 0;
+let fanInParentInvokeCount = 0;
+let fanInChildReplyCount = 0;
+let fanInParentSummarySent = false;
+
+async function requestAndSendMessage(character, text, atTargets = []) {
+  const requestId = `${character}-${crypto.randomUUID()}`;
+  const perm = await postJson("/api/permission-request", {
+    toolName: "SendMessage",
+    toolUseId: requestId,
+    input: { text },
+    browserSessionId: activeSessionId,
+    character,
+    timestamp: Date.now(),
+  });
+  if (!perm.ok) {
+    throw new Error(`permission request failed: ${perm.status} ${JSON.stringify(perm.body)}`);
+  }
+
+  const send = await postJson("/api/mcp-send-message", {
+    requestId,
+    text,
+    atTargets,
+  });
+  if (!send.ok) {
+    throw new Error(`SendMessage failed: ${send.status} ${JSON.stringify(send.body)}`);
+  }
+
+  return send;
+}
 
 const originalInvoke = invokeModule.invoke;
 invokeModule.invoke = async (_cli, _prompt, resumeSessionId, options = {}) => {
-  const { roleC } = activeNames;
-  if (options.character === roleC) {
+  const { roleA, roleB, roleC } = activeNames;
+
+  if (activeScenario === "same-child-concurrency" && options.character === roleC) {
     cInvokeCount += 1;
     const invokeIndex = cInvokeCount;
 
@@ -39,26 +70,24 @@ invokeModule.invoke = async (_cli, _prompt, resumeSessionId, options = {}) => {
       }
     }
 
-    const requestId = `c-${invokeIndex}-${crypto.randomUUID()}`;
-    const perm = await postJson("/api/permission-request", {
-      toolName: "SendMessage",
-      toolUseId: requestId,
-      input: { text: invokeIndex === 1 ? "C 回复 B" : "C 回复 A" },
-      browserSessionId: activeSessionId,
-      character: roleC,
-      timestamp: Date.now(),
-    });
-    if (!perm.ok) {
-      throw new Error(`permission request failed: ${perm.status} ${JSON.stringify(perm.body)}`);
-    }
+    await requestAndSendMessage(roleC, invokeIndex === 1 ? "C 回复 B" : "C 回复 A");
+  }
 
-    const send = await postJson("/api/mcp-send-message", {
-      requestId,
-      text: invokeIndex === 1 ? "C 回复 B" : "C 回复 A",
-      atTargets: [],
-    });
-    if (!send.ok) {
-      throw new Error(`SendMessage failed: ${send.status} ${JSON.stringify(send.body)}`);
+  if (activeScenario === "parent-fan-in") {
+    if (options.character === roleA) {
+      fanInParentInvokeCount += 1;
+      if (fanInParentInvokeCount === 1) {
+        await requestAndSendMessage(roleA, "A 收集 B 和 C 的意见", [roleB, roleC]);
+      } else if (fanInChildReplyCount >= 2 && !fanInParentSummarySent) {
+        fanInParentSummarySent = true;
+        await requestAndSendMessage(roleA, "A 汇总 B 和 C 的意见");
+      }
+    } else if (options.character === roleB) {
+      fanInChildReplyCount += 1;
+      await requestAndSendMessage(roleB, "B 的意见");
+    } else if (options.character === roleC) {
+      fanInChildReplyCount += 1;
+      await requestAndSendMessage(roleC, "C 的意见");
     }
   }
 
@@ -159,6 +188,7 @@ async function testQueuedSameCharacterKeepsCorrectReplyTargets() {
 
   activeSessionId = sessionId;
   activeNames = { roleA: roleA.name, roleB: roleB.name, roleC: roleC.name };
+  activeScenario = "same-child-concurrency";
   allowFirstCReply = false;
   cInvokeCount = 0;
 
@@ -209,11 +239,77 @@ async function testQueuedSameCharacterKeepsCorrectReplyTargets() {
   cleanupLog(sessionId);
 }
 
+async function testParentWaitsForAllChildRepliesBeforeSummarizing() {
+  assert(typeof server.__test.storeApproval === "function", "server exposes storeApproval helper");
+  if (typeof server.__test.storeApproval !== "function") return;
+
+  server.__test.ensureRoleSystemInitializedForTests();
+  const roles = server.__test.roleStore.listRoles();
+  const roleA = roles[0];
+  const roleB = roles[1];
+  const roleC = roles[2];
+
+  const sessionId = `session-${crypto.randomUUID()}`;
+
+  activeSessionId = sessionId;
+  activeNames = { roleA: roleA.name, roleB: roleB.name, roleC: roleC.name };
+  activeScenario = "parent-fan-in";
+  fanInParentInvokeCount = 0;
+  fanInChildReplyCount = 0;
+  fanInParentSummarySent = false;
+
+  writeSession(sessionId, [roleA.id, roleB.id, roleC.id]);
+  cleanupLog(sessionId);
+
+  const start = await postJson("/api/chat", {
+    sessionId,
+    text: `@${roleA.name} 先收集 ${roleB.name} 和 ${roleC.name} 的意见，等两边都回复后再统一总结`,
+  });
+  assert(start.ok, "user message triggers root A invoke");
+
+  const log = await waitFor(() => {
+    try {
+      const current = readLog(sessionId);
+      const parentSummary = current.messages.find(
+        (msg) => msg.role === "assistant" && msg.character === roleA.name && msg.text === "A 汇总 B 和 C 的意见"
+      );
+      if (parentSummary) return current;
+      const parentErrors = current.messages.filter((msg) => msg.role === "error" && msg.character === roleA.name);
+      if (parentErrors.length > 0) return current;
+      return null;
+    } catch {
+      return null;
+    }
+  }, "parent summary or parent error");
+
+  const bReply = log.messages.find(
+    (msg) => msg.role === "assistant" && msg.character === roleB.name && msg.text === "B 的意见"
+  );
+  const cReply = log.messages.find(
+    (msg) => msg.role === "assistant" && msg.character === roleC.name && msg.text === "C 的意见"
+  );
+  const parentSummary = log.messages.find(
+    (msg) => msg.role === "assistant" && msg.character === roleA.name && msg.text === "A 汇总 B 和 C 的意见"
+  );
+  const parentErrors = log.messages.filter((msg) => msg.role === "error" && msg.character === roleA.name);
+
+  assert(parentErrors.length === 0, "parent does not protocol-violate while waiting for all child replies");
+  assert(Boolean(parentSummary), "parent summarizes after child replies are complete");
+  assert(parentSummary?.replyTo === cReply?.id, "parent summary is anchored to the last child reply");
+  assert(
+    log.messages.findIndex((msg) => msg.id === parentSummary?.id) > log.messages.findIndex((msg) => msg.id === bReply?.id),
+    "parent summary occurs after the first child reply"
+  );
+
+  cleanupLog(sessionId);
+}
+
 async function main() {
   const tempServer = await createTestServer();
 
   try {
     await testQueuedSameCharacterKeepsCorrectReplyTargets();
+    await testParentWaitsForAllChildRepliesBeforeSummarizing();
   } finally {
     invokeModule.invoke = originalInvoke;
     await new Promise((resolve) => tempServer.close(resolve));
