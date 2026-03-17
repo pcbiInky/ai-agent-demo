@@ -795,6 +795,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
         browserSessionId,
         character,
         model: roleModel,
+        permissionServerPort: String(PORT),
         workingDirectory,
         signal: abortController.signal,
         skillDecision,

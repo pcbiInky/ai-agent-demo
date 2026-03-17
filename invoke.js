@@ -122,6 +122,8 @@ const TRAE_BUILTIN_TOOLS = [
   "Glob", "Grep", "LS",
 ];
 
+const TRAE_CONFIG_PATH = path.join(os.homedir(), ".trae", "trae_cli.yaml");
+
 function toTomlString(value) {
   return JSON.stringify(String(value));
 }
@@ -168,6 +170,10 @@ function buildTraePermissionRegistrationConfig() {
     // Trae 官方支持 env:{} 继承父进程环境变量，动态上下文由 invoke() 注入
     env: {},
   };
+}
+
+function hasTraePermissionRegistration(configText) {
+  return typeof configText === "string" && configText.includes("name: permission");
 }
 
 function preparePermissionTransport(cli, { browserSessionId, character = "", workingDirectory = "", permissionServerPort }) {
@@ -257,12 +263,19 @@ function initMcpRegistrations(port) {
   const { execFileSync } = require("child_process");
 
   try {
-    execFileSync(
-      CLI_CONFIG.trae.command,
-      ["mcp", "add-json", "permission", JSON.stringify(buildTraePermissionRegistrationConfig())],
-      { stdio: "ignore" }
-    );
-    console.log("[MCP] Trae permission server 已注册（env 继承自 invoke）");
+    const existingConfig = fs.existsSync(TRAE_CONFIG_PATH)
+      ? fs.readFileSync(TRAE_CONFIG_PATH, "utf-8")
+      : "";
+    if (hasTraePermissionRegistration(existingConfig)) {
+      console.log("[MCP] Trae permission server 已存在，跳过注册");
+    } else {
+      execFileSync(
+        CLI_CONFIG.trae.command,
+        ["mcp", "add-json", "permission", JSON.stringify(buildTraePermissionRegistrationConfig())],
+        { stdio: "ignore" }
+      );
+      console.log("[MCP] Trae permission server 已注册（env 继承自 invoke）");
+    }
   } catch (err) {
     console.warn(`[MCP] Trae 注册跳过: ${err.message}`);
   }
@@ -270,7 +283,6 @@ function initMcpRegistrations(port) {
   try {
     const codexCmd = CLI_CONFIG.codex.command;
     try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
-    console.log("[MCP] Codex permission server 改为每次 invoke 独立配置");
   } catch (err) {
     console.warn(`[MCP] Codex 注册跳过: ${err.message}`);
   }
@@ -295,6 +307,7 @@ function cleanupMcpRegistrations() {
  * @param {boolean} [options.verify=false] - 是否启用暗号验证（幻觉检测）
  * @param {string} [options.browserSessionId] - 浏览器会话 ID（权限代理需要）
  * @param {string} [options.character] - 角色名（权限代理需要）
+ * @param {string|number} [options.permissionServerPort] - 权限服务端口（权限代理需要）
  * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
@@ -304,6 +317,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
     browserSessionId,
     character,
     model,
+    permissionServerPort = process.env.PORT || "3000",
     workingDirectory = "",
     signal,
     skillDecision = null,
@@ -419,7 +433,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
   // 所有 CLI 都在单次 invoke 内注入独立的 permission server 配置，避免并发串号
   const cleanupPaths = [];
-  const permissionServerPort = process.env.PORT || "3000";
   const permissionEnv = buildPermissionEnv(
     permissionServerPort,
     browserSessionId || "",
@@ -576,6 +589,7 @@ module.exports = {
     buildPermissionEnv,
     buildPerInvokePermissionOverrides,
     buildTraePermissionRegistrationConfig,
+    hasTraePermissionRegistration,
     buildPermissionServerConfig,
   },
 };

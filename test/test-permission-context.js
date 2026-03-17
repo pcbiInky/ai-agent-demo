@@ -34,10 +34,12 @@ function testTraeUsesPerInvokePermissionConfig() {
   assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
   assert(typeof __test?.buildPermissionEnv === "function", "invoke exposes buildPermissionEnv helper");
   assert(typeof __test?.buildTraePermissionRegistrationConfig === "function", "invoke exposes buildTraePermissionRegistrationConfig helper");
+  assert(typeof __test?.hasTraePermissionRegistration === "function", "invoke exposes hasTraePermissionRegistration helper");
   if (
     typeof __test?.preparePermissionTransport !== "function" ||
     typeof __test?.buildPermissionEnv !== "function" ||
-    typeof __test?.buildTraePermissionRegistrationConfig !== "function"
+    typeof __test?.buildTraePermissionRegistrationConfig !== "function" ||
+    typeof __test?.hasTraePermissionRegistration !== "function"
   ) return;
 
   const sharedContextPath = path.join(os.tmpdir(), "mcp-perm-context.json");
@@ -84,6 +86,14 @@ function testTraeUsesPerInvokePermissionConfig() {
   assert(
     registration.env && Object.keys(registration.env).length === 0,
     "trae registration uses empty env so MCP server inherits invoke env"
+  );
+  assert(
+    __test.hasTraePermissionRegistration("mcp_servers:\n  - name: permission\n"),
+    "trae registration detector recognizes existing permission entry"
+  );
+  assert(
+    !__test.hasTraePermissionRegistration("mcp_servers:\n  - name: github\n"),
+    "trae registration detector ignores unrelated MCP entries"
   );
 }
 
