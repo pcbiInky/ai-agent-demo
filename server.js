@@ -197,6 +197,26 @@ function releaseInvokeSendQuota(sessionId, character) {
   invokeSendGuards.delete(getInvokeSendGuardKey(sessionId, character));
 }
 
+function getActiveThinkingKey(sessionId, character) {
+  return `${sessionId}:${character}`;
+}
+
+function setActiveThinking(sessionId, character, messageId, threadId = null) {
+  if (!messageId) return;
+  emitSSE(sessionId, "thinking", {
+    character,
+    messageId,
+    ...(threadId && { threadId }),
+  });
+  activeThinking.set(getActiveThinkingKey(sessionId, character), messageId);
+}
+
+function clearActiveThinking(sessionId, character, messageId = null) {
+  const key = getActiveThinkingKey(sessionId, character);
+  if (messageId && activeThinking.get(key) !== messageId) return;
+  activeThinking.delete(key);
+}
+
 function registerPendingMcpReply(sessionId, character, messageId) {
   pendingMcpReplies.set(getPendingMcpReplyKey(sessionId, character), messageId);
 }
@@ -446,7 +466,7 @@ app.post("/api/permission-request", (req, res) => {
   const requestId = toolUseId; // 使用 tool_use_id 作为唯一标识
 
   // 查找当前角色正在思考的 messageId，用于前端精确定位 thinking 容器
-  const thinkingMessageId = activeThinking.get(`${browserSessionId}:${character}`) || null;
+  const thinkingMessageId = activeThinking.get(getActiveThinkingKey(browserSessionId, character)) || null;
 
   console.log(`[权限请求] ${character || "unknown"} → ${toolName} (${requestId}) messageId=${thinkingMessageId}`);
 
@@ -538,7 +558,7 @@ app.post("/api/permission-response", (req, res) => {
 
   // 如果批准，存储审批记录（供 /api/mcp-send-message 等后续调用校验身份）
   if (behavior === "allow" && pending.toolName) {
-    const thinkingMsgId = activeThinking.get(`${pending.browserSessionId}:${pending.character}`) || null;
+    const thinkingMsgId = activeThinking.get(getActiveThinkingKey(pending.browserSessionId, pending.character)) || null;
     storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName, thinkingMsgId);
   }
 
@@ -599,18 +619,13 @@ app.post("/api/chat", (req, res) => {
         skillDecision,
       });
 
-      emitSSE(sessionId, "thinking", { character, messageId });
-      activeThinking.set(`${sessionId}:${character}`, messageId);
-
       await new Promise((resolve) => {
         enqueueInvoke(sessionId, config.cli, contextPrompt, character, async (result) => {
           setCharStatus(sessionId, character, "online");
-          activeThinking.delete(`${sessionId}:${character}`);
           await processAIChain(sessionId, character, result, messageId, null, 0, chainCounter);
           resolve();
         }, (err) => {
           setCharStatus(sessionId, character, "online");
-          activeThinking.delete(`${sessionId}:${character}`);
           emitSSE(sessionId, "error", {
             character,
             messageId,
@@ -626,7 +641,10 @@ app.post("/api/chat", (req, res) => {
             timestamp: Date.now(),
           });
           resolve();
-        }, { skillDecision });
+        }, {
+          skillDecision,
+          thinkingMessageId: messageId,
+        });
       });
     }
   })();
@@ -732,7 +750,12 @@ function parseMentions(text, sessionId) {
 
 // ── invoke 串行队列 ───────────────────────────────────────
 function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError, options = {}) {
-  const { skillDecision = null, invokeContext = null } = options;
+  const {
+    skillDecision = null,
+    invokeContext = null,
+    thinkingMessageId = null,
+    thinkingThreadId = null,
+  } = options;
   const roleConfig = getRoleConfig(character);
   const roleId = roleConfig?.id || character;
   const key = `${browserSessionId}:${roleId}`;
@@ -753,6 +776,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     clearPendingMcpReply(browserSessionId, character);
     resetInvokeSendGuard(browserSessionId, character);
+    setActiveThinking(browserSessionId, character, thinkingMessageId, thinkingThreadId);
     // 在串行队列内绑定 invoke 上下文，确保不会被并发覆盖
     const chainKey = `${browserSessionId}:${character}`;
     if (invokeContext) {
@@ -779,12 +803,14 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       recordSkillTrace(browserSessionId, skillDecision, "ok");
+      clearActiveThinking(browserSessionId, character, thinkingMessageId);
       onResult(result);
       resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
       clearPendingMcpReply(browserSessionId, character);
       recordSkillTrace(browserSessionId, skillDecision, "error");
       resetInvokeSendGuard(browserSessionId, character);
+      clearActiveThinking(browserSessionId, character, thinkingMessageId);
       onError(err);
     } finally {
       invokeAbortControllers.delete(key);
@@ -1024,20 +1050,15 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
       sourceMessageId,
     });
 
-    emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId });
-    activeThinking.set(`${sessionId}:${targetChar}`, messageId);
-
     // 等待被@角色的回复（invoke 上下文在队列内绑定，不会被并发覆盖）
     await new Promise((resolve) => {
       enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
         setCharStatus(sessionId, targetChar, "online");
-        activeThinking.delete(`${sessionId}:${targetChar}`);
         removeThinking(sessionId, targetChar, messageId);
         await processAIChain(sessionId, targetChar, targetResult, messageId, threadId, depth + 1, chainCounter);
         resolve();
       }, (err) => {
         setCharStatus(sessionId, targetChar, "online");
-        activeThinking.delete(`${sessionId}:${targetChar}`);
         removeThinking(sessionId, targetChar, messageId);
         emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
         appendToLog(sessionId, {
@@ -1053,6 +1074,8 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
         resolve();
       }, {
         skillDecision: targetSkillDecision,
+        thinkingMessageId: messageId,
+        thinkingThreadId: threadId,
         invokeContext: buildInvokeContext(targetChar, threadId, depth + 1, [...lineage, targetChar]),
       });
     });
@@ -1073,19 +1096,14 @@ async function dispatchReturnToParent(sessionId, fromCharacter, parentFrame, mes
     { depth: parentFrame.depth, fromCharacter, skillDecision: followUpSkillDecision }
   );
 
-  emitSSE(sessionId, "thinking", { character: parentFrame.character, messageId, threadId });
-  activeThinking.set(`${sessionId}:${parentFrame.character}`, messageId);
-
   await new Promise((resolve) => {
     enqueueInvoke(sessionId, parentConfig.cli, followUpPrompt, parentFrame.character, async (followResult) => {
       setCharStatus(sessionId, parentFrame.character, "online");
-      activeThinking.delete(`${sessionId}:${parentFrame.character}`);
       removeThinking(sessionId, parentFrame.character, messageId);
       await processAIChain(sessionId, parentFrame.character, followResult, messageId, threadId, parentFrame.depth, { count: 0 });
       resolve();
     }, (err) => {
       setCharStatus(sessionId, parentFrame.character, "online");
-      activeThinking.delete(`${sessionId}:${parentFrame.character}`);
       removeThinking(sessionId, parentFrame.character, messageId);
       emitSSE(sessionId, "error", { character: parentFrame.character, messageId, error: err.message, threadId });
       appendToLog(sessionId, {
@@ -1098,11 +1116,13 @@ async function dispatchReturnToParent(sessionId, fromCharacter, parentFrame, mes
         threadId,
         ...(parentFrame.depth > 0 && { depth: parentFrame.depth }),
       });
-      resolve();
-    }, {
-      skillDecision: followUpSkillDecision,
-      invokeContext: buildInvokeContext(parentFrame.character, threadId, parentFrame.depth, parentFrame.lineage),
-    });
+        resolve();
+      }, {
+        skillDecision: followUpSkillDecision,
+        thinkingMessageId: messageId,
+        thinkingThreadId: threadId,
+        invokeContext: buildInvokeContext(parentFrame.character, threadId, parentFrame.depth, parentFrame.lineage),
+      });
   });
 }
 
@@ -1270,7 +1290,7 @@ app.post("/api/abort-invoke", (req, res) => {
   }
   controller.abort();
   console.log(`[用户终止] ${character} (${abortKey})`);
-  activeThinking.delete(`${browserSessionId}:${character}`);
+  clearActiveThinking(browserSessionId, character);
   emitSSE(browserSessionId, "abort", { character });
   res.json({ ok: true, aborted: true });
 });
