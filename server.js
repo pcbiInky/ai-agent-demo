@@ -142,10 +142,10 @@ const pendingMcpReplies = new Map();
 const invokeChainCallers = new Map();
 // browserSessionId:character（当前 invoke 是否已成功使用过一次 SendMessage）
 const invokeSendGuards = new Set();
-// sessionId:parentCharacter:threadId -> queued child return events waiting for parent fan-in
-const pendingParentReturnEvents = new Map();
-// sessionId:parentCharacter:threadId -> active child dispatch depth count
-const activeParentDispatchScopes = new Map();
+// sessionId:parentCharacter -> queued child return events waiting to re-invoke parent
+const parentReturnQueues = new Map();
+// sessionId:parentCharacter -> active drain promise
+const parentReturnProcessors = new Map();
 // sessionId -> 最近的 Skill 路由命中记录
 const recentSkillTraces = new Map();
 const MAX_SKILL_TRACE_PER_SESSION = 20;
@@ -844,28 +844,9 @@ function getParentFrame(invokeContext) {
   };
 }
 
-function getParentReturnScopeKey(sessionId, parentCharacter, threadId) {
-  return `${sessionId}:${parentCharacter}:${threadId || "main"}`;
-}
-
-function enterParentDispatchScope(sessionId, parentCharacter, threadId) {
-  const key = getParentReturnScopeKey(sessionId, parentCharacter, threadId);
-  activeParentDispatchScopes.set(key, (activeParentDispatchScopes.get(key) || 0) + 1);
-}
-
-function leaveParentDispatchScope(sessionId, parentCharacter, threadId) {
-  const key = getParentReturnScopeKey(sessionId, parentCharacter, threadId);
-  const next = (activeParentDispatchScopes.get(key) || 0) - 1;
-  if (next > 0) {
-    activeParentDispatchScopes.set(key, next);
-  } else {
-    activeParentDispatchScopes.delete(key);
-  }
-}
-
-function hasActiveParentDispatchScope(sessionId, parentCharacter, threadId) {
-  const key = getParentReturnScopeKey(sessionId, parentCharacter, threadId);
-  return activeParentDispatchScopes.has(key);
+function getParentReturnQueueKey(sessionId, parentCharacter) {
+  const parentRole = getRoleConfig(parentCharacter);
+  return `${sessionId}:${parentRole?.id || parentCharacter}`;
 }
 
 function enqueueParentReturnEvent(event) {
@@ -882,79 +863,106 @@ function enqueueParentReturnEvent(event) {
     lineage: Array.isArray(event.lineage) ? [...event.lineage] : [event.parentCharacter],
   };
 
-  const key = getParentReturnScopeKey(
+  const key = getParentReturnQueueKey(
     normalizedEvent.sessionId,
-    normalizedEvent.parentCharacter,
-    normalizedEvent.threadId
+    normalizedEvent.parentCharacter
   );
-  const events = pendingParentReturnEvents.get(key) || [];
-  events.push(normalizedEvent);
-  pendingParentReturnEvents.set(key, events);
+  const queue = parentReturnQueues.get(key) || [];
+  queue.push(normalizedEvent);
+  parentReturnQueues.set(key, queue);
+
+  if (!parentReturnProcessors.has(key)) {
+    const drainPromise = drainParentReturnQueue(
+      normalizedEvent.sessionId,
+      normalizedEvent.parentCharacter
+    ).catch((err) => {
+      console.error(`[parent-return-queue] ${normalizedEvent.parentCharacter}: ${err.message}`);
+    }).finally(() => {
+      parentReturnProcessors.delete(key);
+    });
+
+    parentReturnProcessors.set(key, drainPromise);
+  }
 }
 
-function consumeParentReturnEvents(sessionId, parentCharacter, threadId) {
-  const key = getParentReturnScopeKey(sessionId, parentCharacter, threadId);
-  const events = pendingParentReturnEvents.get(key) || [];
-  pendingParentReturnEvents.delete(key);
-  return events;
+function shiftParentReturnEvent(sessionId, parentCharacter) {
+  const key = getParentReturnQueueKey(sessionId, parentCharacter);
+  const queue = parentReturnQueues.get(key) || [];
+  const event = queue.shift() || null;
+  if (queue.length > 0) {
+    parentReturnQueues.set(key, queue);
+  } else {
+    parentReturnQueues.delete(key);
+  }
+  return event;
 }
 
-function buildParentReturnSourcePrompt(events) {
-  const lines = events.map((event, index) => {
-    return `${index + 1}. 来自 ${event.fromCharacter}，threadId=${event.threadId || "(none)"}，childMessageId=${event.childMessageId}`;
-  }).join("\n");
-
-  return `以下子角色都已完成当前轮次的回复，请统一查看这些回归事件后再继续主线：\n${lines}`;
+function buildParentReturnSourcePrompt(event) {
+  return [
+    "【回归事件】",
+    `来自: ${event.fromCharacter}`,
+    `threadId: ${event.threadId || "(none)"}`,
+    `childMessageId: ${event.childMessageId}`,
+    `parentMessageId: ${event.parentMessageId || "(none)"}`,
+    "请优先查看这次子回复，再继续主线。",
+  ].join("\n");
 }
 
-async function dispatchParentFollowUpFromEvents(sessionId, parentCharacter, events) {
-  if (!Array.isArray(events) || events.length === 0) return;
+async function dispatchParentFollowUpFromEvent(event) {
+  if (!event) return;
 
-  const lastEvent = events[events.length - 1];
-  const parentConfig = getRoleConfig(parentCharacter);
+  const parentConfig = getRoleConfig(event.parentCharacter);
   if (!parentConfig) return;
 
-  const followUpSourcePrompt = buildParentReturnSourcePrompt(events);
-  const followUpSkillDecision = buildSkillDecision(sessionId, followUpSourcePrompt, parentCharacter);
+  const followUpSourcePrompt = buildParentReturnSourcePrompt(event);
+  const followUpSkillDecision = buildSkillDecision(event.sessionId, followUpSourcePrompt, event.parentCharacter);
   const followUpPrompt = buildContextPrompt(
-    sessionId,
+    event.sessionId,
     followUpSourcePrompt,
-    parentCharacter,
+    event.parentCharacter,
     {
-      depth: lastEvent.depth,
-      fromCharacter: lastEvent.fromCharacter,
+      depth: event.depth,
+      fromCharacter: event.fromCharacter,
       skillDecision: followUpSkillDecision,
     }
   );
 
   await new Promise((resolve) => {
-    enqueueInvoke(sessionId, parentConfig.cli, followUpPrompt, parentCharacter, async (followResult) => {
-      setCharStatus(sessionId, parentCharacter, "online");
-      removeThinking(sessionId, parentCharacter, lastEvent.childMessageId);
-      await processAIChain(sessionId, parentCharacter, followResult, lastEvent.childMessageId, lastEvent.threadId, lastEvent.depth, { count: 0 });
+    enqueueInvoke(event.sessionId, parentConfig.cli, followUpPrompt, event.parentCharacter, async (followResult) => {
+      setCharStatus(event.sessionId, event.parentCharacter, "online");
+      removeThinking(event.sessionId, event.parentCharacter, event.childMessageId);
+      await processAIChain(event.sessionId, event.parentCharacter, followResult, event.childMessageId, event.threadId, event.depth, { count: 0 });
       resolve();
     }, (err) => {
-      setCharStatus(sessionId, parentCharacter, "online");
-      removeThinking(sessionId, parentCharacter, lastEvent.childMessageId);
-      emitSSE(sessionId, "error", { character: parentCharacter, messageId: lastEvent.childMessageId, error: err.message, threadId: lastEvent.threadId });
-      appendToLog(sessionId, {
+      setCharStatus(event.sessionId, event.parentCharacter, "online");
+      removeThinking(event.sessionId, event.parentCharacter, event.childMessageId);
+      emitSSE(event.sessionId, "error", { character: event.parentCharacter, messageId: event.childMessageId, error: err.message, threadId: event.threadId });
+      appendToLog(event.sessionId, {
         id: crypto.randomUUID(),
         role: "error",
-        character: parentCharacter,
+        character: event.parentCharacter,
         error: err.message,
-        replyTo: lastEvent.childMessageId,
+        replyTo: event.childMessageId,
         timestamp: Date.now(),
-        ...(lastEvent.threadId && { threadId: lastEvent.threadId }),
-        ...(lastEvent.depth > 0 && { depth: lastEvent.depth }),
+        ...(event.threadId && { threadId: event.threadId }),
+        ...(event.depth > 0 && { depth: event.depth }),
       });
       resolve();
     }, {
       skillDecision: followUpSkillDecision,
-      thinkingMessageId: lastEvent.childMessageId,
-      thinkingThreadId: lastEvent.threadId,
-      invokeContext: buildInvokeContext(parentCharacter, lastEvent.threadId, lastEvent.depth, lastEvent.lineage),
+      thinkingMessageId: event.childMessageId,
+      thinkingThreadId: event.threadId,
+      invokeContext: buildInvokeContext(event.parentCharacter, event.threadId, event.depth, event.lineage),
     });
   });
+}
+
+async function drainParentReturnQueue(sessionId, parentCharacter) {
+  while (true) {
+    const event = shiftParentReturnEvent(sessionId, parentCharacter);
+    if (!event) return;
+    await dispatchParentFollowUpFromEvent(event);
+  }
 }
 
 // ── 聊天记录持久化 ────────────────────────────────────────
@@ -1138,74 +1146,64 @@ ${recentSummary}
 async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageId, threadId, depth, chainCounter, sourceMessageId, lineage = [fromCharacter]) {
   if (depth >= MAX_DEPTH) return;
 
-  enterParentDispatchScope(sessionId, fromCharacter, threadId);
-  try {
-    for (const targetChar of aiMentions) {
-      if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
-        emitSSE(sessionId, "system-notice", {
-          text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
-          threadId,
-        });
-        break;
-      }
-      chainCounter.count++;
-
-      const targetConfig = getRoleConfig(targetChar);
-      if (!targetConfig) continue;
-      const targetPrompt = `${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请查看最近的聊天记录并回应。`;
-      const targetSkillDecision = buildSkillDecision(sessionId, targetPrompt, targetChar);
-      const contextPrompt = buildContextPrompt(
-        sessionId,
-        targetPrompt,
-        targetChar,
-        { depth: depth + 1, fromCharacter, skillDecision: targetSkillDecision }
-      );
-
-      // 通知前端：AI 发起了召唤
-      emitSSE(sessionId, "ai-mention", {
-        from: fromCharacter,
-        to: targetChar,
+  for (const targetChar of aiMentions) {
+    if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
+      emitSSE(sessionId, "system-notice", {
+        text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
         threadId,
-        sourceMessageId,
       });
-
-      // 等待被@角色的回复（invoke 上下文在队列内绑定，不会被并发覆盖）
-      await new Promise((resolve) => {
-        enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
-          setCharStatus(sessionId, targetChar, "online");
-          removeThinking(sessionId, targetChar, messageId);
-          await processAIChain(sessionId, targetChar, targetResult, messageId, threadId, depth + 1, chainCounter);
-          resolve();
-        }, (err) => {
-          setCharStatus(sessionId, targetChar, "online");
-          removeThinking(sessionId, targetChar, messageId);
-          emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
-          appendToLog(sessionId, {
-            id: crypto.randomUUID(),
-            role: "error",
-            character: targetChar,
-            error: err.message,
-            replyTo: messageId,
-            timestamp: Date.now(),
-            threadId,
-            depth: depth + 1,
-          });
-          resolve();
-        }, {
-          skillDecision: targetSkillDecision,
-          thinkingMessageId: messageId,
-          thinkingThreadId: threadId,
-          invokeContext: buildInvokeContext(targetChar, threadId, depth + 1, [...lineage, targetChar]),
-        });
-      });
+      break;
     }
-  } finally {
-    leaveParentDispatchScope(sessionId, fromCharacter, threadId);
-  }
+    chainCounter.count++;
 
-  const pendingReturnEvents = consumeParentReturnEvents(sessionId, fromCharacter, threadId);
-  if (pendingReturnEvents.length > 0) {
-    await dispatchParentFollowUpFromEvents(sessionId, fromCharacter, pendingReturnEvents);
+    const targetConfig = getRoleConfig(targetChar);
+    if (!targetConfig) continue;
+    const targetPrompt = `${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请查看最近的聊天记录并回应。`;
+    const targetSkillDecision = buildSkillDecision(sessionId, targetPrompt, targetChar);
+    const contextPrompt = buildContextPrompt(
+      sessionId,
+      targetPrompt,
+      targetChar,
+      { depth: depth + 1, fromCharacter, skillDecision: targetSkillDecision }
+    );
+
+    // 通知前端：AI 发起了召唤
+    emitSSE(sessionId, "ai-mention", {
+      from: fromCharacter,
+      to: targetChar,
+      threadId,
+      sourceMessageId,
+    });
+
+    // 等待被@角色的回复（invoke 上下文在队列内绑定，不会被并发覆盖）
+    await new Promise((resolve) => {
+      enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
+        setCharStatus(sessionId, targetChar, "online");
+        removeThinking(sessionId, targetChar, messageId);
+        await processAIChain(sessionId, targetChar, targetResult, messageId, threadId, depth + 1, chainCounter);
+        resolve();
+      }, (err) => {
+        setCharStatus(sessionId, targetChar, "online");
+        removeThinking(sessionId, targetChar, messageId);
+        emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
+        appendToLog(sessionId, {
+          id: crypto.randomUUID(),
+          role: "error",
+          character: targetChar,
+          error: err.message,
+          replyTo: messageId,
+          timestamp: Date.now(),
+          threadId,
+          depth: depth + 1,
+        });
+        resolve();
+      }, {
+        skillDecision: targetSkillDecision,
+        thinkingMessageId: messageId,
+        thinkingThreadId: threadId,
+        invokeContext: buildInvokeContext(targetChar, threadId, depth + 1, [...lineage, targetChar]),
+      });
+    });
   }
 }
 
@@ -1221,13 +1219,6 @@ async function dispatchReturnToParent(sessionId, fromCharacter, parentFrame, mes
     depth: parentFrame.depth,
     lineage: parentFrame.lineage,
   });
-
-  if (!hasActiveParentDispatchScope(sessionId, parentFrame.character, threadId)) {
-    const pendingReturnEvents = consumeParentReturnEvents(sessionId, parentFrame.character, threadId);
-    if (pendingReturnEvents.length > 0) {
-      await dispatchParentFollowUpFromEvents(sessionId, parentFrame.character, pendingReturnEvents);
-    }
-  }
 }
 
 // ── AI 互@ 链式处理 ──────────────────────────────────────

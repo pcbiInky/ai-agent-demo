@@ -26,9 +26,7 @@ let activeNames = {};
 let activeScenario = "";
 let allowFirstCReply = false;
 let cInvokeCount = 0;
-let fanInParentInvokeCount = 0;
-let fanInChildReplyCount = 0;
-let fanInParentSummarySent = false;
+let parentQueueInvokeCount = 0;
 
 async function requestAndSendMessage(character, text, atTargets = []) {
   const requestId = `${character}-${crypto.randomUUID()}`;
@@ -73,20 +71,19 @@ invokeModule.invoke = async (_cli, _prompt, resumeSessionId, options = {}) => {
     await requestAndSendMessage(roleC, invokeIndex === 1 ? "C 回复 B" : "C 回复 A");
   }
 
-  if (activeScenario === "parent-fan-in") {
+  if (activeScenario === "parent-return-queue") {
     if (options.character === roleA) {
-      fanInParentInvokeCount += 1;
-      if (fanInParentInvokeCount === 1) {
+      parentQueueInvokeCount += 1;
+      if (parentQueueInvokeCount === 1) {
         await requestAndSendMessage(roleA, "A 收集 B 和 C 的意见", [roleB, roleC]);
-      } else if (fanInChildReplyCount >= 2 && !fanInParentSummarySent) {
-        fanInParentSummarySent = true;
-        await requestAndSendMessage(roleA, "A 汇总 B 和 C 的意见");
+      } else if (parentQueueInvokeCount === 2) {
+        await requestAndSendMessage(roleA, "A 跟进 B");
+      } else if (parentQueueInvokeCount === 3) {
+        await requestAndSendMessage(roleA, "A 跟进 C");
       }
     } else if (options.character === roleB) {
-      fanInChildReplyCount += 1;
       await requestAndSendMessage(roleB, "B 的意见");
     } else if (options.character === roleC) {
-      fanInChildReplyCount += 1;
       await requestAndSendMessage(roleC, "C 的意见");
     }
   }
@@ -239,7 +236,7 @@ async function testQueuedSameCharacterKeepsCorrectReplyTargets() {
   cleanupLog(sessionId);
 }
 
-async function testParentWaitsForAllChildRepliesBeforeSummarizing() {
+async function testParentReturnEventsTriggerParentTwiceInOrder() {
   assert(typeof server.__test.storeApproval === "function", "server exposes storeApproval helper");
   if (typeof server.__test.storeApproval !== "function") return;
 
@@ -253,34 +250,32 @@ async function testParentWaitsForAllChildRepliesBeforeSummarizing() {
 
   activeSessionId = sessionId;
   activeNames = { roleA: roleA.name, roleB: roleB.name, roleC: roleC.name };
-  activeScenario = "parent-fan-in";
-  fanInParentInvokeCount = 0;
-  fanInChildReplyCount = 0;
-  fanInParentSummarySent = false;
+  activeScenario = "parent-return-queue";
+  parentQueueInvokeCount = 0;
 
   writeSession(sessionId, [roleA.id, roleB.id, roleC.id]);
   cleanupLog(sessionId);
 
   const start = await postJson("/api/chat", {
     sessionId,
-    text: `@${roleA.name} 先收集 ${roleB.name} 和 ${roleC.name} 的意见，等两边都回复后再统一总结`,
+    text: `@${roleA.name} 先收集 ${roleB.name} 和 ${roleC.name} 的意见，并在每个子角色回复后各自继续跟进`,
   });
   assert(start.ok, "user message triggers root A invoke");
 
   const log = await waitFor(() => {
     try {
       const current = readLog(sessionId);
-      const parentSummary = current.messages.find(
-        (msg) => msg.role === "assistant" && msg.character === roleA.name && msg.text === "A 汇总 B 和 C 的意见"
+      const parentReplies = current.messages.filter(
+        (msg) => msg.role === "assistant" && msg.character === roleA.name && (msg.text === "A 跟进 B" || msg.text === "A 跟进 C")
       );
-      if (parentSummary) return current;
+      if (parentReplies.length >= 2) return current;
       const parentErrors = current.messages.filter((msg) => msg.role === "error" && msg.character === roleA.name);
       if (parentErrors.length > 0) return current;
       return null;
     } catch {
       return null;
     }
-  }, "parent summary or parent error");
+  }, "two parent follow-ups or parent error");
 
   const bReply = log.messages.find(
     (msg) => msg.role === "assistant" && msg.character === roleB.name && msg.text === "B 的意见"
@@ -288,18 +283,15 @@ async function testParentWaitsForAllChildRepliesBeforeSummarizing() {
   const cReply = log.messages.find(
     (msg) => msg.role === "assistant" && msg.character === roleC.name && msg.text === "C 的意见"
   );
-  const parentSummary = log.messages.find(
-    (msg) => msg.role === "assistant" && msg.character === roleA.name && msg.text === "A 汇总 B 和 C 的意见"
+  const parentReplies = log.messages.filter(
+    (msg) => msg.role === "assistant" && msg.character === roleA.name && (msg.text === "A 跟进 B" || msg.text === "A 跟进 C")
   );
   const parentErrors = log.messages.filter((msg) => msg.role === "error" && msg.character === roleA.name);
 
-  assert(parentErrors.length === 0, "parent does not protocol-violate while waiting for all child replies");
-  assert(Boolean(parentSummary), "parent summarizes after child replies are complete");
-  assert(parentSummary?.replyTo === cReply?.id, "parent summary is anchored to the last child reply");
-  assert(
-    log.messages.findIndex((msg) => msg.id === parentSummary?.id) > log.messages.findIndex((msg) => msg.id === bReply?.id),
-    "parent summary occurs after the first child reply"
-  );
+  assert(parentErrors.length === 0, "parent follow-up queue does not protocol-violate");
+  assert(parentReplies.length === 2, "parent is triggered twice");
+  assert(parentReplies[0]?.replyTo === bReply?.id, "first parent follow-up binds to first child");
+  assert(parentReplies[1]?.replyTo === cReply?.id, "second parent follow-up binds to second child");
 
   cleanupLog(sessionId);
 }
@@ -309,7 +301,7 @@ async function main() {
 
   try {
     await testQueuedSameCharacterKeepsCorrectReplyTargets();
-    await testParentWaitsForAllChildRepliesBeforeSummarizing();
+    await testParentReturnEventsTriggerParentTwiceInOrder();
   } finally {
     invokeModule.invoke = originalInvoke;
     await new Promise((resolve) => tempServer.close(resolve));
