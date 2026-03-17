@@ -137,7 +137,8 @@ const invokeAbortControllers = new Map();
 const mcpSendCounts = new Map();
 // browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
 const pendingMcpReplies = new Map();
-// browserSessionId:character -> fromCharacter（当前 invoke 是被谁召唤的，用于强制回归通路）
+// browserSessionId:character -> { depth, threadId, lineage }
+// 当前 invoke 的链路上下文：所在线程、当前深度，以及从主线到当前节点的角色路径
 const invokeChainCallers = new Map();
 // browserSessionId:character（当前 invoke 是否已成功使用过一次 SendMessage）
 const invokeSendGuards = new Set();
@@ -731,7 +732,7 @@ function parseMentions(text, sessionId) {
 
 // ── invoke 串行队列 ───────────────────────────────────────
 function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError, options = {}) {
-  const { skillDecision = null, chainCaller = null, chainThreadId = null, chainDepth = 0 } = options;
+  const { skillDecision = null, invokeContext = null } = options;
   const roleConfig = getRoleConfig(character);
   const roleId = roleConfig?.id || character;
   const key = `${browserSessionId}:${roleId}`;
@@ -752,10 +753,10 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
     clearPendingMcpReply(browserSessionId, character);
     resetInvokeSendGuard(browserSessionId, character);
-    // 链式回归：在串行队列内绑定 chainCaller，确保不会被并发覆盖
+    // 在串行队列内绑定 invoke 上下文，确保不会被并发覆盖
     const chainKey = `${browserSessionId}:${character}`;
-    if (chainCaller) {
-      invokeChainCallers.set(chainKey, { caller: chainCaller, threadId: chainThreadId, depth: chainDepth });
+    if (invokeContext) {
+      invokeChainCallers.set(chainKey, invokeContext);
     } else {
       invokeChainCallers.delete(chainKey);
     }
@@ -792,6 +793,25 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   });
 
   invokeQueues.set(key, next);
+}
+
+function buildInvokeContext(character, threadId, depth, lineage) {
+  return {
+    depth,
+    threadId,
+    lineage: Array.isArray(lineage) && lineage.length > 0 ? lineage : [character],
+  };
+}
+
+function getParentFrame(invokeContext) {
+  const lineage = Array.isArray(invokeContext?.lineage) ? invokeContext.lineage : [];
+  if (lineage.length <= 1) return null;
+  return {
+    character: lineage[lineage.length - 2],
+    depth: Math.max(0, Number(invokeContext?.depth || 0) - 1),
+    lineage: lineage.slice(0, -1),
+    threadId: invokeContext?.threadId || null,
+  };
 }
 
 // ── 聊天记录持久化 ────────────────────────────────────────
@@ -917,7 +937,9 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
   // 被 AI 唤醒时的额外说明
   let invokeContext = "";
   if (fromCharacter) {
-    invokeContext = `\n\n【召唤上下文】${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请结合聊天记录上下文回答。你的回复会自动通知 ${fromCharacter}（系统会自动将 ${fromCharacter} 加入 atTargets，无需手动设置）。`;
+    invokeContext = depth > 0
+      ? `\n\n【召唤上下文】${fromCharacter} 通过 SendMessage 的 atTargets 召唤了你，请结合聊天记录上下文回答。若你想继续召唤下一级角色，请显式填写 atTargets；若你只是回复上一层，请将 atTargets 留空，系统会把消息返回给 ${fromCharacter}。`
+      : `\n\n【回归主线】${fromCharacter} 已经回复了你。你现在回到了主线层级：如需继续召唤其他角色，请显式填写 atTargets；若只是继续主线回复，可将 atTargets 留空。`;
   }
 
   const myConfig = getRoleConfig(character);
@@ -970,7 +992,9 @@ ${recentSummary}
  * @param {object} chainCounter - { count: number } 共享计数器
  * @param {string} sourceMessageId - 触发召唤的消息 ID（用于 ai-mention 事件）
  */
-async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageId, threadId, depth, chainCounter, sourceMessageId) {
+async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageId, threadId, depth, chainCounter, sourceMessageId, lineage = [fromCharacter]) {
+  if (depth >= MAX_DEPTH) return;
+
   for (const targetChar of aiMentions) {
     if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
       emitSSE(sessionId, "system-notice", {
@@ -1003,7 +1027,7 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
     emitSSE(sessionId, "thinking", { character: targetChar, messageId, threadId });
     activeThinking.set(`${sessionId}:${targetChar}`, messageId);
 
-    // 等待被@角色的回复（chainCaller 在队列内绑定，不会被并发覆盖）
+    // 等待被@角色的回复（invoke 上下文在队列内绑定，不会被并发覆盖）
     await new Promise((resolve) => {
       enqueueInvoke(sessionId, targetConfig.cli, contextPrompt, targetChar, async (targetResult) => {
         setCharStatus(sessionId, targetChar, "online");
@@ -1027,9 +1051,59 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
           depth: depth + 1,
         });
         resolve();
-      }, { skillDecision: targetSkillDecision, chainCaller: fromCharacter, chainThreadId: threadId, chainDepth: depth + 1 });
+      }, {
+        skillDecision: targetSkillDecision,
+        invokeContext: buildInvokeContext(targetChar, threadId, depth + 1, [...lineage, targetChar]),
+      });
     });
   }
+}
+
+async function dispatchReturnToParent(sessionId, fromCharacter, parentFrame, messageId, threadId) {
+  if (!parentFrame?.character) return;
+  const parentConfig = getRoleConfig(parentFrame.character);
+  if (!parentConfig) return;
+
+  const followUpSourcePrompt = `${fromCharacter} 已经回复了你的问题。请查看最新聊天记录，继续回应或总结下一步。`;
+  const followUpSkillDecision = buildSkillDecision(sessionId, followUpSourcePrompt, parentFrame.character);
+  const followUpPrompt = buildContextPrompt(
+    sessionId,
+    followUpSourcePrompt,
+    parentFrame.character,
+    { depth: parentFrame.depth, fromCharacter, skillDecision: followUpSkillDecision }
+  );
+
+  emitSSE(sessionId, "thinking", { character: parentFrame.character, messageId, threadId });
+  activeThinking.set(`${sessionId}:${parentFrame.character}`, messageId);
+
+  await new Promise((resolve) => {
+    enqueueInvoke(sessionId, parentConfig.cli, followUpPrompt, parentFrame.character, async (followResult) => {
+      setCharStatus(sessionId, parentFrame.character, "online");
+      activeThinking.delete(`${sessionId}:${parentFrame.character}`);
+      removeThinking(sessionId, parentFrame.character, messageId);
+      await processAIChain(sessionId, parentFrame.character, followResult, messageId, threadId, parentFrame.depth, { count: 0 });
+      resolve();
+    }, (err) => {
+      setCharStatus(sessionId, parentFrame.character, "online");
+      activeThinking.delete(`${sessionId}:${parentFrame.character}`);
+      removeThinking(sessionId, parentFrame.character, messageId);
+      emitSSE(sessionId, "error", { character: parentFrame.character, messageId, error: err.message, threadId });
+      appendToLog(sessionId, {
+        id: crypto.randomUUID(),
+        role: "error",
+        character: parentFrame.character,
+        error: err.message,
+        replyTo: messageId,
+        timestamp: Date.now(),
+        threadId,
+        ...(parentFrame.depth > 0 && { depth: parentFrame.depth }),
+      });
+      resolve();
+    }, {
+      skillDecision: followUpSkillDecision,
+      invokeContext: buildInvokeContext(parentFrame.character, threadId, parentFrame.depth, parentFrame.lineage),
+    });
+  });
 }
 
 // ── AI 互@ 链式处理 ──────────────────────────────────────
@@ -1109,23 +1183,27 @@ app.post("/api/mcp-send-message", (req, res) => {
     const messageId = crypto.randomUUID();
     const mcpTimestamp = Date.now();
 
-    // 链式回归通路：如果 B 是被 A 召唤的，确保 A 在 atTargets 中（merge，不丢弃 B 原有目标）
-    const chainContext = invokeChainCallers.get(`${browserSessionId}:${character}`);
-    const chainCaller = chainContext?.caller || null;
-    const chainThreadId = chainContext?.threadId || null;
-    const chainDepth = chainContext?.depth || 0;
-    let effectiveAtTargets = atTargets || [];
-    if (chainCaller && !effectiveAtTargets.includes(chainCaller)) {
-      effectiveAtTargets = [chainCaller, ...effectiveAtTargets];
-    }
-
-    const aiMentions = effectiveAtTargets.filter(
+    // 链式上下文：
+    // - 非空 atTargets: 向下一层召唤（最多 depth=2）
+    // - 空 atTargets: 返回上一层父节点
+    const chainContext = invokeChainCallers.get(`${browserSessionId}:${character}`) || null;
+    const currentDepth = chainContext?.depth || 0;
+    const currentLineage = Array.isArray(chainContext?.lineage) ? chainContext.lineage : [character];
+    const contextThreadId = threadId || chainContext?.threadId || null;
+    const explicitTargets = Array.isArray(atTargets) ? atTargets : [];
+    const parentFrame = getParentFrame({
+      depth: currentDepth,
+      lineage: currentLineage,
+      threadId: contextThreadId,
+    });
+    const shouldReturnToParent = Boolean(parentFrame) && (explicitTargets.length === 0 || currentDepth >= MAX_DEPTH);
+    const canDispatchChildren = explicitTargets.length > 0 && currentDepth < MAX_DEPTH;
+    const aiMentions = explicitTargets.filter(
       (target) => target !== character && isMentionAllowedInSession(browserSessionId, target, { excludeCharacter: character })
     );
-
-    // 自动回填线程上下文：优先用模型传入的 threadId，其次用链式回归上下文
-    const effectiveThreadId = threadId || chainThreadId || (aiMentions.length > 0 ? messageId : null);
-    const effectiveDepth = chainDepth;
+    const effectiveAiMentions = canDispatchChildren ? aiMentions : [];
+    const effectiveThreadId = contextThreadId || (effectiveAiMentions.length > 0 ? messageId : null);
+    const effectiveDepth = currentDepth;
 
     appendToLog(browserSessionId, {
       id: messageId,
@@ -1138,7 +1216,7 @@ app.post("/api/mcp-send-message", (req, res) => {
       ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
       ...(effectiveThreadId && { threadId: effectiveThreadId }),
       ...(effectiveDepth > 0 && { depth: effectiveDepth }),
-      ...(aiMentions.length > 0 && { aiMentions }),
+      ...(effectiveAiMentions.length > 0 && { aiMentions: effectiveAiMentions }),
     });
 
     if (replyToMessageId) {
@@ -1155,15 +1233,18 @@ app.post("/api/mcp-send-message", (req, res) => {
       ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
       ...(effectiveThreadId && { threadId: effectiveThreadId }),
       ...(effectiveDepth > 0 && { depth: effectiveDepth }),
-      ...(aiMentions.length > 0 && { aiMentions }),
+      ...(effectiveAiMentions.length > 0 && { aiMentions: effectiveAiMentions }),
     });
 
     res.json({ ok: true, messageId });
 
-    if (aiMentions.length > 0) {
+    if (canDispatchChildren && effectiveAiMentions.length > 0) {
       const chainCounter = { count: 0 };
-      dispatchAIMentions(browserSessionId, character, aiMentions, messageId, effectiveThreadId, effectiveDepth, chainCounter, messageId)
+      dispatchAIMentions(browserSessionId, character, effectiveAiMentions, messageId, effectiveThreadId, effectiveDepth, chainCounter, messageId, currentLineage)
         .catch(err => console.error(`[mcp-send-message] 召唤链错误: ${err.message}`));
+    } else if (shouldReturnToParent) {
+      dispatchReturnToParent(browserSessionId, character, parentFrame, messageId, effectiveThreadId)
+        .catch(err => console.error(`[mcp-send-message] 父节点回退错误: ${err.message}`));
     }
   } catch (err) {
     releaseInvokeSendQuota(browserSessionId, character);
@@ -1274,6 +1355,7 @@ module.exports = {
     isMentionAllowedInSession,
     appendToLog,
     extractVerifyMeta,
+    storeApproval,
     registerPendingMcpReply,
     finalizePendingMcpVerification,
     invokeChainCallers,
