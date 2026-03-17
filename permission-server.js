@@ -22,30 +22,12 @@ const { globSync } = require("fs").promises ? { globSync: null } : {};
 const PORT = process.env.PERMISSION_SERVER_PORT || "3000";
 const TIMEOUT_MS = 120_000;
 
-// browserSessionId 和 character 的获取优先级：
-// 1. 环境变量（Claude 每次通过临时 MCP config 传入）
-// 2. 共享状态文件（Trae/Codex 全局注册，invoke 前写入）
-const CONTEXT_FILE = path.join(require("os").tmpdir(), "mcp-perm-context.json");
 function getContext() {
-  // 环境变量优先
-  if (process.env.PERMISSION_BROWSER_SESSION) {
-    return {
-      browserSessionId: process.env.PERMISSION_BROWSER_SESSION,
-      character: process.env.PERMISSION_CHARACTER || "",
-      workingDirectory: process.env.PERMISSION_WORKING_DIRECTORY || "",
-    };
-  }
-  // 回退到共享状态文件
-  try {
-    const raw = JSON.parse(fs.readFileSync(CONTEXT_FILE, "utf-8"));
-    return {
-      browserSessionId: raw.browserSessionId || "",
-      character: raw.character || "",
-      workingDirectory: raw.workingDirectory || "",
-    };
-  } catch {
-    return { browserSessionId: "", character: "", workingDirectory: "" };
-  }
+  return {
+    browserSessionId: process.env.PERMISSION_BROWSER_SESSION || "",
+    character: process.env.PERMISSION_CHARACTER || "",
+    workingDirectory: process.env.PERMISSION_WORKING_DIRECTORY || "",
+  };
 }
 
 const log = (msg) => process.stderr.write(`[permission-server] ${msg}\n`);
