@@ -955,7 +955,7 @@ function buildPermDetail(toolName, input) {
   return detail;
 }
 
-function showPermissionCard({ requestId, character, toolName, input, timestamp, messageId }) {
+function showPermissionCard({ requestId, character, toolName, input, timestamp, messageId, status = "pending", resolutionMessage }) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const brief = getPermBrief(toolName, input);
   const intent = getPermIntent(toolName, input);
@@ -1020,6 +1020,11 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
     `;
     $messages.appendChild(div);
   }
+
+  if (status && status !== "pending") {
+    markPermResolved(requestId, status, resolutionMessage);
+  }
+
   handlePostAppend({ shouldAutoScroll });
 }
 
@@ -1358,6 +1363,8 @@ async function loadHistory() {
         state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
         appendErrorMessage(msg.character, msg.error);
+      } else if (msg.role === "permission") {
+        showPermissionCard(msg);
       }
     }
 

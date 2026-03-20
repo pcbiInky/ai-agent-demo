@@ -281,6 +281,38 @@ function storeApproval(requestId, browserSessionId, character, toolName, replyTo
   setTimeout(() => approvedRequests.delete(requestId), APPROVAL_TTL_MS);
 }
 
+function buildPermissionLogEntry({
+  requestId,
+  character,
+  toolName,
+  input,
+  timestamp,
+  messageId,
+  status = "pending",
+  resolutionMessage,
+}) {
+  return {
+    id: requestId,
+    role: "permission",
+    requestId,
+    character: character || "unknown",
+    toolName,
+    input,
+    timestamp: timestamp || Date.now(),
+    messageId: messageId || null,
+    status,
+    ...(resolutionMessage ? { resolutionMessage } : {}),
+  };
+}
+
+function appendPermissionToLog(sessionId, payload) {
+  appendToLog(sessionId, buildPermissionLogEntry(payload));
+}
+
+function updatePermissionInLog(sessionId, requestId, updates) {
+  updateMessageInLog(sessionId, requestId, updates);
+}
+
 function consumeApproval(requestId, requiredToolName) {
   const record = approvedRequests.get(requestId);
   if (!record) return null;
@@ -483,6 +515,16 @@ app.post("/api/permission-request", (req, res) => {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
     // 存储审批记录（供 /api/mcp-send-message 校验身份）
     storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId);
+    appendPermissionToLog(browserSessionId, {
+      requestId,
+      character,
+      toolName,
+      input,
+      timestamp,
+      messageId: thinkingMessageId,
+      status: "allow",
+      resolutionMessage: "安全命令默认授权",
+    });
     // 先发 permission 事件让前端创建卡片（用户能看到 AI 在做什么）
     emitSSE(browserSessionId, "permission", {
       requestId,
@@ -491,6 +533,8 @@ app.post("/api/permission-request", (req, res) => {
       input,
       timestamp: timestamp || Date.now(),
       messageId: thinkingMessageId,
+      status: "allow",
+      resolutionMessage: "安全命令默认授权",
     });
     // 紧接着发 resolved 事件，前端会将卡片标记为自动通过的极简样式
     emitSSE(browserSessionId, "permission-resolved", {
@@ -501,6 +545,15 @@ app.post("/api/permission-request", (req, res) => {
     return res.json({ behavior: "allow", message: "安全命令默认授权", requestId });
   }
 
+  appendPermissionToLog(browserSessionId, {
+    requestId,
+    character,
+    toolName,
+    input,
+    timestamp,
+    messageId: thinkingMessageId,
+  });
+
   // 通过 SSE 通知前端
   emitSSE(browserSessionId, "permission", {
     requestId,
@@ -509,6 +562,7 @@ app.post("/api/permission-request", (req, res) => {
     input,
     timestamp: timestamp || Date.now(),
     messageId: thinkingMessageId,
+    status: "pending",
   });
 
   // 创建一个 Promise，等待前端用户响应
@@ -517,6 +571,10 @@ app.post("/api/permission-request", (req, res) => {
       // 超时自动拒绝
       pendingPermissions.delete(requestId);
       console.log(`[权限超时] ${toolName} (${requestId}) — 自动拒绝`);
+      updatePermissionInLog(browserSessionId, requestId, {
+        status: "deny",
+        resolutionMessage: "用户未在时限内响应，自动拒绝",
+      });
       emitSSE(browserSessionId, "permission-resolved", {
         requestId,
         behavior: "deny",
@@ -553,11 +611,17 @@ app.post("/api/permission-response", (req, res) => {
 
   console.log(`[权限响应] ${requestId} → ${behavior}`);
 
+  const resolutionMessage = message || (behavior === "allow" ? "已允许" : "已拒绝");
+  updatePermissionInLog(pending.browserSessionId, requestId, {
+    status: behavior,
+    resolutionMessage,
+  });
+
   // 通知前端权限已处理
   emitSSE(pending.browserSessionId, "permission-resolved", {
     requestId,
     behavior,
-    message: message || (behavior === "allow" ? "已允许" : "已拒绝"),
+    message: resolutionMessage,
   });
 
   // 如果批准，存储审批记录（供 /api/mcp-send-message 等后续调用校验身份）
@@ -569,7 +633,7 @@ app.post("/api/permission-response", (req, res) => {
   // 返回给 MCP server
   pending.resolve({
     behavior,
-    ...(message && { message }),
+    ...(resolutionMessage && { message: resolutionMessage }),
     requestId,
   });
 
