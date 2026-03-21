@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
+const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
@@ -146,6 +147,8 @@ const invokeSendGuards = new Set();
 const parentReturnQueues = new Map();
 // sessionId:parentCharacter -> active drain promise
 const parentReturnProcessors = new Map();
+// browserSessionId:roleId -> 角色运行时指标（内存缓存）
+const roleRuntimeMetrics = new Map();
 // sessionId -> 最近的 Skill 路由命中记录
 const recentSkillTraces = new Map();
 const MAX_SKILL_TRACE_PER_SESSION = 20;
@@ -386,7 +389,12 @@ app.post("/api/roles/:roleId/restore", async (req, res) => {
 app.get("/api/sessions/:sessionId/members", (req, res) => {
   const memberIds = sessionStore.getSessionMembers(req.params.sessionId);
   const members = memberIds.map(id => roleStore.getRoleById(id)).filter(Boolean);
-  res.json({ members });
+  // 附带 runtimeMetrics
+  const membersWithMetrics = members.map(member => ({
+    ...member,
+    runtimeMetrics: sessionStore.getMemberRuntimeMetrics(req.params.sessionId, member.id) || null,
+  }));
+  res.json({ members: membersWithMetrics });
 });
 
 app.post("/api/sessions/:sessionId/members/:roleId/invite", (req, res) => {
@@ -395,6 +403,15 @@ app.post("/api/sessions/:sessionId/members/:roleId/invite", (req, res) => {
   if (role.archived) return res.status(400).json({ error: "已归档角色不可邀请" });
   sessionStore.inviteToSession(req.params.sessionId, req.params.roleId);
   res.json({ ok: true });
+});
+
+app.post("/api/sessions/:sessionId/runtime-metrics/refresh", async (req, res) => {
+  try {
+    const refreshed = await refreshSessionRoleMetrics(req.params.sessionId);
+    res.json({ ok: true, refreshed });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "刷新角色卡片指标失败" });
+  }
 });
 
 app.delete("/api/sessions/:sessionId/members/:roleId", (req, res) => {
@@ -486,6 +503,58 @@ function emitSSE(sessionId, event, data) {
   for (const res of clients) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
+}
+
+// ── 角色运行时指标更新 ────────────────────────────────────
+function updateRoleRuntimeMetrics(sessionId, roleId, patch) {
+  const key = `${sessionId}:${roleId}`;
+  const existing = roleRuntimeMetrics.get(key) || {};
+  const updated = { ...existing, ...patch, updatedAt: Date.now() };
+  roleRuntimeMetrics.set(key, updated);
+  // 落盘到 sessionStore
+  sessionStore.patchMemberRuntimeMetrics(sessionId, roleId, updated);
+  // 通过 SSE 推送到前端
+  const role = roleStore.getRoleById(roleId);
+  emitSSE(sessionId, "role-metrics", {
+    roleId,
+    character: role?.name || roleId,
+    metrics: updated,
+  });
+  return updated;
+}
+
+async function refreshSessionRoleMetrics(sessionId) {
+  const memberIds = sessionStore.getSessionMembers(sessionId);
+  const refreshed = [];
+
+  for (const roleId of memberIds) {
+    const role = roleStore.getRoleById(roleId);
+    if (!role) continue;
+
+    if (role.cli !== "codex") {
+      const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
+        supportsUsageWindows: false,
+        supportsTokenUsage: false,
+      });
+      refreshed.push({ roleId, metrics });
+      continue;
+    }
+
+    try {
+      const providerSessionId = sessionStore.getProviderSessionId(sessionId, roleId);
+      const metrics = await getCodexRoleCardMetrics(providerSessionId || null);
+      const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
+      refreshed.push({ roleId, metrics: updated });
+    } catch {
+      const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
+        supportsUsageWindows: true,
+        supportsTokenUsage: true,
+      });
+      refreshed.push({ roleId, metrics });
+    }
+  }
+
+  return refreshed;
 }
 
 // ── API: 权限请求（MCP permission-server 调用）─────────────
@@ -863,6 +932,14 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
         workingDirectory,
         signal: abortController.signal,
         skillDecision,
+        onRuntimeEvent: (runtimeEvent) => {
+          // server.js 层绑定 roleId
+          if (runtimeEvent.type === "metrics") {
+            updateRoleRuntimeMetrics(browserSessionId, roleId, runtimeEvent.data);
+          } else if (runtimeEvent.type === "context_compacted") {
+            updateRoleRuntimeMetrics(browserSessionId, roleId, runtimeEvent.data);
+          }
+        },
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;

@@ -107,6 +107,39 @@ function updateSessionMeta(sessionId, updates = {}) {
   return writeSession(session);
 }
 
+function getMemberRuntimeMetrics(sessionId, roleId) {
+  const session = readSession(sessionId);
+  return session?.members[roleId]?.runtimeMetrics || null;
+}
+
+function setMemberRuntimeMetrics(sessionId, roleId, metrics) {
+  const session = getOrCreateSession(sessionId);
+  if (!session.members[roleId]) {
+    session.members[roleId] = {};
+  }
+  session.members[roleId].runtimeMetrics = {
+    ...metrics,
+    updatedAt: Date.now(),
+  };
+  return writeSession(session);
+}
+
+function patchMemberRuntimeMetrics(sessionId, roleId, patch) {
+  const session = getOrCreateSession(sessionId);
+  if (!session.members[roleId]) {
+    session.members[roleId] = {};
+  }
+  if (!session.members[roleId].runtimeMetrics) {
+    session.members[roleId].runtimeMetrics = {};
+  }
+  session.members[roleId].runtimeMetrics = {
+    ...session.members[roleId].runtimeMetrics,
+    ...patch,
+    updatedAt: Date.now(),
+  };
+  return writeSession(session);
+}
+
 module.exports = {
   DEFAULT_TITLE,
   getOrCreateSession,
@@ -117,4 +150,7 @@ module.exports = {
   setProviderSessionId,
   updateSessionMeta,
   readSession,
+  getMemberRuntimeMetrics,
+  setMemberRuntimeMetrics,
+  patchMemberRuntimeMetrics,
 };

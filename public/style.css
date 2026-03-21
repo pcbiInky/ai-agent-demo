@@ -490,6 +490,91 @@ html, body {
 .char-status-name { flex: 1; }
 .char-status-label { font-size: 11px; color: var(--text-light); }
 
+/* 角色卡片 */
+.role-card {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.role-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.role-card-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.role-card-meta {
+  font-size: 11px;
+  color: var(--text-light);
+  margin-left: 2px;
+}
+.role-card-status {
+  font-size: 11px;
+  color: var(--text-light);
+  margin-left: auto;
+}
+.role-card-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.metric-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.metric-bar-label {
+  color: var(--text-light);
+  width: 36px;
+  flex-shrink: 0;
+}
+.metric-time-label {
+  font-variant-numeric: tabular-nums;
+}
+.metric-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.metric-bar-fill-primary {
+  background: var(--green);
+}
+.metric-bar-fill-secondary {
+  background: #4b8bff;
+}
+.metric-bar-value {
+  color: var(--text-light);
+  width: 30px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.role-card-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.metric-pill {
+  font-size: 11px;
+  color: var(--text-light);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 /* ── 设置按钮与弹窗 ───────────────────── */
 #settings-btn {
   position: fixed;

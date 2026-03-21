@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { buildSkillTypeInjection } = require("./skill-loader");
+const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -69,6 +70,7 @@ const CLI_CONFIG = {
       return ["exec", "--json", prompt];
     },
     // JSONL 输出：提取 agent_message 文本 + thread_id（作为 sessionId 统一概念）
+    // 指标从 lib/codex-metrics.js 统一获取（见 close 事件处理）
     parse: (stdout, onText, onMeta) => {
       const rl = createInterface({ input: stdout });
       rl.on("line", (line) => {
@@ -76,11 +78,8 @@ const CLI_CONFIG = {
         try {
           const event = JSON.parse(line);
           if (event.type === "thread.started" && event.thread_id) {
-            // Codex 使用 thread_id，这里映射为 sessionId 以统一概念
             onMeta?.({ sessionId: event.thread_id });
           }
-          // 适配 codex exec --json 的输出:
-          // {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
           if (event.type === "item.completed" && event.item?.type === "agent_message") {
             const text = typeof event.item.text === "string" ? event.item.text : "";
             if (text) onText(text);
@@ -322,6 +321,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
     workingDirectory = "",
     signal,
     skillDecision = null,
+    onRuntimeEvent = null,
   } = options;
 
   const config = CLI_CONFIG[cli];
@@ -544,11 +544,54 @@ function invoke(cli, prompt, sessionId, options = {}) {
       reject(new Error(errorMsg));
     });
 
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       activeChildren.delete(child);
       clearInterval(timer);
       clearTimeout(killTimer);
       cleanupPermissionArtifacts();
+
+      // Codex: 通过 lib/codex-metrics.js 获取完整角色卡片指标
+      // rate limits 走 app-server，thread token usage 走 local-fallback
+      if (cli === "codex" && reportedSessionId && onRuntimeEvent) {
+        try {
+          const allMetrics = await getCodexRoleCardMetrics(reportedSessionId);
+          const data = {};
+          if (allMetrics.supportsUsageWindows != null) {
+            data.supportsUsageWindows = allMetrics.supportsUsageWindows;
+          }
+          if (allMetrics.supportsTokenUsage != null) {
+            data.supportsTokenUsage = allMetrics.supportsTokenUsage;
+          }
+          if (allMetrics.primaryUsedPercent != null) {
+            data.primaryUsedPercent = allMetrics.primaryUsedPercent;
+          }
+          if (allMetrics.secondaryUsedPercent != null) {
+            data.secondaryUsedPercent = allMetrics.secondaryUsedPercent;
+          }
+          if (allMetrics.primaryResetsAt != null) {
+            data.primaryResetsAt = allMetrics.primaryResetsAt;
+          }
+          if (allMetrics.secondaryResetsAt != null) {
+            data.secondaryResetsAt = allMetrics.secondaryResetsAt;
+          }
+          if (allMetrics.contextTokens != null) {
+            data.contextTokens = allMetrics.contextTokens;
+          }
+          if (allMetrics.totalTokens != null) {
+            data.totalTokens = allMetrics.totalTokens;
+          }
+          if (allMetrics.modelContextWindow != null) {
+            data.modelContextWindow = allMetrics.modelContextWindow;
+          }
+          if (allMetrics.contextCompactedAt != null) {
+            data.contextCompactedAt = allMetrics.contextCompactedAt;
+          }
+          if (Object.keys(data).length > 0) {
+            onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data });
+          }
+        } catch { /* ignore metrics errors */ }
+      }
+
       if (aborted) {
         // 被 signal 提前终止 — 正常 resolve（消息已通过 MCP SendMessage 发出）
         if (canary) {

@@ -82,6 +82,7 @@ async function init() {
   await loadSessionMembers();
   renderStaticCharacterTexts();
   renderCharStatuses();
+  scheduleSessionRoleCardRefresh();
 
   await loadHistory();
   await loadSessionList();
@@ -112,6 +113,38 @@ async function loadSessionMembers() {
   } catch {
     state.sessionMembers = [];
   }
+}
+
+let runtimeRefreshTimer = null;
+let runtimeRefreshInFlight = false;
+
+async function refreshSessionRoleCards(sessionId = state.sessionId) {
+  if (!sessionId) return;
+  try {
+    await fetch(`/api/sessions/${sessionId}/runtime-metrics/refresh`, { method: "POST" });
+    if (state.sessionId !== sessionId) return;
+    await loadSessionMembers();
+    renderCharStatuses();
+  } catch {
+    // ignore refresh errors and keep last known metrics
+  }
+}
+
+function scheduleSessionRoleCardRefresh(delay = 120) {
+  if (!state.sessionId) return;
+  if (runtimeRefreshTimer) clearTimeout(runtimeRefreshTimer);
+  const targetSessionId = state.sessionId;
+  runtimeRefreshTimer = setTimeout(async () => {
+    runtimeRefreshTimer = null;
+    if (runtimeRefreshInFlight) return;
+    runtimeRefreshInFlight = true;
+    try {
+      if (state.sessionId !== targetSessionId) return;
+      await refreshSessionRoleCards(targetSessionId);
+    } finally {
+      runtimeRefreshInFlight = false;
+    }
+  }, delay);
 }
 
 async function loadSessionMeta() {
@@ -385,6 +418,15 @@ function connectSSE() {
     if (data.status === "online") {
       clearMessageProcessing(data.character);
     }
+  });
+
+  // ── 角色运行时指标事件 ──
+  es.addEventListener("role-metrics", (e) => {
+    const data = JSON.parse(e.data);
+    const member = state.sessionMembers.find(m => m.id === data.roleId);
+    if (!member) return;
+    member.runtimeMetrics = data.metrics;
+    renderCharStatuses();
   });
 
   // ── 权限请求事件 ──
@@ -1119,7 +1161,6 @@ function setCharStatus(name, status) {
 function renderCharStatuses() {
   $charStatuses.innerHTML = "";
 
-  // 当前会话成员
   const memberNames = getSessionMemberNames();
   for (const member of state.sessionMembers) {
     const name = member.name;
@@ -1127,19 +1168,60 @@ function renderCharStatuses() {
     const dotClass = status === "thinking" ? "thinking" : "online";
     const label = status === "thinking" ? "思考中" : "待命";
     const charClass = getCharClass(name);
+    const metrics = member.runtimeMetrics || {};
+    const cliLabel = member.model ? `${member.cli} · ${member.model}` : member.cli;
+    const supportsUsageWindows = metrics.supportsUsageWindows ?? (member.cli === "codex");
+    const primaryPct = metrics.primaryUsedPercent ?? null;
+    const secondaryPct = metrics.secondaryUsedPercent ?? null;
+    const primaryResetsAt = metrics.primaryResetsAt ?? null;
+    const contextTokens = metrics.contextTokens ?? null;
+    const totalTokens = metrics.totalTokens ?? null;
+
+    const usageSection = supportsUsageWindows ? `
+      <div class="role-card-metrics">
+        <div class="metric-bar metric-bar-primary">
+          <span class="metric-bar-label metric-time-label">${primaryResetsAt !== null ? formatBeijingTime(primaryResetsAt) : '--:--'}</span>
+          <div class="metric-bar-track">
+            <div class="metric-bar-fill metric-bar-fill-primary" style="width: ${primaryPct !== null ? primaryPct + '%' : '0%'}"></div>
+          </div>
+          <span class="metric-bar-value">${primaryPct !== null ? primaryPct + '%' : '--'}</span>
+        </div>
+        <div class="metric-bar metric-bar-secondary">
+          <span class="metric-bar-label">week</span>
+          <div class="metric-bar-track">
+            <div class="metric-bar-fill metric-bar-fill-secondary" style="width: ${secondaryPct !== null ? secondaryPct + '%' : '0%'}"></div>
+          </div>
+          <span class="metric-bar-value">${secondaryPct !== null ? secondaryPct + '%' : '--'}</span>
+        </div>
+      </div>
+    ` : "";
+
+    const footerSection = `
+      <div class="role-card-footer">
+        <span class="metric-pill">ctx ${contextTokens !== null ? formatTokenK(contextTokens) : '--'}</span>
+        <span class="metric-pill">total ${totalTokens !== null ? formatTokenK(totalTokens) : '--'}</span>
+      </div>
+    `;
 
     const div = document.createElement("div");
-    div.className = "char-status";
+    div.className = "role-card";
+    div.dataset.roleId = member.id;
     div.innerHTML = `
-      <div class="status-dot ${dotClass}"></div>
-      <span class="char-status-name" style="color: var(--${charClass}-accent)">${escapeHtml(name)} (${member.model ? member.cli + ' · ' + member.model : member.cli})</span>
-      <span class="char-status-label">${label}</span>
-      <button class="btn-remove-member" title="移出会话" data-role-id="${member.id}" data-name="${escapeHtml(name)}">×</button>
+      <div class="role-card-header">
+        <div class="status-dot ${dotClass}"></div>
+        <span class="role-card-title" style="color: var(--${charClass}-accent)">${escapeHtml(name)}</span>
+        <span class="role-card-meta">${cliLabel}</span>
+        <span class="role-card-status">${label}</span>
+        <button class="btn-remove-member" title="移出会话" data-role-id="${member.id}" data-name="${escapeHtml(name)}">×</button>
+      </div>
+      ${usageSection}
+      ${footerSection}
     `;
+
     div.querySelector(".btn-remove-member").addEventListener("click", async (e) => {
       const roleId = e.target.dataset.roleId;
       await fetch(`/api/sessions/${state.sessionId}/members/${roleId}`, { method: "DELETE" });
-    await loadSessionMeta();
+      await loadSessionMeta();
       await loadSessionMembers();
       renderCharStatuses();
       setupMentionHints();
@@ -1147,7 +1229,6 @@ function renderCharStatuses() {
     $charStatuses.appendChild(div);
   }
 
-  // 可邀请角色（未归档且不在当前会话中）
   const invitable = Object.entries(state.characters).filter(([name, cfg]) =>
     !cfg.archived && !memberNames.includes(name)
   );
@@ -1169,11 +1250,30 @@ function renderCharStatuses() {
         await fetch(`/api/sessions/${state.sessionId}/members/${roleId}/invite`, { method: "POST" });
         await loadSessionMembers();
         renderCharStatuses();
+        scheduleSessionRoleCardRefresh();
         setupMentionHints();
       });
       $charStatuses.appendChild(div);
     }
   }
+}
+
+function formatTokenK(value) {
+  if (value === null || value === undefined) return '--';
+  if (value >= 1000) return (value / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(value);
+}
+
+function formatBeijingTime(value) {
+  if (value === null || value === undefined) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+  }).format(date);
 }
 
 // ── 右侧栏：统计 ─────────────────────────────────────────
@@ -1249,6 +1349,7 @@ async function switchSession(id) {
   $messages.innerHTML = `<div id="system-notice" class="system-notice">${buildSystemNoticeHtml()}</div>`;
   renderStats();
   renderCharStatuses();
+  scheduleSessionRoleCardRefresh();
   setupMentionHints();
   renderStaticCharacterTexts();
   await loadHistory();
