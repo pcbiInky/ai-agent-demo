@@ -4,6 +4,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
+const { getClaudeRoleCardMetrics } = require("./lib/claude-metrics");
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
@@ -531,24 +532,35 @@ async function refreshSessionRoleMetrics(sessionId) {
     const role = roleStore.getRoleById(roleId);
     if (!role) continue;
 
-    if (role.cli !== "codex") {
+    if (role.cli === "codex") {
+      try {
+        const providerSessionId = sessionStore.getProviderSessionId(sessionId, roleId);
+        const metrics = await getCodexRoleCardMetrics(providerSessionId || null);
+        const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
+        refreshed.push({ roleId, metrics: updated });
+      } catch {
+        const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
+          supportsUsageWindows: true,
+          supportsTokenUsage: true,
+        });
+        refreshed.push({ roleId, metrics });
+      }
+    } else if (role.cli === "claude") {
+      try {
+        const metrics = await getClaudeRoleCardMetrics(role.model);
+        const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
+        refreshed.push({ roleId, metrics: updated });
+      } catch {
+        const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
+          supportsUsageWindows: false,
+          supportsTokenUsage: false,
+        });
+        refreshed.push({ roleId, metrics });
+      }
+    } else {
       const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
         supportsUsageWindows: false,
         supportsTokenUsage: false,
-      });
-      refreshed.push({ roleId, metrics });
-      continue;
-    }
-
-    try {
-      const providerSessionId = sessionStore.getProviderSessionId(sessionId, roleId);
-      const metrics = await getCodexRoleCardMetrics(providerSessionId || null);
-      const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
-      refreshed.push({ roleId, metrics: updated });
-    } catch {
-      const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
-        supportsUsageWindows: true,
-        supportsTokenUsage: true,
       });
       refreshed.push({ roleId, metrics });
     }
@@ -556,6 +568,7 @@ async function refreshSessionRoleMetrics(sessionId) {
 
   return refreshed;
 }
+
 
 // ── API: 权限请求（MCP permission-server 调用）─────────────
 // 长轮询：MCP server POST 权限请求 → 存入 pending → SSE 通知前端 → 等待用户响应
