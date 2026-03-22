@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const { buildSkillTypeInjection } = require("./skill-loader");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
+const { resolveCliInvocation } = require("./lib/cli-invocation");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -150,6 +151,11 @@ function buildPermissionServerConfig(permissionServerPort, browserSessionId, cha
   };
 }
 
+function getCliInvocation(cli, args) {
+  const config = CLI_CONFIG[cli];
+  return resolveCliInvocation(config.command, args);
+}
+
 function buildPerInvokePermissionOverrides(permissionConfig) {
   return [
     "-c", `mcp_servers.permission.type=${toTomlString(permissionConfig.type)}`,
@@ -281,8 +287,8 @@ function initMcpRegistrations(port) {
   }
 
   try {
-    const codexCmd = CLI_CONFIG.codex.command;
-    try { execFileSync(codexCmd, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
+    const codexInvocation = getCliInvocation("codex", ["mcp", "remove", "permission"]);
+    try { execFileSync(codexInvocation.command, codexInvocation.args, { stdio: "ignore" }); } catch { /* ignore */ }
   } catch (err) {
     console.warn(`[MCP] Codex 注册跳过: ${err.message}`);
   }
@@ -294,7 +300,10 @@ function initMcpRegistrations(port) {
 function cleanupMcpRegistrations() {
   const { execFileSync } = require("child_process");
   // Codex: mcp remove
-  try { execFileSync(CLI_CONFIG.codex.command, ["mcp", "remove", "permission"], { stdio: "ignore" }); } catch { /* ignore */ }
+  try {
+    const codexInvocation = getCliInvocation("codex", ["mcp", "remove", "permission"]);
+    execFileSync(codexInvocation.command, codexInvocation.args, { stdio: "ignore" });
+  } catch { /* ignore */ }
 }
 
 /**
@@ -461,7 +470,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
       Object.assign(childEnv, permissionEnv);
     }
 
-    const child = spawn(config.command, args, {
+    const cliInvocation = getCliInvocation(cli, args);
+    const child = spawn(cliInvocation.command, cliInvocation.args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
     });
@@ -635,6 +645,7 @@ module.exports = {
     buildTraePermissionRegistrationConfig,
     hasTraePermissionRegistration,
     buildPermissionServerConfig,
+    resolveCliInvocation,
   },
 };
 
