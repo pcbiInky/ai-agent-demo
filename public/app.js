@@ -249,6 +249,9 @@ function renderSkillList() {
   }).join("");
 }
 
+/**
+ * 调用原生API选择目录（Windows/macOS原生目录选择器）
+ */
 async function chooseSystemDirectory($input, $error) {
   try {
     const res = await fetch("/api/system/select-directory", {

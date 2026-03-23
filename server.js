@@ -442,20 +442,36 @@ app.patch("/api/sessions/:sessionId", (req, res) => {
 });
 
 app.post("/api/system/select-directory", (req, res) => {
-  if (process.platform !== "darwin") {
-    return res.status(501).json({ error: "当前系统不支持原生目录选择，请手动输入路径" });
-  }
+  const { execFileSync } = require("child_process");
   try {
-    const { execFileSync } = require("child_process");
-    const selected = execFileSync("osascript", [
-      "-e",
-      'POSIX path of (choose folder with prompt "选择工作目录")',
-    ], { encoding: "utf-8" }).trim();
+    let selected;
+    if (process.platform === "darwin") {
+      selected = execFileSync("osascript", [
+        "-e",
+        'POSIX path of (choose folder with prompt "选择工作目录")',
+      ], { encoding: "utf-8" }).trim();
+    } else if (process.platform === "win32") {
+      selected = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择工作目录'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }`,
+        ],
+        { encoding: "utf-8", windowsHide: true }
+      ).trim();
+      // Windows 用户取消时，ShowDialog() 返回 DialogResult.Cancel，脚本无输出
+      if (!selected) {
+        return res.status(400).json({ error: "用户取消了目录选择" });
+      }
+    } else {
+      return res.status(501).json({ error: "当前系统不支持原生目录选择，请手动输入路径" });
+    }
     const workingDirectory = normalizeWorkingDirectory(selected);
     res.json({ workingDirectory });
   } catch (err) {
     const message = String(err.message || "");
-    if (message.includes("User canceled") || message.includes("(-128)")) {
+    if (message.includes("User canceled") || message.includes("(-128)") || message.includes("Canceled")) {
       return res.status(400).json({ error: "用户取消了目录选择" });
     }
     res.status(500).json({ error: "打开系统目录选择失败" });
