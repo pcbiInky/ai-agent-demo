@@ -124,6 +124,37 @@ const TRAE_BUILTIN_TOOLS = [
 
 const TRAE_CONFIG_PATH = path.join(os.homedir(), ".trae", "trae_cli.yaml");
 
+function buildMcpHint() {
+  return "\n\n【最重要协议】\n" +
+    "你只能使用 mcp__permission__* 工具，不要尝试内置工具。\n" +
+    "当你准备对外回复时，必须先调用 mcp__permission__SendMessage 发送消息；禁止直接输出最终正文。\n" +
+    "SendMessage 成功后，本轮立即结束，不要再次发送正文。\n" +
+    "若 SendMessage 失败，请根据错误原因修正参数后重试；成功后不要再次调用 SendMessage。\n" +
+    "每次被召唤(单次 invoke)最多只能成功发送一条消息；如需召唤其他角色，请在 atTargets 中显式填写角色名列表。\n" +
+    "调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。\n" +
+    "\n【MCP 工具】\n" +
+    "你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）" +
+    "均由 MCP Server \"permission\" 提供，工具名称格式为 mcp__permission__<工具名>。";
+}
+
+function prependPrioritySections(basePrompt, sections = []) {
+  const normalized = sections
+    .map((section) => typeof section === "string" ? section.trim() : "")
+    .filter(Boolean);
+
+  if (normalized.length === 0) return basePrompt;
+  return `${normalized.join("\n\n---\n")}` + `\n\n---\n${basePrompt}`;
+}
+
+function buildUserPromptForCli(basePrompt, {
+  supportsSystemPrompt,
+  mcpHint = "",
+  globalConstraintContent = "",
+} = {}) {
+  if (supportsSystemPrompt) return basePrompt;
+  return prependPrioritySections(basePrompt, [mcpHint, globalConstraintContent]);
+}
+
 function toTomlString(value) {
   return JSON.stringify(String(value));
 }
@@ -358,16 +389,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
   // MCP 工具代理提示：告知模型必须使用 MCP Server 提供的工具
   const mcpHint = (config.supportsPermissionTool && browserSessionId)
-    ? '\n\n你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）' +
-      '均由 MCP Server "permission" 提供。' +
-      '请直接使用这些工具完成任务，工具名称格式为 mcp__permission__<工具名>。' +
-      '内置工具已被禁用，不要尝试使用内置工具。' +
-      '你的最终对外回复必须调用 mcp__permission__SendMessage 发送，不要直接输出正文。' +
-      '调用 SendMessage 成功后，本轮任务即结束；工具返回(如“消息已发送/发送失败”)只是工具执行结果，不是需要回复的系统消息。' +
-      '若 SendMessage 返回失败，请根据错误原因修正参数后再尝试发送；成功后不要再次调用 SendMessage。' +
-      '每次被召唤(单次 invoke)最多只能成功发送一条消息。' +
-      '如需召唤其他角色，请在 SendMessage 的 atTargets 参数中显式给出角色名列表。' +
-        '调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。'
+    ? buildMcpHint()
     : null;
 
   // Skill 注入：只消费请求入口已经决策好的 skillDecision
@@ -382,11 +404,15 @@ function invoke(cli, prompt, sessionId, options = {}) {
     ? mcpHint + toolingInjection.content
     : null;
 
+  finalPrompt = buildUserPromptForCli(finalPrompt, {
+    supportsSystemPrompt: config.supportsSystemPrompt,
+    mcpHint: combinedMcpHint,
+    globalConstraintContent: globalConstraintInjection.content,
+  });
+
   if (combinedMcpHint) {
     if (config.supportsSystemPrompt) {
       systemPrompt = systemPrompt ? systemPrompt + combinedMcpHint : combinedMcpHint.trimStart();
-    } else {
-      finalPrompt += combinedMcpHint;
     }
   }
 
@@ -396,8 +422,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
       systemPrompt = systemPrompt
         ? systemPrompt + globalConstraintInjection.content
         : globalConstraintInjection.content.trimStart();
-    } else {
-      finalPrompt += globalConstraintInjection.content;
     }
   }
 
@@ -645,6 +669,9 @@ module.exports = {
     buildTraePermissionRegistrationConfig,
     hasTraePermissionRegistration,
     buildPermissionServerConfig,
+    buildMcpHint,
+    prependPrioritySections,
+    buildUserPromptForCli,
     resolveCliInvocation,
   },
 };

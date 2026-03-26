@@ -25,6 +25,8 @@ async function main() {
     assert(decision.hitSkills.some((skill) => skill.id === "code-review"), "server 侧决策命中 code-review");
     assert(prompt.includes("【技能: Code Review】"), "buildContextPrompt 注入 code-review 内容");
     assert(server.__test.getSkillBindings("code-review").scenes.includes("code_review"), "Skill bindings 可返回场景绑定");
+    assert(prompt.includes("采用技能：<skill_name>"), "skill guidance keeps the concise usage instruction");
+    assert(!prompt.includes("如何创建新 Skill"), "skill guidance no longer injects tutorial-style creation docs");
 
     const res = await fetch(`http://127.0.0.1:${process.env.PORT}/api/skills`);
     const data = await res.json();
