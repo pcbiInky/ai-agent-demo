@@ -126,12 +126,12 @@ const TRAE_CONFIG_PATH = path.join(os.homedir(), ".trae", "trae_cli.yaml");
 
 function buildMcpHint() {
   return "\n\n【最重要协议】\n" +
-    "你只能使用 mcp__permission__* 工具，不要尝试内置工具。\n" +
-    "当你准备对外回复时，必须先调用 mcp__permission__SendMessage 发送消息；禁止直接输出最终正文。\n" +
-    "SendMessage 成功后，本轮立即结束，不要再次发送正文。\n" +
+    "1.你只能使用 mcp__permission__* 工具，不要尝试内置工具。\n" +
+    "2.当你准备对外回复时，只能调用 mcp__permission__SendMessage 发送消息；禁止直接输出最终正文。\n" +
+    "SendMessage 成功后，本轮立即结束，只能调用一次SendMessage。\n" +
     "若 SendMessage 失败，请根据错误原因修正参数后重试；成功后不要再次调用 SendMessage。\n" +
-    "每次被召唤(单次 invoke)最多只能成功发送一条消息；如需召唤其他角色，请在 atTargets 中显式填写角色名列表。\n" +
-    "调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。\n" +
+    "3.每次被召唤(单次 invoke)最多只能成功发送一条消息；如需召唤其他角色，请在 atTargets 中显式填写角色名列表。\n" +
+    "4.调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。\n" +
     "\n【MCP 工具】\n" +
     "你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）" +
     "均由 MCP Server \"permission\" 提供，工具名称格式为 mcp__permission__<工具名>。";
@@ -452,7 +452,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
       args.push("--append-system-prompt", systemPrompt);
     }
   }
-  
+
   // 添加 CLI 特有参数
   args.push(...config.extraArgs);
 
