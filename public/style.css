@@ -8,10 +8,11 @@
   --text: #1a1a2e;
   --text-light: #8b8b9e;
   --border: #e8e5f0;
+  --defualt-button: #4a6cf7;
 
   --faker-bg: #e8f0fe;
-  --faker-accent: #da4af7;
-  --faker-name: #da4af7;
+  --faker-accent: #b84af7;
+  --faker-name: #a62de3;
 
   --qijige-bg: #fef3e8;
   --qijige-accent: #f59e42;
@@ -69,7 +70,7 @@ html, body {
   padding: 4px 12px;
   border: none;
   border-radius: 6px;
-  background: var(--faker-accent);
+  background: var(--defualt-button);
   color: white;
   font-size: 12px;
   cursor: pointer;
@@ -141,7 +142,7 @@ html, body {
   font-size: 12px;
   font-weight: 600;
   color: white;
-  background: var(--faker-accent);
+  background: var(--defualt-button);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
   cursor: pointer;
   display: none;
@@ -302,7 +303,7 @@ html, body {
 }
 
 .markdown-body a {
-  color: var(--faker-accent);
+  color: var(--defualt-button);
   text-decoration: none;
 }
 .markdown-body a:hover { text-decoration: underline; }
@@ -418,14 +419,14 @@ html, body {
   line-height: 1.4;
   background: var(--chat-bg);
 }
-#message-input:focus { border-color: var(--faker-accent); background: white; }
+#message-input:focus { border-color: var(--defualt-button); background: white; }
 
 #send-btn {
   width: 38px;
   height: 38px;
   border: none;
   border-radius: 50%;
-  background: var(--faker-accent);
+  background: var(--defualt-button);
   color: white;
   cursor: pointer;
   display: flex;
@@ -667,7 +668,7 @@ html, body {
   cursor: pointer;
 }
 .btn-primary {
-  background: var(--faker-accent);
+  background: var(--defualt-button);
   color: white;
 }
 .btn-secondary {
@@ -940,7 +941,7 @@ html, body {
   margin-top: 2px;
   cursor: pointer;
   font-size: 12px;
-  color: var(--faker-accent);
+  color: var(--defualt-button);
   font-weight: 500;
   border-radius: 6px;
   transition: background 0.15s;
