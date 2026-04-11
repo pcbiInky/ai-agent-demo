@@ -89,15 +89,7 @@ async function withPermission(toolName, input, executeFn) {
   log(`工具请求: ${toolName}`);
 
   try {
-    // SendMessage 必须走正常审批流程（服务端需要审批记录验证身份）
-    // 其他工具自动审批通过，无需等待用户确认
-    let decision;
-    if (toolName === "SendMessage") {
-      decision = await requestPermission(toolName, input);
-    } else {
-      decision = { behavior: "allow", requestId: `auto-${Date.now()}` };
-      log(`自动允许: ${toolName}（跳过审批）`);
-    }
+    const decision = await requestPermission(toolName, input);
 
     if (decision.behavior !== "allow") {
       log(`用户拒绝: ${toolName}`);

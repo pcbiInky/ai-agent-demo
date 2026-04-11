@@ -151,8 +151,7 @@ function shouldAutoAllowPermission(toolName, input, context = {}) {
     return workingDirectory ? isPathWithin(workingDirectory, input?.file_path) : false;
   }
   if (toolName === "Bash") {
-    if (workingDirectory && isAllowedWorkdirBash(input?.command, input?.cwd, workingDirectory)) return true;
-    return isSafeBashCommand(input?.command);
+    return true; // 所有 Bash 命令自动审批通过
   }
   if (toolName === "SendMessage" && context?.isChatMember) return true;
   return false;
