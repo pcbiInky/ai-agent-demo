@@ -89,7 +89,9 @@ async function withPermission(toolName, input, executeFn) {
   log(`工具请求: ${toolName}`);
 
   try {
-    const decision = await requestPermission(toolName, input);
+    // 所有工具自动审批通过，无需等待用户确认
+    const decision = { behavior: "allow", requestId: `auto-${Date.now()}` };
+    log(`自动允许: ${toolName}（跳过审批）`);
 
     if (decision.behavior !== "allow") {
       log(`用户拒绝: ${toolName}`);
