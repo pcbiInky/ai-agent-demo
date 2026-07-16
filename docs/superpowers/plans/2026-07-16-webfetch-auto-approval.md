@@ -12,6 +12,7 @@
 
 - Only public `http:` and `https:` WebFetch URLs are auto-approved.
 - Invalid URLs, credential-bearing URLs, explicit local hostnames, DNS failures, empty DNS results, and any target resolving to a non-public IPv4/IPv6 address remain manual-approval requests.
+- Proxy DNS answers in `198.18.0.0/15` are accepted only when resolving a hostname; direct IP-literal requests to that range remain manual.
 - `SendMessage` and every non-WebFetch tool retain their current approval behavior.
 - Automatic approvals remain visible in permission history and SSE events.
 - No new npm dependency is introduced.
@@ -70,6 +71,9 @@ const publicLookup = async () => [
   { address: "93.184.216.34", family: 4 },
   { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
 ];
+const proxyLookup = async () => [
+  { address: "198.18.0.48", family: 4 },
+];
 const mixedLookup = async () => [
   { address: "93.184.216.34", family: 4 },
   { address: "10.0.0.8", family: 4 },
@@ -89,6 +93,8 @@ async function main() {
 
   assert(await isPublicWebFetchUrl("https://example.com/docs", publicLookup), "public HTTPS domain is allowed");
   assert(await isPublicWebFetchUrl("http://93.184.216.34/", publicLookup), "public IPv4 literal is allowed");
+  assert(await isPublicWebFetchUrl("https://example.com/", proxyLookup), "domain using proxy fake-IP DNS is allowed");
+  assert(!await isPublicWebFetchUrl("http://198.18.0.48/", proxyLookup), "proxy fake-IP literal stays blocked");
   assert(!await isPublicWebFetchUrl("ftp://example.com/file", publicLookup), "non-HTTP protocol is blocked");
   assert(!await isPublicWebFetchUrl("https://user:secret@example.com/", publicLookup), "credential URL is blocked");
   assert(!await isPublicWebFetchUrl("http://localhost:3000/", publicLookup), "localhost is blocked");
@@ -180,6 +186,9 @@ for (const [address, prefix] of [
   NON_PUBLIC_IPS.addSubnet(address, prefix, "ipv6");
 }
 
+const PROXY_FAKE_IPS = new net.BlockList();
+PROXY_FAKE_IPS.addSubnet("198.18.0.0", 15, "ipv4");
+
 const LOCAL_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa"];
 
 function stripIpv6Brackets(hostname) {
@@ -195,6 +204,11 @@ function isPublicIpAddress(address) {
   if (family === 4) return !NON_PUBLIC_IPS.check(normalized, "ipv4");
   if (family === 6) return !NON_PUBLIC_IPS.check(normalized, "ipv6");
   return false;
+}
+
+function isProxyFakeIpAddress(address) {
+  const normalized = String(address || "").toLowerCase();
+  return net.isIP(normalized) === 4 && PROXY_FAKE_IPS.check(normalized, "ipv4");
 }
 
 function isExplicitLocalHostname(hostname) {
@@ -218,7 +232,9 @@ async function isPublicWebFetchUrl(rawUrl, lookup = dns.promises.lookup) {
 
   try {
     const addresses = await lookup(hostname, { all: true, verbatim: true });
-    return addresses.length > 0 && addresses.every(({ address }) => isPublicIpAddress(address));
+    return addresses.length > 0 && addresses.every(({ address }) =>
+      isPublicIpAddress(address) || isProxyFakeIpAddress(address)
+    );
   } catch {
     return false;
   }
