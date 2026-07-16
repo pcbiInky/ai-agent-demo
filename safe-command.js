@@ -56,6 +56,9 @@ for (const [address, prefix] of [
   NON_PUBLIC_IPS.addSubnet(address, prefix, "ipv6");
 }
 
+const PROXY_FAKE_IPS = new net.BlockList();
+PROXY_FAKE_IPS.addSubnet("198.18.0.0", 15, "ipv4");
+
 const LOCAL_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa"];
 
 function parseGitSubcommand(parts) {
@@ -173,6 +176,11 @@ function isPublicIpAddress(address) {
   return false;
 }
 
+function isProxyFakeIpAddress(address) {
+  const normalized = String(address || "").toLowerCase();
+  return net.isIP(normalized) === 4 && PROXY_FAKE_IPS.check(normalized, "ipv4");
+}
+
 function isExplicitLocalHostname(hostname) {
   const normalized = stripIpv6Brackets(String(hostname || "").toLowerCase()).replace(/\.$/, "");
   return normalized === "localhost" || LOCAL_HOST_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
@@ -194,7 +202,9 @@ async function isPublicWebFetchUrl(rawUrl, lookup = dns.promises.lookup) {
 
   try {
     const addresses = await lookup(hostname, { all: true, verbatim: true });
-    return addresses.length > 0 && addresses.every(({ address }) => isPublicIpAddress(address));
+    return addresses.length > 0 && addresses.every(({ address }) =>
+      isPublicIpAddress(address) || isProxyFakeIpAddress(address)
+    );
   } catch {
     return false;
   }

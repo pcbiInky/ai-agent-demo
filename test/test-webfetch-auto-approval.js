@@ -23,6 +23,9 @@ const publicLookup = async () => [
   { address: "93.184.216.34", family: 4 },
   { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
 ];
+const proxyLookup = async () => [
+  { address: "198.18.0.48", family: 4 },
+];
 const mixedLookup = async () => [
   { address: "93.184.216.34", family: 4 },
   { address: "10.0.0.8", family: 4 },
@@ -42,6 +45,8 @@ async function main() {
 
   assert(await isPublicWebFetchUrl("https://example.com/docs", publicLookup), "public HTTPS domain is allowed");
   assert(await isPublicWebFetchUrl("http://93.184.216.34/", publicLookup), "public IPv4 literal is allowed");
+  assert(await isPublicWebFetchUrl("https://example.com/", proxyLookup), "domain using proxy fake-IP DNS is allowed");
+  assert(!await isPublicWebFetchUrl("http://198.18.0.48/", proxyLookup), "proxy fake-IP literal stays blocked");
   assert(!await isPublicWebFetchUrl("ftp://example.com/file", publicLookup), "non-HTTP protocol is blocked");
   assert(!await isPublicWebFetchUrl("https://user:secret@example.com/", publicLookup), "credential URL is blocked");
   assert(!await isPublicWebFetchUrl("http://localhost:3000/", publicLookup), "localhost is blocked");
