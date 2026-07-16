@@ -154,7 +154,7 @@ const roleRuntimeMetrics = new Map();
 const recentSkillTraces = new Map();
 const MAX_SKILL_TRACE_PER_SESSION = 20;
 
-const { isSafeBashCommand, shouldAutoAllowPermission } = require("./safe-command");
+const { isSafeBashCommand, shouldAutoAllowPermissionAsync } = require("./safe-command");
 
 // ── 聊天室成员追踪（委托到 sessionStore）──────────────────
 function addSessionMember(sessionId, character) {
@@ -590,7 +590,7 @@ async function refreshSessionRoleMetrics(sessionId) {
 // 长轮询：MCP server POST 权限请求 → 存入 pending → SSE 通知前端 → 等待用户响应
 const PERMISSION_TIMEOUT_MS = 120_000; // 120 秒用户无操作则自动拒绝
 
-app.post("/api/permission-request", (req, res) => {
+app.post("/api/permission-request", async (req, res) => {
   const { toolName, toolUseId, input, browserSessionId, character, timestamp } = req.body;
 
   if (!toolUseId || !browserSessionId) {
@@ -609,7 +609,7 @@ app.post("/api/permission-request", (req, res) => {
     workingDirectory: sessionStore.readSession(browserSessionId)?.workingDirectory || "",
   };
 
-  if (shouldAutoAllowPermission(toolName, input, permContext)) {
+  if (await shouldAutoAllowPermissionAsync(toolName, input, permContext)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
     // 存储审批记录（供 /api/mcp-send-message 校验身份）
     storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId);

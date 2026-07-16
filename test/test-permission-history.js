@@ -159,11 +159,50 @@ async function testPermissionRequestsPersistAndUpdateInHistory() {
   }
 }
 
+async function testPublicWebFetchAutoApproval() {
+  const sessionId = `webfetch-auto-${crypto.randomUUID()}`;
+  const requestId = `perm-${crypto.randomUUID()}`;
+  cleanupLog(sessionId);
+
+  const requestPromise = postJson("/api/permission-request", {
+    toolName: "WebFetch",
+    toolUseId: requestId,
+    input: { url: "https://93.184.216.34/docs", prompt: "summarize" },
+    browserSessionId: sessionId,
+    character: "YYF",
+    timestamp: Date.now(),
+  });
+
+  try {
+    const result = await Promise.race([
+      requestPromise,
+      sleep(500).then(() => null),
+    ]);
+
+    assert(result?.ok === true, "public WebFetch permission request returns immediately");
+    assert(result?.body?.behavior === "allow", "public WebFetch is auto-approved");
+
+    if (!result) {
+      await postJson("/api/permission-response", { requestId, behavior: "deny" });
+      await requestPromise;
+      return;
+    }
+
+    const log = readLog(sessionId);
+    const entry = log.messages.find((msg) => msg.role === "permission" && msg.requestId === requestId);
+    assert(entry?.status === "allow", "public WebFetch auto-approval is persisted");
+    assert(entry?.toolName === "WebFetch", "public WebFetch history keeps the tool name");
+  } finally {
+    cleanupLog(sessionId);
+  }
+}
+
 async function main() {
   const tempServer = await createTestServer();
 
   try {
     await testPermissionRequestsPersistAndUpdateInHistory();
+    await testPublicWebFetchAutoApproval();
   } catch (err) {
     console.error(err.stack || err.message || String(err));
     failed += 1;
