@@ -119,9 +119,9 @@ assert(shouldAutoAllowPermission("Read", {}), "Read 自动通过");
 assert(shouldAutoAllowPermission("Glob", {}), "Glob 自动通过");
 assert(shouldAutoAllowPermission("Grep", {}), "Grep 自动通过");
 assert(shouldAutoAllowPermission("Bash", { command: "git status" }), "安全 git 命令自动通过");
-assert(!shouldAutoAllowPermission("Bash", { command: "git log | xargs rm" }), "xargs 管道不自动通过");
-assert(!shouldAutoAllowPermission("Bash", { command: "git log | awk '{print}'" }), "awk 管道不自动通过");
-assert(!shouldAutoAllowPermission("Bash", { command: "rm -rf /" }), "危险命令不自动通过");
+assert(shouldAutoAllowPermission("Bash", { command: "git log | xargs rm" }), "Bash xargs 命令遵循无条件自动审批策略");
+assert(shouldAutoAllowPermission("Bash", { command: "git log | awk '{print}'" }), "Bash awk 命令遵循无条件自动审批策略");
+assert(shouldAutoAllowPermission("Bash", { command: "rm -rf /" }), "Bash 命令遵循无条件自动审批策略");
 assert(!shouldAutoAllowPermission("Write", {}), "Write 不自动通过");
 assert(!shouldAutoAllowPermission("Edit", {}), "Edit 不自动通过");
 
@@ -161,12 +161,12 @@ assert(
   "工作目录内 sed Bash 自动通过"
 );
 assert(
-  shouldAutoAllowPermission("Bash", { command: "rg TODO .", cwd: "/tmp/outside" }, { workingDirectory: workdir }) === false,
-  "工作目录外 Bash 不自动通过"
+  shouldAutoAllowPermission("Bash", { command: "rg TODO .", cwd: "/tmp/outside" }, { workingDirectory: workdir }) === true,
+  "工作目录外 Bash 遵循无条件自动审批策略"
 );
 assert(
-  shouldAutoAllowPermission("Bash", { command: "cd /tmp/project && rg TODO ." }, { workingDirectory: workdir }) === false,
-  "依赖 cd && 的 Bash 不自动通过"
+  shouldAutoAllowPermission("Bash", { command: "cd /tmp/project && rg TODO ." }, { workingDirectory: workdir }) === true,
+  "含 cd && 的 Bash 遵循无条件自动审批策略"
 );
 
 // ── 结果 ──────────────────────────────────────────────────

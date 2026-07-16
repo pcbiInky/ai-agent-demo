@@ -2,7 +2,9 @@
  * Bash / 文件工具安全检查模块
  */
 
+const dns = require("dns");
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 
 const SAFE_GIT_QUERY_SUBCOMMANDS = new Set([
@@ -33,6 +35,28 @@ const SAFE_WORKDIR_BASH_COMMANDS = new Set([
   "grep",
   "sed",
 ]);
+
+const NON_PUBLIC_IPS = new net.BlockList();
+
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10],
+  ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
+  ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16],
+  ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+  ["224.0.0.0", 4], ["240.0.0.0", 4],
+]) {
+  NON_PUBLIC_IPS.addSubnet(address, prefix, "ipv4");
+}
+
+for (const [address, prefix] of [
+  ["::", 96], ["64:ff9b:1::", 48],
+  ["100::", 64], ["2001::", 32], ["2001:2::", 48],
+  ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+]) {
+  NON_PUBLIC_IPS.addSubnet(address, prefix, "ipv6");
+}
+
+const LOCAL_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa"];
 
 function parseGitSubcommand(parts) {
   let i = 1;
@@ -134,6 +158,48 @@ function isAllowedWorkdirBash(command, cwd, workingDirectory) {
   return true;
 }
 
+function stripIpv6Brackets(hostname) {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+function isPublicIpAddress(address) {
+  const normalized = stripIpv6Brackets(String(address || "").toLowerCase());
+  if (normalized.startsWith("::ffff:")) return false;
+  const family = net.isIP(normalized);
+  if (family === 4) return !NON_PUBLIC_IPS.check(normalized, "ipv4");
+  if (family === 6) return !NON_PUBLIC_IPS.check(normalized, "ipv6");
+  return false;
+}
+
+function isExplicitLocalHostname(hostname) {
+  const normalized = stripIpv6Brackets(String(hostname || "").toLowerCase()).replace(/\.$/, "");
+  return normalized === "localhost" || LOCAL_HOST_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+async function isPublicWebFetchUrl(rawUrl, lookup = dns.promises.lookup) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+
+  if (!new Set(["http:", "https:"]).has(parsed.protocol)) return false;
+  if (parsed.username || parsed.password || isExplicitLocalHostname(parsed.hostname)) return false;
+
+  const hostname = stripIpv6Brackets(parsed.hostname);
+  if (net.isIP(hostname)) return isPublicIpAddress(hostname);
+
+  try {
+    const addresses = await lookup(hostname, { all: true, verbatim: true });
+    return addresses.length > 0 && addresses.every(({ address }) => isPublicIpAddress(address));
+  } catch {
+    return false;
+  }
+}
+
 function shouldAutoAllowPermission(toolName, input, context = {}) {
   const workingDirectory = context.workingDirectory || "";
 
@@ -157,6 +223,13 @@ function shouldAutoAllowPermission(toolName, input, context = {}) {
   return false;
 }
 
+async function shouldAutoAllowPermissionAsync(toolName, input, context = {}, dependencies = {}) {
+  if (toolName === "WebFetch") {
+    return isPublicWebFetchUrl(input?.url, dependencies.lookup || dns.promises.lookup);
+  }
+  return shouldAutoAllowPermission(toolName, input, context);
+}
+
 module.exports = {
   SAFE_GIT_QUERY_SUBCOMMANDS,
   SAFE_PIPE_COMMANDS,
@@ -167,5 +240,8 @@ module.exports = {
   isSafeBashCommand,
   isPathWithin,
   normalizePath,
+  isPublicIpAddress,
+  isPublicWebFetchUrl,
   shouldAutoAllowPermission,
+  shouldAutoAllowPermissionAsync,
 };
