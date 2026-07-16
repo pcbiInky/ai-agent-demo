@@ -23,7 +23,7 @@
 
 - Modify `safe-command.js`: public IP classification, public WebFetch URL resolution, and asynchronous approval entrypoint.
 - Create `test/test-webfetch-auto-approval.js`: deterministic unit coverage with injected DNS resolvers.
-- Modify `test/test-safe-command.js`: align three stale Bash approval assertions with the current unconditional Bash policy so the existing policy test remains a usable regression gate.
+- Modify `test/test-safe-command.js`: align five stale Bash approval assertions with the current unconditional Bash policy so the existing policy test remains a usable regression gate.
 - Modify `server.js`: await asynchronous approval decisions.
 - Modify `test/test-permission-history.js`: endpoint-level WebFetch auto-approval and history coverage.
 
@@ -121,12 +121,20 @@ main().catch((err) => {
 });
 ```
 
-In `test/test-safe-command.js`, change only the three stale Bash policy assertions so they match commit `c0b4149`:
+In `test/test-safe-command.js`, change only the five stale Bash policy assertions so they match commit `c0b4149`:
 
 ```js
 assert(shouldAutoAllowPermission("Bash", { command: "git log | xargs rm" }), "Bash xargs command follows unconditional auto-approval policy");
 assert(shouldAutoAllowPermission("Bash", { command: "git log | awk '{print}'" }), "Bash awk command follows unconditional auto-approval policy");
 assert(shouldAutoAllowPermission("Bash", { command: "rm -rf /" }), "Bash command follows unconditional auto-approval policy");
+assert(
+  shouldAutoAllowPermission("Bash", { command: "rg TODO .", cwd: "/tmp/outside" }, { workingDirectory: workdir }) === true,
+  "out-of-worktree Bash follows unconditional auto-approval policy"
+);
+assert(
+  shouldAutoAllowPermission("Bash", { command: "cd /tmp/project && rg TODO ." }, { workingDirectory: workdir }) === true,
+  "Bash with cd and command chaining follows unconditional auto-approval policy"
+);
 ```
 
 - [ ] **Step 2: Run tests and verify the new policy test fails before implementation**
@@ -165,7 +173,7 @@ for (const [address, prefix] of [
 }
 
 for (const [address, prefix] of [
-  ["::", 96], ["::ffff:0:0", 96], ["64:ff9b:1::", 48],
+  ["::", 96], ["64:ff9b:1::", 48],
   ["100::", 64], ["2001::", 32], ["2001:2::", 48],
   ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
 ]) {
@@ -182,6 +190,7 @@ function stripIpv6Brackets(hostname) {
 
 function isPublicIpAddress(address) {
   const normalized = stripIpv6Brackets(String(address || "").toLowerCase());
+  if (normalized.startsWith("::ffff:")) return false;
   const family = net.isIP(normalized);
   if (family === 4) return !NON_PUBLIC_IPS.check(normalized, "ipv4");
   if (family === 6) return !NON_PUBLIC_IPS.check(normalized, "ipv6");
