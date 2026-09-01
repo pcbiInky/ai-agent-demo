@@ -352,7 +352,7 @@ function cleanupMcpRegistrations() {
  */
 function invoke(cli, prompt, sessionId, options = {}) {
   const {
-    timeoutMs = 600_000,
+    timeoutMs = 1800_000,
     verify = false,
     browserSessionId,
     character,
