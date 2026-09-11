@@ -124,8 +124,13 @@ const TRAE_BUILTIN_TOOLS = [
 
 const TRAE_CONFIG_PATH = path.join(os.homedir(), ".trae", "trae_cli.yaml");
 
-function buildMcpHint() {
+function buildMcpHint({ requiresToolSearch = false } = {}) {
+  const toolSearchProtocol = requiresToolSearch
+    ? "0.新版 Codex 会延迟暴露 MCP 工具。本轮第一个工具动作必须调用 tool_search 搜索 `permission SendMessage`；需要其他 permission 工具时也先搜索 `permission <工具名>`。即使你暂时看不到 mcp__permission__*，也不能回答 TOOL_MISSING 或断言工具不存在；必须先用 tool_search 激活/发现工具，然后再调用 mcp__permission__SendMessage。\n"
+    : "";
+
   return "\n\n【最重要协议】\n" +
+    toolSearchProtocol +
     "1.你只能使用 mcp__permission__* 工具，不要尝试内置工具。\n" +
     "2.当你准备对外回复时，只能调用 mcp__permission__SendMessage 发送消息；禁止直接输出最终正文。\n" +
     "SendMessage 成功后，本轮立即结束，只能调用一次SendMessage。\n" +
@@ -196,6 +201,17 @@ function buildPerInvokePermissionOverrides(permissionConfig) {
     "-c", `mcp_servers.permission.env.PERMISSION_BROWSER_SESSION=${toTomlString(permissionConfig.env.PERMISSION_BROWSER_SESSION)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_CHARACTER=${toTomlString(permissionConfig.env.PERMISSION_CHARACTER)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_WORKING_DIRECTORY=${toTomlString(permissionConfig.env.PERMISSION_WORKING_DIRECTORY)}`,
+  ];
+}
+
+function insertCodexOptionArgs(args, isResume, optionArgs) {
+  if (!Array.isArray(optionArgs) || optionArgs.length === 0) return args;
+  const positionalCount = isResume ? 2 : 1;
+  const insertionIndex = Math.max(args.length - positionalCount, 0);
+  return [
+    ...args.slice(0, insertionIndex),
+    ...optionArgs,
+    ...args.slice(insertionIndex),
   ];
 }
 
@@ -389,7 +405,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
   // MCP 工具代理提示：告知模型必须使用 MCP Server 提供的工具
   const mcpHint = (config.supportsPermissionTool && browserSessionId)
-    ? buildMcpHint()
+    ? buildMcpHint({ requiresToolSearch: cli === "codex" })
     : null;
 
   // Skill 注入：只消费请求入口已经决策好的 skillDecision
@@ -481,7 +497,11 @@ function invoke(cli, prompt, sessionId, options = {}) {
       workingDirectory: workingDirectory || "",
       permissionServerPort,
     });
-    args.push(...preparedPermission.args);
+    if (cli === "codex") {
+      args = insertCodexOptionArgs(args, isResume, preparedPermission.args);
+    } else {
+      args.push(...preparedPermission.args);
+    }
     cleanupPaths.push(...preparedPermission.cleanupPaths);
   }
 
@@ -669,6 +689,7 @@ module.exports = {
     buildTraePermissionRegistrationConfig,
     hasTraePermissionRegistration,
     buildPermissionServerConfig,
+    insertCodexOptionArgs,
     buildMcpHint,
     prependPrioritySections,
     buildUserPromptForCli,
