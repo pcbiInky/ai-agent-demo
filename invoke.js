@@ -7,6 +7,7 @@ const os = require("os");
 const { buildSkillTypeInjection } = require("./skill-loader");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
 const { resolveCliInvocation } = require("./lib/cli-invocation");
+const { invokeDshAcp } = require("./lib/dsh-acp-client");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -95,6 +96,18 @@ const CLI_CONFIG = {
     // 通过 codex mcp add/remove 动态管理 MCP 服务器
     supportsPermissionTool: true,
     permissionStyle: "codex-mcp-cli",
+  },
+  dsh: {
+    command: process.env.DSH_CLI_COMMAND || "dsh",
+    extraArgs: [],
+    // ACP 是双向 JSON-RPC，不走 stdout 单向解析；文本由 lib/dsh-acp-client.js
+    // 收集后通过 onText 回调返回，此处保持空实现即可。
+    parse: () => {},
+    // dsh ACP 没有 system prompt 参数，验证指令与 MCP 提示回退到 user prompt
+    supportsSystemPrompt: false,
+    // 通过 session/new | session/resume 的 mcpServers 声明注入 permission MCP server
+    supportsPermissionTool: true,
+    permissionStyle: "acp",
   },
 };
 
@@ -187,6 +200,25 @@ function buildPermissionServerConfig(permissionServerPort, browserSessionId, cha
   };
 }
 
+/**
+ * ACP 的 MCP 服务器声明格式与 claude/codex 不同，有两处硬约束：
+ * - command 必须是绝对路径（dsh 会校验 isAbsolute），因此用 process.execPath 而非 "node"
+ * - env 是 [{ name, value }] 条目数组，不是对象
+ */
+function buildAcpMcpServers(permissionConfig) {
+  return [
+    {
+      name: "permission",
+      command: process.execPath,
+      args: permissionConfig.args,
+      env: Object.entries(permissionConfig.env).map(([name, value]) => ({
+        name,
+        value: String(value),
+      })),
+    },
+  ];
+}
+
 function getCliInvocation(cli, args) {
   const config = CLI_CONFIG[cli];
   return resolveCliInvocation(config.command, args);
@@ -274,6 +306,15 @@ function preparePermissionTransport(cli, { browserSessionId, character = "", wor
     };
   }
 
+  if (config.permissionStyle === "acp") {
+    // ACP 不使用 argv 传权限配置，改为 session/new | session/resume 的 mcpServers 声明
+    return {
+      args: [],
+      mcpServers: buildAcpMcpServers(permissionConfig),
+      cleanupPaths: [],
+    };
+  }
+
   return { args: [], cleanupPaths: [] };
 }
 
@@ -355,7 +396,7 @@ function cleanupMcpRegistrations() {
 
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
- * @param {"claude" | "trae" | "codex"} cli - CLI 名称
+ * @param {"claude" | "trae" | "codex" | "dsh"} cli - CLI 名称
  * @param {string} prompt - 提问内容
  * @param {string} [sessionId] - 可选，传入则继续上次对话；不传则创建新会话
  * @param {object} [options]
@@ -478,6 +519,51 @@ function invoke(cli, prompt, sessionId, options = {}) {
       args.push("-c", `model.name=${model}`);
     }
     // claude / codex 暂不支持运行时模型切换，预留扩展位
+  }
+
+  // ── dsh（ACP）：双向 JSON-RPC，走独立驱动，不复用 argv/stdout 单向路径 ──
+  if (config.permissionStyle === "acp") {
+    const acpPermission = (config.supportsPermissionTool && browserSessionId)
+      ? preparePermissionTransport(cli, {
+          browserSessionId,
+          character: character || "",
+          workingDirectory: workingDirectory || "",
+          permissionServerPort,
+        })
+      : { mcpServers: [] };
+
+    const acpEnv = { ...process.env };
+    if (config.supportsPermissionTool && browserSessionId) {
+      Object.assign(acpEnv, buildPermissionEnv(
+        permissionServerPort,
+        browserSessionId,
+        character || "",
+        workingDirectory || ""
+      ));
+    }
+
+    return invokeDshAcp({
+      prompt: finalPrompt,
+      sessionId,
+      cwd: workingDirectory || process.cwd(),
+      mcpServers: acpPermission.mcpServers || [],
+      model,
+      command: config.command,
+      profile: process.env.DSH_PROFILE || "acp",
+      timeoutMs,
+      signal,
+      env: acpEnv,
+      onEvent: (event) => {
+        if (typeof onRuntimeEvent === "function") onRuntimeEvent(event);
+      },
+    }).then((result) => {
+      if (canary) {
+        const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result.text);
+        const text = result.text.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
+        return { text, sessionId: result.sessionId, verified };
+      }
+      return { text: result.text, sessionId: result.sessionId };
+    });
   }
 
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
@@ -689,6 +775,7 @@ module.exports = {
     buildTraePermissionRegistrationConfig,
     hasTraePermissionRegistration,
     buildPermissionServerConfig,
+    buildAcpMcpServers,
     insertCodexOptionArgs,
     buildMcpHint,
     prependPrioritySections,
@@ -698,13 +785,13 @@ module.exports = {
 };
 
 // 直接运行:
-//   node invoke.js <claude|trae|codex> "你的问题"                              — 新会话
-//   node invoke.js <claude|trae|codex> "你的问题" <sessionId>                  — 继续对话
-//   node invoke.js <claude|trae|codex> "你的问题" <sessionId> '{"verify":true}'  — 带选项
+//   node invoke.js <claude|trae|codex|dsh> "你的问题"                              — 新会话
+//   node invoke.js <claude|trae|codex|dsh> "你的问题" <sessionId>                  — 继续对话
+//   node invoke.js <claude|trae|codex|dsh> "你的问题" <sessionId> '{"verify":true}'  — 带选项
 if (require.main === module) {
   const [cli, prompt, sessionId, optionsStr] = process.argv.slice(2);
   if (!cli || !prompt) {
-    console.error('用法: node invoke.js <claude|trae|codex> "你的问题" [sessionId] [options]');
+    console.error('用法: node invoke.js <claude|trae|codex|dsh> "你的问题" [sessionId] [options]');
     console.error('示例:');
     console.error('  node invoke.js claude "你好"');
     console.error('  node invoke.js claude "你好" "session-id-123"');

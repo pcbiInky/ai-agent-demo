@@ -170,10 +170,51 @@ function testCodexUsesPerInvokePermissionConfig() {
   );
 }
 
+function testDshDeclaresPermissionServerOverAcp() {
+  assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
+  assert(typeof __test?.buildAcpMcpServers === "function", "invoke exposes buildAcpMcpServers helper");
+  if (typeof __test?.preparePermissionTransport !== "function" || typeof __test?.buildAcpMcpServers !== "function") return;
+
+  const prepared = __test.preparePermissionTransport("dsh", {
+    browserSessionId: "session-dsh",
+    character: "Faker",
+    workingDirectory: "/tmp/worktree-dsh",
+    permissionServerPort: "5888",
+  });
+
+  assert(prepared.args.length === 0, "dsh invoke passes no permission flags in argv (ACP declares MCP in-session)");
+  assert(prepared.cleanupPaths.length === 0, "dsh invoke does not rely on temp context files");
+
+  const servers = prepared.mcpServers;
+  assert(Array.isArray(servers) && servers.length === 1, "dsh invoke declares exactly one ACP MCP server");
+  if (!Array.isArray(servers) || servers.length !== 1) return;
+
+  const permission = servers[0];
+  assert(permission.name === "permission", "dsh ACP server is named permission");
+  assert(
+    typeof permission.command === "string" && path.isAbsolute(permission.command),
+    "dsh ACP server command is an absolute path (dsh rejects relative commands)"
+  );
+  assert(
+    Array.isArray(permission.args) && permission.args[0] === path.join(__dirname, "..", "permission-server.js"),
+    "dsh ACP server points to permission-server entrypoint"
+  );
+  assert(Array.isArray(permission.env), "dsh ACP server env is an entry array, not an object");
+  const envMap = Object.fromEntries((permission.env || []).map((entry) => [entry.name, entry.value]));
+  assert(
+    envMap.PERMISSION_SERVER_PORT === "5888" &&
+      envMap.PERMISSION_BROWSER_SESSION === "session-dsh" &&
+      envMap.PERMISSION_CHARACTER === "Faker" &&
+      envMap.PERMISSION_WORKING_DIRECTORY === "/tmp/worktree-dsh",
+    "dsh ACP server env carries per-invoke permission context"
+  );
+}
+
 function main() {
   testTraeUsesPerInvokePermissionConfig();
   testClaudeUsesInvokeEnvForPermissionServer();
   testCodexUsesPerInvokePermissionConfig();
+  testDshDeclaresPermissionServerOverAcp();
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);

@@ -1811,6 +1811,7 @@ function showCreateRoleModal() {
           <option value="claude">claude</option>
           <option value="trae">trae</option>
           <option value="codex">codex</option>
+          <option value="dsh">dsh</option>
         </select></label>
         <label>模型 <input type="text" id="new-role-model" placeholder="可选"></label>
         <div id="create-role-error" class="settings-error hidden"></div>

@@ -14,7 +14,7 @@ const CONFIG_FILE = path.join(SKILL_DIR, "use_ai_agent_demo_skills.json");
 
 const REQUIRED_FRONTMATTER = ["name", "description", "type"];
 const VALID_TYPES = ["behavior", "tooling", "global_constraint"];
-const VALID_MODELS = ["claude", "trae", "codex"];
+const VALID_MODELS = ["claude", "trae", "codex", "dsh"];
 const VALID_LOAD_ORDERS = ["global-first", "role-first"];
 const MAX_SKILL_CHARS = 2000;
 const MAX_TOTAL_CHARS = 8000;

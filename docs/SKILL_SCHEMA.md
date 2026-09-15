@@ -52,7 +52,7 @@ type: behavior
 ```json
 {
   "owner": "system",
-  "model_support": ["claude", "trae", "codex"],
+  "model_support": ["claude", "trae", "codex", "dsh"],
   "priority": 90,
   "requireTools": ["Read", "Grep"],
   "defaultEnabled": true

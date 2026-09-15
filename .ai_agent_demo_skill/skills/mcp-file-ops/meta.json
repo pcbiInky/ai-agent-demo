@@ -1,6 +1,6 @@
 {
   "owner": "system",
-  "model_support": ["claude", "trae", "codex"],
+  "model_support": ["claude", "trae", "codex", "dsh"],
   "priority": 70,
   "requireTools": ["Read", "Write", "Edit", "Glob", "Grep"],
   "defaultEnabled": true

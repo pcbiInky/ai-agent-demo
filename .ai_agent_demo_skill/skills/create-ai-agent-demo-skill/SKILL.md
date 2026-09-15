@@ -48,7 +48,7 @@ type: behavior | tooling | global_constraint
 ```json
 {
   "owner": "system",
-  "model_support": ["claude", "trae", "codex"],
+  "model_support": ["claude", "trae", "codex", "dsh"],
   "max_chars": 2000
 }
 ```

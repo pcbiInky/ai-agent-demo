@@ -1,6 +1,6 @@
 {
   "owner": "system",
-  "model_support": ["claude", "trae", "codex"],
+  "model_support": ["claude", "trae", "codex", "dsh"],
   "priority": 100,
   "defaultEnabled": true
 }
