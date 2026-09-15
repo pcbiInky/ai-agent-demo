@@ -83,7 +83,7 @@ function createRole({ name, cli, model = "", avatar = "" }) {
       throw new Error(`角色名 "${name}" 已存在`);
     }
 
-    const validClis = ["claude", "trae", "codex", "dsh"];
+    const validClis = ["claude", "trae", "codex", "dsh", "kimi"];
     if (!validClis.includes(cli)) {
       throw new Error(`不支持的 CLI: ${cli}，可选: ${validClis.join(", ")}`);
     }

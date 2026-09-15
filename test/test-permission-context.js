@@ -210,11 +210,51 @@ function testDshDeclaresPermissionServerOverAcp() {
   );
 }
 
+function testKimiDeclaresPermissionServerOverAcp() {
+  assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
+  if (typeof __test?.preparePermissionTransport !== "function") return;
+
+  const prepared = __test.preparePermissionTransport("kimi", {
+    browserSessionId: "session-kimi",
+    character: "Kimi",
+    workingDirectory: "/tmp/worktree-kimi",
+    permissionServerPort: "5999",
+  });
+
+  assert(prepared.args.length === 0, "kimi invoke passes no permission flags in argv (ACP declares MCP in-session)");
+  assert(prepared.cleanupPaths.length === 0, "kimi invoke does not rely on temp context files");
+
+  const servers = prepared.mcpServers;
+  assert(Array.isArray(servers) && servers.length === 1, "kimi invoke declares exactly one ACP MCP server");
+  if (!Array.isArray(servers) || servers.length !== 1) return;
+
+  const permission = servers[0];
+  assert(permission.name === "permission", "kimi ACP server is named permission");
+  assert(
+    typeof permission.command === "string" && path.isAbsolute(permission.command),
+    "kimi ACP server command is an absolute path (ACP agents reject relative commands)"
+  );
+  assert(
+    Array.isArray(permission.args) && permission.args[0] === path.join(__dirname, "..", "permission-server.js"),
+    "kimi ACP server points to permission-server entrypoint"
+  );
+  assert(Array.isArray(permission.env), "kimi ACP server env is an entry array, not an object");
+  const envMap = Object.fromEntries((permission.env || []).map((entry) => [entry.name, entry.value]));
+  assert(
+    envMap.PERMISSION_SERVER_PORT === "5999" &&
+      envMap.PERMISSION_BROWSER_SESSION === "session-kimi" &&
+      envMap.PERMISSION_CHARACTER === "Kimi" &&
+      envMap.PERMISSION_WORKING_DIRECTORY === "/tmp/worktree-kimi",
+    "kimi ACP server env carries per-invoke permission context"
+  );
+}
+
 function main() {
   testTraeUsesPerInvokePermissionConfig();
   testClaudeUsesInvokeEnvForPermissionServer();
   testCodexUsesPerInvokePermissionConfig();
   testDshDeclaresPermissionServerOverAcp();
+  testKimiDeclaresPermissionServerOverAcp();
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);

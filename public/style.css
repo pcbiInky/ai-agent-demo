@@ -1516,3 +1516,17 @@ html, body {
 .message.dsh .bubble { background: var(--dsh-bg); border-bottom-left-radius: 4px; }
 .message.dsh .thinking-scroll-area { background: var(--dsh-bg); }
 .hint-chip.dsh { color: var(--dsh-accent); border-color: var(--dsh-accent); }
+
+/* ── Kimi (kimi) 角色配色 ─────────────────────
+   Kimi Code CLI 接入后同样需要独立配色，避免与其他 CLI 撞色。 */
+:root {
+  --kimi-bg: #fdeaf3;
+  --kimi-accent: #e34e94;
+  --kimi-name: #b32a6d;
+}
+
+.avatar.kimi { background: var(--kimi-accent); }
+.character-name.kimi { color: var(--kimi-name); }
+.message.kimi .bubble { background: var(--kimi-bg); border-bottom-left-radius: 4px; }
+.message.kimi .thinking-scroll-area { background: var(--kimi-bg); }
+.hint-chip.kimi { color: var(--kimi-accent); border-color: var(--kimi-accent); }

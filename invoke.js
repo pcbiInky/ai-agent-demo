@@ -8,6 +8,7 @@ const { buildSkillTypeInjection } = require("./skill-loader");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
 const { resolveCliInvocation } = require("./lib/cli-invocation");
 const { invokeDshAcp } = require("./lib/dsh-acp-client");
+const { invokeKimiAcp } = require("./lib/kimi-acp-client");
 
 // 活跃子进程集合，父进程退出时统一清理
 const activeChildren = new Set();
@@ -19,6 +20,11 @@ function cleanupChildren() {
 process.on("SIGINT", () => { cleanupChildren(); process.exit(1); });
 process.on("SIGTERM", () => { cleanupChildren(); process.exit(1); });
 process.on("exit", cleanupChildren);
+
+// Kimi Code CLI 默认安装在 ~/.kimi-code/bin，不一定在 PATH 里；
+// 优先用环境变量覆盖，其次用本机默认安装路径，最后才回退到 "kimi"。
+const KIMI_LOCAL_COMMAND = path.join(os.homedir(), ".kimi-code", "bin", "kimi");
+const KIMI_DEFAULT_COMMAND = fs.existsSync(KIMI_LOCAL_COMMAND) ? KIMI_LOCAL_COMMAND : "kimi";
 
 // CLI 配置表：只定义各 CLI 的差异部分
 // session 参数两者一致：首次 --session-id <uuid>，后续 --resume <uuid>
@@ -104,6 +110,18 @@ const CLI_CONFIG = {
     // 收集后通过 onText 回调返回，此处保持空实现即可。
     parse: () => {},
     // dsh ACP 没有 system prompt 参数，验证指令与 MCP 提示回退到 user prompt
+    supportsSystemPrompt: false,
+    // 通过 session/new | session/resume 的 mcpServers 声明注入 permission MCP server
+    supportsPermissionTool: true,
+    permissionStyle: "acp",
+  },
+  kimi: {
+    command: process.env.KIMI_CLI_COMMAND || KIMI_DEFAULT_COMMAND,
+    extraArgs: [],
+    // ACP 是双向 JSON-RPC，不走 stdout 单向解析；文本由 lib/kimi-acp-client.js
+    // 收集后通过 onText 回调返回，此处保持空实现即可。
+    parse: () => {},
+    // kimi ACP 没有 system prompt 参数，验证指令与 MCP 提示回退到 user prompt
     supportsSystemPrompt: false,
     // 通过 session/new | session/resume 的 mcpServers 声明注入 permission MCP server
     supportsPermissionTool: true,
@@ -396,7 +414,7 @@ function cleanupMcpRegistrations() {
 
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
- * @param {"claude" | "trae" | "codex" | "dsh"} cli - CLI 名称
+ * @param {"claude" | "trae" | "codex" | "dsh" | "kimi"} cli - CLI 名称
  * @param {string} prompt - 提问内容
  * @param {string} [sessionId] - 可选，传入则继续上次对话；不传则创建新会话
  * @param {object} [options]
@@ -542,14 +560,20 @@ function invoke(cli, prompt, sessionId, options = {}) {
       ));
     }
 
-    return invokeDshAcp({
+    const acpInvoke = cli === "kimi" ? invokeKimiAcp : invokeDshAcp;
+    // dsh 需要 profile 参数；kimi 的启动参数（acp）由 kimi-acp-client 内部固定
+    const acpTransportOptions = cli === "kimi"
+      ? {}
+      : { profile: process.env.DSH_PROFILE || "acp" };
+
+    return acpInvoke({
       prompt: finalPrompt,
       sessionId,
       cwd: workingDirectory || process.cwd(),
       mcpServers: acpPermission.mcpServers || [],
       model,
       command: config.command,
-      profile: process.env.DSH_PROFILE || "acp",
+      ...acpTransportOptions,
       timeoutMs,
       signal,
       env: acpEnv,
@@ -785,13 +809,13 @@ module.exports = {
 };
 
 // 直接运行:
-//   node invoke.js <claude|trae|codex|dsh> "你的问题"                              — 新会话
-//   node invoke.js <claude|trae|codex|dsh> "你的问题" <sessionId>                  — 继续对话
-//   node invoke.js <claude|trae|codex|dsh> "你的问题" <sessionId> '{"verify":true}'  — 带选项
+//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题"                              — 新会话
+//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId>                  — 继续对话
+//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId> '{"verify":true}'  — 带选项
 if (require.main === module) {
   const [cli, prompt, sessionId, optionsStr] = process.argv.slice(2);
   if (!cli || !prompt) {
-    console.error('用法: node invoke.js <claude|trae|codex|dsh> "你的问题" [sessionId] [options]');
+    console.error('用法: node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" [sessionId] [options]');
     console.error('示例:');
     console.error('  node invoke.js claude "你好"');
     console.error('  node invoke.js claude "你好" "session-id-123"');

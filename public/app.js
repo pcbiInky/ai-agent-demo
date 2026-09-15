@@ -1812,6 +1812,7 @@ function showCreateRoleModal() {
           <option value="trae">trae</option>
           <option value="codex">codex</option>
           <option value="dsh">dsh</option>
+          <option value="kimi">kimi</option>
         </select></label>
         <label>模型 <input type="text" id="new-role-model" placeholder="可选"></label>
         <div id="create-role-error" class="settings-error hidden"></div>
@@ -1890,6 +1891,7 @@ function getCharClass(character) {
   if (cli === "trae") return "qijige";
   if (cli === "codex") return "yyf";
   if (cli === "dsh") return "dsh";
+  if (cli === "kimi") return "kimi";
   return "faker";
 }
 
