@@ -1889,6 +1889,7 @@ function getCharClass(character) {
   const cli = state.characters[character]?.cli;
   if (cli === "trae") return "qijige";
   if (cli === "codex") return "yyf";
+  if (cli === "dsh") return "dsh";
   return "faker";
 }
 

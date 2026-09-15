@@ -1501,3 +1501,18 @@ html, body {
   justify-content: center;
   padding: 8px 14px;
 }
+
+/* ── 晔晔 (dsh) 角色配色 ─────────────────────
+   dsh 接入后曾回落到 .faker，与 Faker 撞色；
+   这里给 dsh 单独一组 DeepSeek 蓝，保证三色可区分。 */
+:root {
+  --dsh-bg: #e8eeff;
+  --dsh-accent: #4d6bfe;
+  --dsh-name: #2f4bd8;
+}
+
+.avatar.dsh { background: var(--dsh-accent); }
+.character-name.dsh { color: var(--dsh-name); }
+.message.dsh .bubble { background: var(--dsh-bg); border-bottom-left-radius: 4px; }
+.message.dsh .thinking-scroll-area { background: var(--dsh-bg); }
+.hint-chip.dsh { color: var(--dsh-accent); border-color: var(--dsh-accent); }
