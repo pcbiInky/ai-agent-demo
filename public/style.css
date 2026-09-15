@@ -1161,6 +1161,20 @@ html, body {
 }
 .thinking-finished .thinking-spinner { display: none; }
 .thinking-finished .abort-btn { display: none; }
+
+/* ── 过程记录折叠（参考 clowder-ai：默认折叠成一行摘要，点击头部展开） ── */
+.thinking-finished .thinking-scroll-area { display: none; }
+.thinking-finished.expanded .thinking-scroll-area { display: block; }
+.thinking-finished .msg-header { cursor: pointer; user-select: none; }
+.thinking-toggle-arrow {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  stroke: var(--text-light);
+  transition: transform 0.2s;
+}
+.thinking-finished .thinking-toggle-arrow { transform: rotate(0deg); }
+.thinking-finished.expanded .thinking-toggle-arrow { transform: rotate(90deg); }
 .abort-btn {
   font-size: 11px;
   padding: 1px 8px;

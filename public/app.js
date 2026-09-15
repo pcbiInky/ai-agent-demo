@@ -876,6 +876,7 @@ function showThinking(character, messageId) {
           <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
           <span class="msg-time thinking-status"><span class="thinking-spinner"></span>处理中...</span>
           <button class="abort-btn" title="终止执行" data-character="${escapeHtml(character)}">终止</button>
+          <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M9 18l6-6-6-6"/></svg>
         </div>
         <div class="thinking-scroll-area">
           <div class="process-log"></div>
@@ -887,8 +888,65 @@ function showThinking(character, messageId) {
   div.querySelector(".abort-btn").addEventListener("click", () => {
     abortInvoke(character);
   });
+  bindThinkingHeader(div);
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
+}
+
+// 点击已完成的过程记录头部时折叠/展开（参考 clowder-ai 的折叠交互）
+function bindThinkingHeader(div) {
+  div.querySelector(".msg-header").addEventListener("click", () => {
+    if (!div.classList.contains("thinking-finished")) return;
+    div.dataset.userToggled = "true";
+    div.classList.toggle("expanded");
+  });
+}
+
+// 更新过程记录头部的摘要：一行标题 + 执行记录条数
+function updateThinkingSummary(el, status = "done") {
+  const count = Math.max(
+    el.querySelectorAll(".perm-card").length,
+    el.querySelectorAll(".process-step").length,
+  );
+  const base = status === "error" ? "执行中断" : "过程记录";
+  const timeEl = el.querySelector(".msg-time");
+  if (timeEl) timeEl.textContent = count > 0 ? `${base} · ${count} 条执行记录` : base;
+  const arrow = el.querySelector(".thinking-toggle-arrow");
+  if (arrow) arrow.style.display = "";
+}
+
+// 历史渲染专用：直接创建已完成、默认折叠的过程记录容器，
+// 让散落的执行记录重新嵌入它内部，位于绑定回复的上方
+function showArchivedThinking(character, messageId) {
+  const existing = document.getElementById(`thinking-${character}-${messageId}`);
+  if (existing) return existing;
+
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+
+  const div = document.createElement("div");
+  div.className = `message assistant thinking-finished ${charClass}`;
+  div.id = `thinking-${character}-${messageId}`;
+  div.dataset.character = character;
+  div.dataset.archived = "true";
+  div.innerHTML = `
+    <div class="avatar ${charClass}">${avatar}</div>
+    <div class="bubble-wrapper">
+      <div class="msg-header">
+        <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
+        <span class="msg-time">过程记录</span>
+        <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      </div>
+      <div class="thinking-scroll-area">
+        <div class="process-log"></div>
+        <div class="perm-container"></div>
+      </div>
+    </div>
+  `;
+  bindThinkingHeader(div);
+  $messages.appendChild(div);
+  return div;
 }
 
 function finalizeThinking(character, messageId, status = "done") {
@@ -905,8 +963,9 @@ function finalizeThinking(character, messageId, status = "done") {
   el.dataset.archived = "true";
   el.id = `thinking-archive-${character}-${messageId}-${Date.now()}`;
 
-  const timeEl = el.querySelector(".msg-time");
-  if (timeEl) timeEl.textContent = status === "error" ? "执行中断" : "过程记录";
+  // 默认折叠；执行过程中用户手动展开过则保留其状态
+  if (el.dataset.userToggled !== "true") el.classList.remove("expanded");
+  updateThinkingSummary(el, status);
 
   const buttons = el.querySelectorAll(".perm-summary-actions .perm-btn");
   for (const btn of buttons) btn.disabled = true;
@@ -1468,8 +1527,15 @@ async function loadHistory() {
       } else if (msg.role === "error") {
         appendErrorMessage(msg.character, msg.error);
       } else if (msg.role === "permission") {
+        // 先确保存在已归档的过程记录容器（位于绑定回复上方），再嵌入记录
+        showArchivedThinking(msg.character, msg.messageId);
         showPermissionCard(msg);
       }
+    }
+
+    // 汇总每个过程记录容器的摘要（标题 + 条数）
+    for (const el of $messages.querySelectorAll(".message.thinking-finished")) {
+      updateThinkingSummary(el);
     }
 
     // 重建所有 thread 的回复计数条
