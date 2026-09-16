@@ -1518,7 +1518,8 @@ async function loadHistory() {
 
     // 第二遍：渲染消息
     // 执行记录先按 角色+用户消息 暂存，渲染到绑定的回复/错误消息时
-    // 再建容器，保证过程记录紧跟该回复，而不是留在执行期间的原位置
+    // 再建容器，保证过程记录紧跟该回复，而不是留在执行期间的原位置；
+    // 匹配不到回复的（如执行被中断）按原时间位置渲染
     const pendingPerms = new Map(); // key: character|messageId -> records[]
     const permKey = (character, messageId) => `${character}|${messageId}`;
     const flushPerms = (character, messageId) => {
@@ -1529,6 +1530,16 @@ async function loadHistory() {
       showArchivedThinking(character, messageId);
       for (const rec of records) showPermissionCard(rec);
     };
+
+    // 预判哪些执行记录能匹配到回复/错误消息（replyTo + 角色）
+    const replyKeys = new Set();
+    for (const msg of log.messages) {
+      if (msg.role === "assistant" && !(msg.threadId && msg.depth > 0) && msg.replyTo) {
+        replyKeys.add(permKey(msg.character, msg.replyTo));
+      } else if (msg.role === "error" && msg.replyTo) {
+        replyKeys.add(permKey(msg.character, msg.replyTo));
+      }
+    }
 
     for (const msg of log.messages) {
       if (msg.role === "user") {
@@ -1555,12 +1566,19 @@ async function loadHistory() {
         appendErrorMessage(msg.character, msg.error);
       } else if (msg.role === "permission") {
         const key = permKey(msg.character, msg.messageId);
-        if (!pendingPerms.has(key)) pendingPerms.set(key, []);
-        pendingPerms.get(key).push(msg);
+        if (replyKeys.has(key)) {
+          // 有绑定回复：暂存，等渲染到该回复时再建容器
+          if (!pendingPerms.has(key)) pendingPerms.set(key, []);
+          pendingPerms.get(key).push(msg);
+        } else {
+          // 孤儿记录（无绑定回复）：按原时间位置渲染
+          showArchivedThinking(msg.character, msg.messageId);
+          showPermissionCard(msg);
+        }
       }
     }
 
-    // 没有匹配到回复的遗留执行记录（如执行被中断），按原顺序渲染
+    // 兜底：理论上已清空，防止异常导致暂存记录丢失
     for (const records of pendingPerms.values()) {
       showArchivedThinking(records[0].character, records[0].messageId);
       for (const rec of records) showPermissionCard(rec);
