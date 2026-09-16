@@ -54,15 +54,15 @@ function testNormalizeRealBody() {
   eq(result.supportsTokenUsage, false, "real body: supportsTokenUsage false");
   eq(result.usageWindows.length, 2, "real body: two windows (5h + month)");
   eq(result.usageWindows[0].key, "5h", "real body: window 1 key = 5h");
-  eq(result.usageWindows[0].usedPercent, 31, "real body: 5h = used/limit = 31%");
+  eq(result.usageWindows[0].usedPercent, 69, "real body: 5h remaining = 1 - used/limit = 69%");
   eq(result.usageWindows[0].resetsAt, Date.parse("2026-09-16T08:43:06.334827Z"), "real body: 5h resetsAt from detail.resetTime");
   eq(result.usageWindows[1].key, "month", "real body: window 2 key = month");
   eq(result.usageWindows[1].label, "month", "real body: window 2 label = month (no week)");
-  eq(result.usageWindows[1].usedPercent, 5, "real body: month = 0.0454 -> 5%");
+  eq(result.usageWindows[1].usedPercent, 95, "real body: month remaining = 1 - 0.0454 -> 95%");
   eq(result.usageWindows[1].resetsAt, Date.parse("2026-10-16T00:00:00Z"), "real body: month resetsAt parsed");
   assert(!result.usageWindows.some((w) => w.key === "week"), "real body: no week window");
-  eq(result.primaryUsedPercent, 31, "real body: legacy primary mirror");
-  eq(result.secondaryUsedPercent, 5, "real body: legacy secondary mirror");
+  eq(result.primaryUsedPercent, 69, "real body: legacy primary mirror");
+  eq(result.secondaryUsedPercent, 95, "real body: legacy secondary mirror");
 }
 
 function testNormalizeFallsBackToUsagesLimit5h() {
@@ -75,7 +75,7 @@ function testNormalizeFallsBackToUsagesLimit5h() {
   });
   eq(result.usageWindows.length, 2, "fallback: two windows");
   eq(result.usageWindows[0].usedPercent, 50, "fallback: 5h uses limit_5h.used_ratio");
-  eq(result.usageWindows[1].usedPercent, 20, "fallback: month falls back to limit_month_code");
+  eq(result.usageWindows[1].usedPercent, 80, "fallback: month remaining falls back to limit_month_code");
 }
 
 function testNormalizeMissingMonth() {

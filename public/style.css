@@ -557,6 +557,9 @@ html, body {
 .metric-bar-fill-secondary {
   background: #4b8bff;
 }
+.metric-bar-fill-low {
+  background: #f59e42;
+}
 .metric-bar-value {
   color: var(--text-light);
   width: 30px;

@@ -1428,8 +1428,9 @@ function formatFullBeijingTime(value) {
 }
 
 // 角色卡片额度维度由 metrics.usageWindows 驱动，支持任意窗口数量与命名：
-// codex/claude = 5h + week，kimi = 5h + month。
-// 第一个窗口展示重置时间，其余窗口展示维度名；旧数据缺 usageWindows 时按
+// codex/claude = 5h + week，kimi = 5h + month，dsh = 余额充足度。
+// 第一个窗口有重置时间时展示时间，否则展示维度名；其余窗口展示维度名。
+// 旧数据缺 usageWindows 时按
 // primary/secondary 兼容还原。
 function getUsageWindows(member, metrics) {
   const windows = Array.isArray(metrics.usageWindows) ? metrics.usageWindows : [];
@@ -1450,10 +1451,14 @@ function renderMetricBar(win, index) {
   const pct = win.usedPercent ?? null;
   const isPrimary = index === 0;
   const variant = isPrimary ? "primary" : "secondary";
-  const labelText = isPrimary
-    ? (win.resetsAt !== null && win.resetsAt !== undefined ? formatBeijingTime(win.resetsAt) : '--:--')
+  const lowClass = pct !== null && pct < 20 ? " metric-bar-fill-low" : "";
+  const hasResetTime = win.resetsAt !== null && win.resetsAt !== undefined;
+  const labelText = isPrimary && hasResetTime
+    ? formatBeijingTime(win.resetsAt)
     : (win.label || win.key || "");
-  const labelClass = isPrimary ? "metric-bar-label metric-time-label" : "metric-bar-label";
+  const labelClass = isPrimary && hasResetTime
+    ? "metric-bar-label metric-time-label"
+    : "metric-bar-label";
   const title = win.resetsAt != null
     ? `${labelText} · 重置 ${formatFullBeijingTime(win.resetsAt)}`
     : labelText;
@@ -1461,7 +1466,7 @@ function renderMetricBar(win, index) {
     <div class="metric-bar metric-bar-${variant}">
       <span class="${labelClass}" title="${escapeHtml(title)}">${escapeHtml(labelText)}</span>
       <div class="metric-bar-track">
-        <div class="metric-bar-fill metric-bar-fill-${variant}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
+        <div class="metric-bar-fill metric-bar-fill-${variant}${lowClass}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
       </div>
       <span class="metric-bar-value">${pct !== null ? pct + '%' : '--'}</span>
     </div>

@@ -582,9 +582,9 @@ function invoke(cli, prompt, sessionId, options = {}) {
         if (typeof onRuntimeEvent === "function") onRuntimeEvent(event);
       },
     }).then((result) => {
-      // kimi 账号额度是账号级的：invoke 结束后异步刷新一次，
+      // dsh / kimi 账号额度是账号级的：invoke 结束后异步刷新一次，
       // 不阻塞回复返回；服务端 refreshSessionRoleMetrics 仍是兜底。
-      if (cli === "kimi" && typeof onRuntimeEvent === "function") {
+      if ((cli === "dsh" || cli === "kimi") && typeof onRuntimeEvent === "function") {
         getRoleCardMetrics({ cli })
           .then((metrics) => onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data: metrics }))
           .catch(() => {});
