@@ -361,6 +361,8 @@ function connectSSE() {
       appendThreadReply(data);
     } else {
       appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions, data.timestamp);
+      // 执行期间可能有其他消息插入，把过程记录挪到该回复正上方
+      attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     }
 
     // MCP 消息：invoke 可能还在运行（CLI 退出前），用处理中标记提示用户
@@ -971,6 +973,16 @@ function finalizeThinking(character, messageId, status = "done") {
   for (const btn of buttons) btn.disabled = true;
 }
 
+// 把已完成的过程记录容器移动到绑定回复的正上方
+// （执行期间可能有新消息插入，导致容器与回复分离）
+function attachThinkingToReply(character, messageId, replyEl) {
+  if (!replyEl || !replyEl.parentNode || !messageId) return;
+  const container = document.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`);
+  if (!container || container.parentNode !== replyEl.parentNode) return;
+  if (container.nextElementSibling === replyEl) return;
+  replyEl.parentNode.insertBefore(container, replyEl);
+}
+
 // ── 用户主动终止 AI 执行 ─────────────────────────────────
 async function abortInvoke(character) {
   try {
@@ -1505,6 +1517,19 @@ async function loadHistory() {
     }
 
     // 第二遍：渲染消息
+    // 执行记录先按 角色+用户消息 暂存，渲染到绑定的回复/错误消息时
+    // 再建容器，保证过程记录紧跟该回复，而不是留在执行期间的原位置
+    const pendingPerms = new Map(); // key: character|messageId -> records[]
+    const permKey = (character, messageId) => `${character}|${messageId}`;
+    const flushPerms = (character, messageId) => {
+      if (!messageId) return;
+      const records = pendingPerms.get(permKey(character, messageId));
+      if (!records) return;
+      pendingPerms.delete(permKey(character, messageId));
+      showArchivedThinking(character, messageId);
+      for (const rec of records) showPermissionCard(rec);
+    };
+
     for (const msg of log.messages) {
       if (msg.role === "user") {
         appendUserMessage(msg.text, msg.timestamp);
@@ -1520,17 +1545,25 @@ async function loadHistory() {
             timestamp: msg.timestamp,
           });
         } else {
+          flushPerms(msg.character, msg.replyTo);
           appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
         }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
+        flushPerms(msg.character, msg.replyTo);
         appendErrorMessage(msg.character, msg.error);
       } else if (msg.role === "permission") {
-        // 先确保存在已归档的过程记录容器（位于绑定回复上方），再嵌入记录
-        showArchivedThinking(msg.character, msg.messageId);
-        showPermissionCard(msg);
+        const key = permKey(msg.character, msg.messageId);
+        if (!pendingPerms.has(key)) pendingPerms.set(key, []);
+        pendingPerms.get(key).push(msg);
       }
+    }
+
+    // 没有匹配到回复的遗留执行记录（如执行被中断），按原顺序渲染
+    for (const records of pendingPerms.values()) {
+      showArchivedThinking(records[0].character, records[0].messageId);
+      for (const rec of records) showPermissionCard(rec);
     }
 
     // 汇总每个过程记录容器的摘要（标题 + 条数）
