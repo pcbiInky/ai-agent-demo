@@ -831,6 +831,20 @@ app.get("/api/history", (req, res) => {
 });
 
 // ── API: 所有会话列表 ─────────────────────────────────────
+// ── API: 正在执行中的 invoke（刷新/切会话后恢复"处理中"状态） ──
+app.get("/api/active-thinking", (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: "sessionId 不能为空" });
+
+  const prefix = `${sessionId}:`;
+  const thinking = [];
+  for (const [key, messageId] of activeThinking) {
+    if (!key.startsWith(prefix)) continue;
+    thinking.push({ character: key.slice(prefix.length), messageId });
+  }
+  res.json({ thinking });
+});
+
 app.get("/api/sessions", (_req, res) => {
   ensureLogDir();
   const files = fs.readdirSync(LOG_DIR).filter((f) => f.endsWith(".json"));

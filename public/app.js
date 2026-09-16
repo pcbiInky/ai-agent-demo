@@ -1526,6 +1526,14 @@ async function loadHistory() {
     const log = await res.json();
     if (!log.messages || log.messages.length === 0) return;
 
+    // 查询仍在执行中的 invoke，刷新/切换会话后恢复"处理中"状态
+    let activeThinkingList = [];
+    try {
+      const activeRes = await fetch(`/api/active-thinking?sessionId=${state.sessionId}`);
+      const activeData = await activeRes.json();
+      activeThinkingList = activeData.thinking || [];
+    } catch { /* ignore */ }
+
     state.isLoadingHistory = true;
     clearUnreadIndicator();
     $messages.innerHTML = "";
@@ -1564,6 +1572,7 @@ async function loadHistory() {
     // 匹配不到回复的（如执行被中断）按原时间位置渲染
     const pendingPerms = new Map(); // key: character|messageId -> records[]
     const permKey = (character, messageId) => `${character}|${messageId}`;
+    const activeKeys = new Set(activeThinkingList.map((t) => permKey(t.character, t.messageId)));
     const flushPerms = (character, messageId) => {
       if (!messageId) return;
       const records = pendingPerms.get(permKey(character, messageId));
@@ -1614,12 +1623,22 @@ async function loadHistory() {
           // 有绑定回复：暂存，等渲染到该回复时再建容器
           if (!pendingPerms.has(key)) pendingPerms.set(key, []);
           pendingPerms.get(key).push(msg);
+        } else if (activeKeys.has(key)) {
+          // 仍在执行中：渲染为活的 thinking 容器（处理中样式 + 终止按钮）
+          showThinking(msg.character, msg.messageId);
+          showPermissionCard(msg);
         } else {
-          // 孤儿记录（无绑定回复）：按原时间位置渲染
+          // 孤儿记录（无绑定回复且已结束）：按原时间位置渲染
           const container = showArchivedThinking(msg.character, msg.messageId);
           appendPermRecord(container, msg);
         }
       }
+    }
+
+    // 恢复仍在执行中的 invoke（含还没有任何执行记录的），保持"处理中"可见
+    for (const t of activeThinkingList) {
+      showThinking(t.character, t.messageId);
+      setCharStatus(t.character, "thinking");
     }
 
     // 兜底：理论上已清空，防止异常导致暂存记录丢失
