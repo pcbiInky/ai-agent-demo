@@ -897,7 +897,9 @@ function showThinking(character, messageId) {
 
 // 点击已完成的过程记录头部时折叠/展开（参考 clowder-ai 的折叠交互）
 function bindThinkingHeader(div) {
-  div.querySelector(".msg-header").addEventListener("click", () => {
+  const header = div.querySelector(".msg-header") || div.querySelector(".thinking-embed-header");
+  if (!header) return;
+  header.addEventListener("click", () => {
     if (!div.classList.contains("thinking-finished")) return;
     div.dataset.userToggled = "true";
     div.classList.toggle("expanded");
@@ -929,7 +931,9 @@ function showArchivedThinking(character, messageId) {
 
   const div = document.createElement("div");
   div.className = `message assistant thinking-finished ${charClass}`;
-  div.id = `thinking-${character}-${messageId}`;
+  // 直接用归档 id：嵌入回复后仍能按前缀被 findThinkingElement 找到，
+  // 且不会和实时 thinking 的 id 冲突
+  div.id = `thinking-archive-${character}-${messageId}-${Date.now()}`;
   div.dataset.character = character;
   div.dataset.archived = "true";
   div.innerHTML = `
@@ -973,14 +977,35 @@ function finalizeThinking(character, messageId, status = "done") {
   for (const btn of buttons) btn.disabled = true;
 }
 
-// 把已完成的过程记录容器移动到绑定回复的正上方
-// （执行期间可能有新消息插入，导致容器与回复分离）
+// 把过程记录嵌入到绑定回复内部（回复内容上方），不再另起一行角色记录；
+// 同时解决执行期间插入其他消息导致的分离问题
 function attachThinkingToReply(character, messageId, replyEl) {
-  if (!replyEl || !replyEl.parentNode || !messageId) return;
-  const container = document.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`);
-  if (!container || container.parentNode !== replyEl.parentNode) return;
-  if (container.nextElementSibling === replyEl) return;
-  replyEl.parentNode.insertBefore(container, replyEl);
+  if (!replyEl || !messageId) return;
+  const container = document.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`)
+    || document.getElementById(`thinking-${character}-${messageId}`);
+  if (!container) return;
+
+  const header = replyEl.querySelector(".bubble-wrapper .msg-header");
+  const scrollArea = container.querySelector(".thinking-scroll-area");
+  if (!header || !scrollArea) return;
+
+  // 摘要条：箭头 + 标题（标题沿用 .msg-time，方便 updateThinkingSummary 刷新条数）
+  const summaryText = container.querySelector(".msg-time")?.textContent || "过程记录";
+  const embed = document.createElement("div");
+  embed.className = "thinking-embed thinking-finished";
+  if (container.id) embed.id = container.id;
+  if (container.dataset.character) embed.dataset.character = container.dataset.character;
+  if (container.dataset.archived) embed.dataset.archived = container.dataset.archived;
+  embed.innerHTML = `
+    <div class="thinking-embed-header">
+      <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      <span class="msg-time">${escapeHtml(summaryText)}</span>
+    </div>
+  `;
+  embed.appendChild(scrollArea);
+  bindThinkingHeader(embed);
+  header.after(embed);
+  container.remove();
 }
 
 // ── 用户主动终止 AI 执行 ─────────────────────────────────
@@ -1150,6 +1175,9 @@ function findThinkingElement(character, messageId) {
   if (messageId) {
     const exact = document.getElementById(`thinking-${character}-${messageId}`);
     if (exact) return exact;
+    // 已嵌入回复内部的过程记录（invoke 尚未结束、仍有权限请求到达）
+    const embed = $messages.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`);
+    if (embed) return embed;
   }
   // 降级：按角色取最新一个
   const candidates = $messages.querySelectorAll(`[id^="thinking-${character}-"]`);
@@ -1558,6 +1586,8 @@ async function loadHistory() {
         } else {
           flushPerms(msg.character, msg.replyTo);
           appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
+          // 嵌入回复内部（回复内容上方），不再另起一行
+          attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;
@@ -1584,8 +1614,8 @@ async function loadHistory() {
       for (const rec of records) showPermissionCard(rec);
     }
 
-    // 汇总每个过程记录容器的摘要（标题 + 条数）
-    for (const el of $messages.querySelectorAll(".message.thinking-finished")) {
+    // 汇总每个过程记录容器的摘要（标题 + 条数），含嵌入回复内部的
+    for (const el of $messages.querySelectorAll(".thinking-finished")) {
       updateThinkingSummary(el);
     }
 

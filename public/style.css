@@ -1175,6 +1175,23 @@ html, body {
 }
 .thinking-finished .thinking-toggle-arrow { transform: rotate(0deg); }
 .thinking-finished.expanded .thinking-toggle-arrow { transform: rotate(90deg); }
+
+/* ── 嵌入回复内部的过程记录（回复内容上方，不另起一行） ── */
+.thinking-embed { margin: 2px 0 6px; }
+.thinking-embed-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-light);
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.thinking-embed-header:hover { background: rgba(0, 0, 0, 0.08); }
 .abort-btn {
   font-size: 11px;
   padding: 1px 8px;
