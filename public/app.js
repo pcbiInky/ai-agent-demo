@@ -6,6 +6,7 @@ const state = {
   sessionMembers: [],  // 当前会话的成员角色列表 [{ id, name, cli, ... }]
     sessionMeta: { title: "新对话", workingDirectory: "" },
   eventSource: null,
+  lastEventSeq: 0,   // 历史快照的事件序号，SSE 按此续订，刷新/断线不丢事件
   // 右侧栏统计 - 动态按角色名统计
   stats: { total: 0, byRole: {}, verified: 0 },
   // 角色状态: "online" | "thinking"
@@ -341,11 +342,23 @@ function isMemberInSession(characterName) {
 }
 
 // ── SSE ───────────────────────────────────────────────────
-function connectSSE() {
-  if (state.eventSource) state.eventSource.close();
+function closeEventSource() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+}
 
-  const es = new EventSource(`/api/events?sessionId=${state.sessionId}`);
+function connectSSE() {
+  closeEventSource();
+
+  const es = new EventSource(`/api/events?sessionId=${state.sessionId}&afterSeq=${state.lastEventSeq}`);
   state.eventSource = es;
+
+  // 缺失区间超出服务端 journal 容量时，按要求整体重新同步
+  es.addEventListener("resync", () => {
+    loadHistory();
+  });
 
   es.addEventListener("thinking", (e) => {
     const data = JSON.parse(e.data);
@@ -1456,6 +1469,7 @@ async function switchSession(id) {
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
   clearUnreadIndicator();
   closeThread();
+  closeEventSource();
   state.stats = { total: 0, byRole: {}, verified: 0 };
   state.threads = {};
   state.messageElements = {};
@@ -1524,15 +1538,11 @@ async function loadHistory() {
   try {
     const res = await fetch(`/api/history?sessionId=${state.sessionId}`);
     const log = await res.json();
+    state.lastEventSeq = log.lastSeq || 0;
     if (!log.messages || log.messages.length === 0) return;
 
-    // 查询仍在执行中的 invoke，刷新/切换会话后恢复"处理中"状态
-    let activeThinkingList = [];
-    try {
-      const activeRes = await fetch(`/api/active-thinking?sessionId=${state.sessionId}`);
-      const activeData = await activeRes.json();
-      activeThinkingList = activeData.thinking || [];
-    } catch { /* ignore */ }
+    // 与历史同一份快照的"执行中"状态（刷新/切换会话后恢复"处理中"）
+    const activeThinkingList = log.activeThinking || [];
 
     state.isLoadingHistory = true;
     clearUnreadIndicator();

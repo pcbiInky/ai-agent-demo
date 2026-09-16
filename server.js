@@ -131,6 +131,9 @@ const sseClients = new Map();
 const pendingPermissions = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
+// browserSessionId -> { seq, journal }（近期 SSE 事件，供刷新/断线后按序号续订）
+const sseStreams = new Map();
+const SSE_JOURNAL_LIMIT = 200;
 // requestId -> { browserSessionId, character, toolName, replyToMessageId, expireAt }（已批准的权限请求，一次性消费）
 const approvedRequests = new Map();
 // browserSessionId:roleId -> AbortController（当前 invoke 的提前终止控制器）
@@ -504,6 +507,23 @@ app.get("/api/events", (req, res) => {
   if (!sseClients.has(sessionId)) sseClients.set(sessionId, new Set());
   sseClients.get(sessionId).add(res);
 
+  // 按序号续订：EventSource 自动重连会带 Last-Event-ID，
+  // 首次加载用查询参数 afterSeq（快照序号），两者都取较大的有效值
+  const after = Number(req.headers["last-event-id"]) || Number(req.query.afterSeq) || 0;
+  if (after > 0) {
+    const journal = sseStreams.get(sessionId)?.journal || [];
+    const oldest = journal.length > 0 ? journal[0].seq : null;
+    if (oldest !== null && after < oldest - 1) {
+      // 缺失区间超出 journal 容量，通知前端整体重新同步
+      res.write("event: resync\ndata: {}\n\n");
+    } else {
+      for (const entry of journal) {
+        if (entry.seq <= after) continue;
+        res.write(`id: ${entry.seq}\nevent: ${entry.event}\ndata: ${JSON.stringify(entry.data)}\n\n`);
+      }
+    }
+  }
+
   const heartbeat = setInterval(() => {
     res.write(`event: heartbeat\ndata: {}\n\n`);
   }, 30_000);
@@ -515,10 +535,20 @@ app.get("/api/events", (req, res) => {
 });
 
 function emitSSE(sessionId, event, data) {
+  // 先落事件日志（单调序号），再推送：客户端可按序号续订，刷新/断线不丢事件
+  let stream = sseStreams.get(sessionId);
+  if (!stream) {
+    stream = { seq: 0, journal: [] };
+    sseStreams.set(sessionId, stream);
+  }
+  stream.seq += 1;
+  stream.journal.push({ seq: stream.seq, event, data });
+  if (stream.journal.length > SSE_JOURNAL_LIMIT) stream.journal.shift();
+
   const clients = sseClients.get(sessionId);
   if (!clients) return;
   for (const res of clients) {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.write(`id: ${stream.seq}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 }
 
@@ -823,27 +853,35 @@ app.get("/api/history", (req, res) => {
 
   const filePath = path.join(LOG_DIR, `${sessionId}.json`);
   try {
+    // 先读日志文件，再取事件序号：日志先于事件推送落盘，
+    // 因此快照里已有的消息其事件序号必然 <= lastSeq，续订时不会重复
     const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    res.json(log);
+    res.json({
+      ...log,
+      lastSeq: sseStreams.get(sessionId)?.seq || 0,
+      activeThinking: listActiveThinking(sessionId),
+    });
   } catch {
-    res.json({ sessionId, createdAt: Date.now(), messages: [] });
+    res.json({
+      sessionId,
+      createdAt: Date.now(),
+      messages: [],
+      lastSeq: sseStreams.get(sessionId)?.seq || 0,
+      activeThinking: listActiveThinking(sessionId),
+    });
   }
 });
 
 // ── API: 所有会话列表 ─────────────────────────────────────
-// ── API: 正在执行中的 invoke（刷新/切会话后恢复"处理中"状态） ──
-app.get("/api/active-thinking", (req, res) => {
-  const { sessionId } = req.query;
-  if (!sessionId) return res.status(400).json({ error: "sessionId 不能为空" });
-
+function listActiveThinking(sessionId) {
   const prefix = `${sessionId}:`;
   const thinking = [];
   for (const [key, messageId] of activeThinking) {
     if (!key.startsWith(prefix)) continue;
     thinking.push({ character: key.slice(prefix.length), messageId });
   }
-  res.json({ thinking });
-});
+  return thinking;
+}
 
 app.get("/api/sessions", (_req, res) => {
   ensureLogDir();
@@ -1662,6 +1700,9 @@ module.exports = {
     registerPendingMcpReply,
     finalizePendingMcpVerification,
     invokeChainCallers,
+    emitSSE,
+    setActiveThinking,
+    listActiveThinking,
     ensureRoleSystemInitializedForTests() {
       ensureRoleSystemInitialized();
       return roleStore.listRoles({ includeArchived: true });
