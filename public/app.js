@@ -1299,29 +1299,13 @@ function renderCharStatuses() {
     const charClass = getCharClass(name);
     const metrics = member.runtimeMetrics || {};
     const cliLabel = member.model ? `${member.cli} · ${member.model}` : member.cli;
-    const supportsUsageWindows = metrics.supportsUsageWindows ?? (member.cli === "codex");
-    const primaryPct = metrics.primaryUsedPercent ?? null;
-    const secondaryPct = metrics.secondaryUsedPercent ?? null;
-    const primaryResetsAt = metrics.primaryResetsAt ?? null;
+    const usageWindows = getUsageWindows(member, metrics);
     const contextTokens = metrics.contextTokens ?? null;
     const totalTokens = metrics.totalTokens ?? null;
 
-    const usageSection = supportsUsageWindows ? `
+    const usageSection = usageWindows.length > 0 ? `
       <div class="role-card-metrics">
-        <div class="metric-bar metric-bar-primary">
-          <span class="metric-bar-label metric-time-label">${primaryResetsAt !== null ? formatBeijingTime(primaryResetsAt) : '--:--'}</span>
-          <div class="metric-bar-track">
-            <div class="metric-bar-fill metric-bar-fill-primary" style="width: ${primaryPct !== null ? primaryPct + '%' : '0%'}"></div>
-          </div>
-          <span class="metric-bar-value">${primaryPct !== null ? primaryPct + '%' : '--'}</span>
-        </div>
-        <div class="metric-bar metric-bar-secondary">
-          <span class="metric-bar-label">week</span>
-          <div class="metric-bar-track">
-            <div class="metric-bar-fill metric-bar-fill-secondary" style="width: ${secondaryPct !== null ? secondaryPct + '%' : '0%'}"></div>
-          </div>
-          <span class="metric-bar-value">${secondaryPct !== null ? secondaryPct + '%' : '--'}</span>
-        </div>
+        ${usageWindows.map((win, index) => renderMetricBar(win, index)).join("")}
       </div>
     ` : "";
 
@@ -1403,6 +1387,61 @@ function formatBeijingTime(value) {
     hour12: false,
     timeZone: 'Asia/Shanghai',
   }).format(date);
+}
+
+function formatFullBeijingTime(value) {
+  if (value === null || value === undefined) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+  }).format(date);
+}
+
+// 角色卡片额度维度由 metrics.usageWindows 驱动，支持任意窗口数量与命名：
+// codex/claude = 5h + week，kimi = 5h + month。
+// 第一个窗口展示重置时间，其余窗口展示维度名；旧数据缺 usageWindows 时按
+// primary/secondary 兼容还原。
+function getUsageWindows(member, metrics) {
+  const windows = Array.isArray(metrics.usageWindows) ? metrics.usageWindows : [];
+  if (windows.length > 0) return windows;
+  const supported = metrics.supportsUsageWindows ?? (member.cli === "codex");
+  if (!supported) return [];
+  const legacy = [];
+  if (metrics.primaryUsedPercent != null || metrics.primaryResetsAt != null) {
+    legacy.push({ key: "5h", label: "5h", usedPercent: metrics.primaryUsedPercent ?? null, resetsAt: metrics.primaryResetsAt ?? null });
+  }
+  if (metrics.secondaryUsedPercent != null || metrics.secondaryResetsAt != null) {
+    legacy.push({ key: "week", label: "week", usedPercent: metrics.secondaryUsedPercent ?? null, resetsAt: metrics.secondaryResetsAt ?? null });
+  }
+  return legacy;
+}
+
+function renderMetricBar(win, index) {
+  const pct = win.usedPercent ?? null;
+  const isPrimary = index === 0;
+  const variant = isPrimary ? "primary" : "secondary";
+  const labelText = isPrimary
+    ? (win.resetsAt !== null && win.resetsAt !== undefined ? formatBeijingTime(win.resetsAt) : '--:--')
+    : (win.label || win.key || "");
+  const labelClass = isPrimary ? "metric-bar-label metric-time-label" : "metric-bar-label";
+  const title = win.resetsAt != null
+    ? `${labelText} · 重置 ${formatFullBeijingTime(win.resetsAt)}`
+    : labelText;
+  return `
+    <div class="metric-bar metric-bar-${variant}">
+      <span class="${labelClass}" title="${escapeHtml(title)}">${escapeHtml(labelText)}</span>
+      <div class="metric-bar-track">
+        <div class="metric-bar-fill metric-bar-fill-${variant}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
+      </div>
+      <span class="metric-bar-value">${pct !== null ? pct + '%' : '--'}</span>
+    </div>
+  `;
 }
 
 // ── 右侧栏：统计 ─────────────────────────────────────────

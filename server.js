@@ -3,8 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
-const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
-const { getClaudeRoleCardMetrics } = require("./lib/claude-metrics");
+const { getRoleCardMetrics } = require("./lib/role-metrics");
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
@@ -578,38 +577,10 @@ async function refreshSessionRoleMetrics(sessionId) {
     const role = roleStore.getRoleById(roleId);
     if (!role) continue;
 
-    if (role.cli === "codex") {
-      try {
-        const providerSessionId = sessionStore.getProviderSessionId(sessionId, roleId);
-        const metrics = await getCodexRoleCardMetrics(providerSessionId || null);
-        const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
-        refreshed.push({ roleId, metrics: updated });
-      } catch {
-        const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
-          supportsUsageWindows: true,
-          supportsTokenUsage: true,
-        });
-        refreshed.push({ roleId, metrics });
-      }
-    } else if (role.cli === "claude") {
-      try {
-        const metrics = await getClaudeRoleCardMetrics(role.model);
-        const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
-        refreshed.push({ roleId, metrics: updated });
-      } catch {
-        const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
-          supportsUsageWindows: false,
-          supportsTokenUsage: false,
-        });
-        refreshed.push({ roleId, metrics });
-      }
-    } else {
-      const metrics = updateRoleRuntimeMetrics(sessionId, roleId, {
-        supportsUsageWindows: false,
-        supportsTokenUsage: false,
-      });
-      refreshed.push({ roleId, metrics });
-    }
+    const providerSessionId = sessionStore.getProviderSessionId(sessionId, roleId);
+    const metrics = await getRoleCardMetrics(role, { providerSessionId });
+    const updated = updateRoleRuntimeMetrics(sessionId, roleId, metrics);
+    refreshed.push({ roleId, metrics: updated });
   }
 
   return refreshed;

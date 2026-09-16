@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const { buildSkillTypeInjection } = require("./skill-loader");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
+const { getRoleCardMetrics } = require("./lib/role-metrics");
 const { resolveCliInvocation } = require("./lib/cli-invocation");
 const { invokeDshAcp } = require("./lib/dsh-acp-client");
 const { invokeKimiAcp } = require("./lib/kimi-acp-client");
@@ -581,6 +582,13 @@ function invoke(cli, prompt, sessionId, options = {}) {
         if (typeof onRuntimeEvent === "function") onRuntimeEvent(event);
       },
     }).then((result) => {
+      // kimi 账号额度是账号级的：invoke 结束后异步刷新一次，
+      // 不阻塞回复返回；服务端 refreshSessionRoleMetrics 仍是兜底。
+      if (cli === "kimi" && typeof onRuntimeEvent === "function") {
+        getRoleCardMetrics({ cli })
+          .then((metrics) => onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data: metrics }))
+          .catch(() => {});
+      }
       if (canary) {
         const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result.text);
         const text = result.text.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
