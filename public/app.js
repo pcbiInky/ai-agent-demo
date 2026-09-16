@@ -349,23 +349,24 @@ function closeEventSource() {
   }
 }
 
-let resyncInFlight = false;
+// 正在执行 resync 的连接集合：防重绑定到具体 EventSource/会话，
+// 避免 A 会话的 resync 把 B 会话自己的 resync 吞掉（服务端只发一次）
+const resyncingSources = new Set();
 
 async function handleSSEResync(es) {
-  // 防并发；旧连接的 resync 可能在新会话中迟到，按 session 校验丢弃
-  if (resyncInFlight) return;
+  if (resyncingSources.has(es)) return;
   if (state.eventSource !== es) return;
   const targetSession = state.sessionId;
-  resyncInFlight = true;
+  resyncingSources.add(es);
   try {
     closeEventSource();
-    await loadHistory();
+    await loadHistory(targetSession);
     // 重载期间若已切换会话或另有重连，不再重复建连
     if (state.sessionId === targetSession && state.eventSource === null) {
       connectSSE();
     }
   } finally {
-    resyncInFlight = false;
+    resyncingSources.delete(es);
   }
 }
 
@@ -1596,10 +1597,12 @@ function showNewSessionModal() {
 }
 
 // ── 历史记录加载 ──────────────────────────────────────────
-async function loadHistory() {
+async function loadHistory(forSessionId = state.sessionId) {
   try {
-    const res = await fetch(`/api/history?sessionId=${state.sessionId}`);
+    const res = await fetch(`/api/history?sessionId=${forSessionId}`);
     const log = await res.json();
+    // 快照返回时若目标会话已切换，丢弃旧快照，避免覆盖新会话已渲染的 DOM
+    if (state.sessionId !== forSessionId) return;
     state.lastEventSeq = log.lastSeq || 0;
     if (!log.messages || log.messages.length === 0) return;
 
@@ -1685,13 +1688,14 @@ async function loadHistory() {
           appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
           // 嵌入回复内部（回复内容上方），不再另起一行
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
-          // 快照仍 active 但回复已落盘：invoke 尚未退出，在回复上恢复"处理中"标记
-          // （与实时 reply 路径一致），不再额外新建空 thinking
-          const key = permKey(msg.character, msg.replyTo);
-          if (msg.replyTo && activeKeys.has(key)) {
-            markMessageProcessing(msg.id, msg.character);
-            activeRepliedKeys.add(key);
-          }
+        }
+        // 快照仍 active 但回复已落盘（主线与 thread 深层回复都覆盖）：
+        // invoke 尚未退出，在回复上恢复"处理中"标记，
+        // 与实时 reply 路径一致，不再额外新建空 thinking
+        const key = permKey(msg.character, msg.replyTo);
+        if (msg.replyTo && activeKeys.has(key)) {
+          markMessageProcessing(msg.id, msg.character);
+          activeRepliedKeys.add(key);
         }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;
