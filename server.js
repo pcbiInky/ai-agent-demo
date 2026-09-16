@@ -18,7 +18,7 @@ const {
 const { resolveRequestSkills } = require("./skill-router");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ?? 3000;
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
@@ -1667,6 +1667,7 @@ const serverInstance = app.listen(PORT, () => {
 module.exports = {
   app,
   closeServer,
+  serverInstance,
   __test: {
     roleStore,
     getRoleConfig,

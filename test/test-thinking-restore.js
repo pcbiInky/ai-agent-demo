@@ -6,8 +6,12 @@ const fs = require("fs");
 const path = require("path");
 
 let JSDOM = null;
-for (const candidate of ["jsdom", "/Users/inky/code/clowder-ai/node_modules/jsdom"]) {
-  try { JSDOM = require(candidate).JSDOM; break; } catch { /* try next */ }
+try {
+  JSDOM = require("jsdom").JSDOM;
+} catch (err) {
+  // 依赖缺失是环境错误，必须失败而不是静默跳过（否则 CI 显示绿但断言没跑）
+  console.error(`❌ 无法加载 jsdom（请先 npm install）：${err.message}`);
+  process.exit(1);
 }
 
 let passed = 0;
@@ -15,11 +19,6 @@ let failed = 0;
 function assert(condition, label) {
   if (condition) { console.log(`✅ ${label}`); passed += 1; }
   else { console.log(`❌ ${label}`); failed += 1; }
-}
-
-if (!JSDOM) {
-  console.log("⚠️ jsdom 不可用（本机未安装），跳过客户端 DOM 测试");
-  process.exit(0);
 }
 
 const appJs = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");

@@ -2,8 +2,9 @@
 // SSE 按序号续订 + 一致快照的回归测试
 // 覆盖：快照字段、显式 cursor=0 补发、cursor 取最大合法值、非法值过滤、
 //       部分重放保序、journal 溢出 resync、临界衔接
-process.env.PORT = "3463";
+process.env.PORT = "0"; // 系统分配的临时端口，避免并行 CI/本机占用冲突
 const server = require("../server.js");
+const PORT = server.serverInstance.address().port;
 
 let passed = 0;
 let failed = 0;
@@ -17,7 +18,7 @@ const http = require("http");
 
 function getJSON(path) {
   return new Promise((resolve, reject) => {
-    http.get({ host: "localhost", port: 3463, path }, (res) => {
+    http.get({ host: "localhost", port: PORT, path }, (res) => {
       let buf = "";
       res.on("data", (c) => (buf += c));
       res.on("end", () => { try { resolve(JSON.parse(buf)); } catch (e) { reject(e); } });
@@ -27,7 +28,7 @@ function getJSON(path) {
 
 function getRaw(path, headers = {}, ms = 400) {
   return new Promise((resolve, reject) => {
-    const req = http.get({ host: "localhost", port: 3463, path, headers }, (res) => {
+    const req = http.get({ host: "localhost", port: PORT, path, headers }, (res) => {
       let buf = "";
       res.on("data", (c) => (buf += c));
       setTimeout(() => { req.destroy(); resolve(buf); }, ms);
