@@ -507,9 +507,17 @@ app.get("/api/events", (req, res) => {
   sseClients.get(sessionId).add(res);
 
   // 按序号续订：EventSource 自动重连会带 Last-Event-ID，
-  // 首次加载用查询参数 afterSeq（快照序号），两者都取较大的有效值
-  const after = Number(req.headers["last-event-id"]) || Number(req.query.afterSeq) || 0;
-  if (after > 0) {
+  // 首次加载用查询参数 afterSeq（快照序号）。
+  // 区分"未提供 cursor"（不补发）与"cursor 为 0"（补发全部 seq > 0）；
+  // 两者都提供时取最大合法值
+  const parseSeq = (v) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  };
+  const headerSeq = parseSeq(req.headers["last-event-id"]);
+  const querySeq = parseSeq(req.query.afterSeq);
+  if (headerSeq !== null || querySeq !== null) {
+    const after = Math.max(headerSeq ?? 0, querySeq ?? 0);
     const journal = sseStreams.get(sessionId)?.journal || [];
     const oldest = journal.length > 0 ? journal[0].seq : null;
     if (oldest !== null && after < oldest - 1) {
@@ -1002,6 +1010,8 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       recordSkillTrace(browserSessionId, skillDecision, "ok");
       clearActiveThinking(browserSessionId, character, thinkingMessageId);
+      // 完成事件携带 messageId，前端按 character + messageId 精确清理 live thinking
+      emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
       onResult(result);
       resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
@@ -1009,6 +1019,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       recordSkillTrace(browserSessionId, skillDecision, "error");
       resetInvokeSendGuard(browserSessionId, character);
       clearActiveThinking(browserSessionId, character, thinkingMessageId);
+      emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
       onError(err);
     } finally {
       invokeAbortControllers.delete(key);

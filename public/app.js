@@ -349,15 +349,36 @@ function closeEventSource() {
   }
 }
 
+let resyncInFlight = false;
+
+async function handleSSEResync(es) {
+  // 防并发；旧连接的 resync 可能在新会话中迟到，按 session 校验丢弃
+  if (resyncInFlight) return;
+  if (state.eventSource !== es) return;
+  const targetSession = state.sessionId;
+  resyncInFlight = true;
+  try {
+    closeEventSource();
+    await loadHistory();
+    // 重载期间若已切换会话或另有重连，不再重复建连
+    if (state.sessionId === targetSession && state.eventSource === null) {
+      connectSSE();
+    }
+  } finally {
+    resyncInFlight = false;
+  }
+}
+
 function connectSSE() {
   closeEventSource();
 
   const es = new EventSource(`/api/events?sessionId=${state.sessionId}&afterSeq=${state.lastEventSeq}`);
   state.eventSource = es;
 
-  // 缺失区间超出服务端 journal 容量时，按要求整体重新同步
+  // 缺失区间超出服务端 journal 容量时：关闭当前连接 → 加载一致快照 → 按新序号重连。
+  // 重载窗口内的事件由服务端 journal 保留，重连后补发，不会丢。
   es.addEventListener("resync", () => {
-    loadHistory();
+    handleSSEResync(es);
   });
 
   es.addEventListener("thinking", (e) => {
@@ -435,6 +456,8 @@ function connectSSE() {
     // invoke 真正结束时清除消息上的"处理中"标记
     if (data.status === "online") {
       clearMessageProcessing(data.character);
+      // 完成事件携带 messageId 时，按 character + messageId 精确清理 live thinking
+      if (data.messageId) finalizeThinking(data.character, data.messageId, "done");
     }
   });
 
@@ -1622,6 +1645,8 @@ async function loadHistory() {
     const pendingPerms = new Map(); // key: character|messageId -> records[]
     const permKey = (character, messageId) => `${character}|${messageId}`;
     const activeKeys = new Set(activeThinkingList.map((t) => permKey(t.character, t.messageId)));
+    // 快照 active 且回复已落盘的 key：恢复标记而不是新建空 thinking
+    const activeRepliedKeys = new Set();
     const flushPerms = (character, messageId) => {
       if (!messageId) return;
       const records = pendingPerms.get(permKey(character, messageId));
@@ -1660,6 +1685,13 @@ async function loadHistory() {
           appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
           // 嵌入回复内部（回复内容上方），不再另起一行
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
+          // 快照仍 active 但回复已落盘：invoke 尚未退出，在回复上恢复"处理中"标记
+          // （与实时 reply 路径一致），不再额外新建空 thinking
+          const key = permKey(msg.character, msg.replyTo);
+          if (msg.replyTo && activeKeys.has(key)) {
+            markMessageProcessing(msg.id, msg.character);
+            activeRepliedKeys.add(key);
+          }
         }
         updateStats(msg.character, msg.verified);
         state.lastSpeaker = msg.character;
@@ -1684,9 +1716,12 @@ async function loadHistory() {
       }
     }
 
-    // 恢复仍在执行中的 invoke（含还没有任何执行记录的），保持"处理中"可见
+    // 恢复仍在执行中的 invoke（含还没有任何执行记录的），保持"处理中"可见；
+    // 已有回复落盘的只保留"处理中"标记，不再新建空 thinking
     for (const t of activeThinkingList) {
-      showThinking(t.character, t.messageId);
+      if (!activeRepliedKeys.has(permKey(t.character, t.messageId))) {
+        showThinking(t.character, t.messageId);
+      }
       setCharStatus(t.character, "thinking");
     }
 
