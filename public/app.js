@@ -922,7 +922,8 @@ function updateThinkingSummary(el, status = "done") {
 // 历史渲染专用：直接创建已完成、默认折叠的过程记录容器，
 // 让散落的执行记录重新嵌入它内部，位于绑定回复的上方
 function showArchivedThinking(character, messageId) {
-  const existing = document.getElementById(`thinking-${character}-${messageId}`);
+  const existing = document.getElementById(`thinking-${character}-${messageId}`)
+    || (messageId && $messages.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`));
   if (existing) return existing;
 
   const charClass = getCharClass(character);
@@ -1096,17 +1097,11 @@ function buildPermDetail(toolName, input) {
   return detail;
 }
 
-function showPermissionCard({ requestId, character, toolName, input, timestamp, messageId, status = "pending", resolutionMessage }) {
-  const shouldAutoScroll = shouldAutoScrollOnAppend();
+function buildPermCardHtml(requestId, toolName, input) {
   const brief = getPermBrief(toolName, input);
   const intent = getPermIntent(toolName, input);
   const detail = buildPermDetail(toolName, input);
-
-  // 用 character + messageId 精确定位 thinking 容器
-  const thinkingEl = findThinkingElement(character, messageId);
-  const container = thinkingEl?.querySelector(".perm-container");
-
-  const cardHtml = `
+  return `
     <div class="perm-card" id="perm-card-${requestId}" data-request-id="${requestId}">
       <div class="perm-summary" onclick="togglePermDetail('${requestId}')">
         <svg class="perm-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M5.07 19h13.86c1.14 0 1.83-1.23 1.23-2.2L13.23 4.6a1.39 1.39 0 0 0-2.46 0L3.84 16.8c-.6.97.09 2.2 1.23 2.2z"/></svg>
@@ -1124,23 +1119,42 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
       </div>
     </div>
   `;
+}
 
-  if (container) {
-    const processLog = thinkingEl.querySelector(".process-log");
-    if (processLog) {
-      const step = document.createElement("div");
-      step.className = "process-step";
-      step.textContent = input?.description || `准备调用 ${toolName}：${truncate(brief, 80)}`;
-      processLog.appendChild(step);
-    }
+// 把一条执行记录嵌入指定的过程记录容器（调用方负责定位容器）
+function appendPermRecord(container, { requestId, toolName, input, status = "pending", resolutionMessage }) {
+  const brief = getPermBrief(toolName, input);
+  const processLog = container.querySelector(".process-log");
+  if (processLog) {
+    const step = document.createElement("div");
+    step.className = "process-step";
+    step.textContent = input?.description || `准备调用 ${toolName}：${truncate(brief, 80)}`;
+    processLog.appendChild(step);
+  }
 
-    // 嵌入 thinking 消息内部
-    container.insertAdjacentHTML("beforeend", cardHtml);
+  const permContainer = container.querySelector(".perm-container");
+  if (permContainer) {
+    permContainer.insertAdjacentHTML("beforeend", buildPermCardHtml(requestId, toolName, input));
     // 滚动 thinking 区域到底部，确保新卡片可见
-    const scrollArea = thinkingEl.querySelector(".thinking-scroll-area");
+    const scrollArea = container.querySelector(".thinking-scroll-area");
     if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+  }
+
+  if (status && status !== "pending") {
+    markPermResolved(requestId, status, resolutionMessage);
+  }
+}
+
+function showPermissionCard({ requestId, character, toolName, input, timestamp, messageId, status = "pending", resolutionMessage }) {
+  const shouldAutoScroll = shouldAutoScrollOnAppend();
+
+  // 用 character + messageId 精确定位 thinking 容器
+  const thinkingEl = findThinkingElement(character, messageId);
+  if (thinkingEl && thinkingEl.querySelector(".perm-container")) {
+    appendPermRecord(thinkingEl, { requestId, toolName, input, status, resolutionMessage });
   } else {
     // 降级：如果找不到 thinking 元素（极端边界情况），独立显示
+    const cardHtml = buildPermCardHtml(requestId, toolName, input);
     const charClass = getCharClass(character);
     const avatar = getAvatar(character);
     const displayName = getDisplayName(character);
@@ -1160,10 +1174,10 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
       </div>
     `;
     $messages.appendChild(div);
-  }
 
-  if (status && status !== "pending") {
-    markPermResolved(requestId, status, resolutionMessage);
+    if (status && status !== "pending") {
+      markPermResolved(requestId, status, resolutionMessage);
+    }
   }
 
   handlePostAppend({ shouldAutoScroll });
@@ -1555,8 +1569,8 @@ async function loadHistory() {
       const records = pendingPerms.get(permKey(character, messageId));
       if (!records) return;
       pendingPerms.delete(permKey(character, messageId));
-      showArchivedThinking(character, messageId);
-      for (const rec of records) showPermissionCard(rec);
+      const container = showArchivedThinking(character, messageId);
+      for (const rec of records) appendPermRecord(container, rec);
     };
 
     // 预判哪些执行记录能匹配到回复/错误消息（replyTo + 角色）
@@ -1602,16 +1616,16 @@ async function loadHistory() {
           pendingPerms.get(key).push(msg);
         } else {
           // 孤儿记录（无绑定回复）：按原时间位置渲染
-          showArchivedThinking(msg.character, msg.messageId);
-          showPermissionCard(msg);
+          const container = showArchivedThinking(msg.character, msg.messageId);
+          appendPermRecord(container, msg);
         }
       }
     }
 
     // 兜底：理论上已清空，防止异常导致暂存记录丢失
     for (const records of pendingPerms.values()) {
-      showArchivedThinking(records[0].character, records[0].messageId);
-      for (const rec of records) showPermissionCard(rec);
+      const container = showArchivedThinking(records[0].character, records[0].messageId);
+      for (const rec of records) appendPermRecord(container, rec);
     }
 
     // 汇总每个过程记录容器的摘要（标题 + 条数），含嵌入回复内部的
