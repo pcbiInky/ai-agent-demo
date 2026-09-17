@@ -873,8 +873,34 @@ function countPendingApprovals(sessionId) {
   return count;
 }
 
+// 会话参与角色：元数据成员 ∪ 聊天记录推导（发言过的角色 + 被 @ 的角色），
+// 按首次出现排序；链式 @ 唤醒但未登记进 members 的角色也能显示
+function deriveSessionParticipants(log, sessionMeta, roleNameById) {
+  const seen = new Set();
+  const participants = [];
+  const push = (name) => {
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      participants.push(name);
+    }
+  };
+  for (const roleId of Object.keys(sessionMeta?.members || {})) {
+    push(roleNameById.get(roleId));
+  }
+  for (const msg of log?.messages || []) {
+    if (msg.character && msg.role !== "user") push(msg.character);
+    for (const mention of msg.mentions || []) push(mention);
+    for (const target of msg.aiMentions || []) push(target);
+  }
+  return participants;
+}
+
 app.get("/api/sessions", (_req, res) => {
   ensureLogDir();
+  // 每请求只建一次 id→name 映射，避免每个会话都同步读 roles.json
+  const roleNameById = new Map(
+    roleStore.listRoles({ includeArchived: true }).map((role) => [role.id, role.name])
+  );
   const files = fs.readdirSync(LOG_DIR).filter((f) => f.endsWith(".json"));
   const sessions = files.map((f) => {
     try {
@@ -894,6 +920,7 @@ app.get("/api/sessions", (_req, res) => {
         unreadMessageCount,
         activeTaskCount: listActiveThinking(log.sessionId).length,
         pendingApprovalCount: countPendingApprovals(log.sessionId),
+        memberNames: deriveSessionParticipants(log, sessionMeta, roleNameById),
       };
     } catch {
       return null;

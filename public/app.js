@@ -1587,8 +1587,11 @@ async function loadSessionList() {
         : Math.max(0, (s.unreadMessageCount || 0) - readCount);
       const div = document.createElement("div");
       div.className = `session-item${isCurrent ? " active" : ""}`;
-      const activeRoles = Object.entries(state.characters).filter(([, c]) => !c.archived).slice(0, 3);
-      const avatarsHtml = activeRoles.map(([name, cfg]) => {
+      const memberNames = Array.isArray(s.memberNames)
+        ? s.memberNames
+        : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
+      const avatarsHtml = memberNames.slice(0, 3).map((name) => {
+        const cfg = state.characters[name] || {};
         const charClass = getCharClass(name);
         const av = getAvatar(name, cfg.avatar);
         return '<span class="mini-avatar" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
