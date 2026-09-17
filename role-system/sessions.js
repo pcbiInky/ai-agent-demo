@@ -35,15 +35,67 @@ function normalizeSession(sessionId, raw) {
   };
 }
 
-function resolveDisplayTitle(session, messages = []) {
+// 去掉用户消息里的 @角色，让标题展示真正的第一句话。
+// 只删除「可确认为召唤」的 token：@ 前必须是行首，或不是任意语言的字母/数字/下划线/@。
+// 用 Unicode 属性类而非 \w（\w 只覆盖 ASCII），这样中文邮箱/标识符如 用户@YYF.com 也不会被误伤。
+const MENTION_LEFT_BOUNDARY = "(^|[^\\p{L}\\p{N}_@])";
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripNamedMentions(text, names) {
+  // 长名优先，避免 @YY 把 @YYF 咬掉一半
+  const sorted = names
+    .filter((name) => typeof name === "string" && name.trim())
+    .map((name) => name.trim())
+    .sort((a, b) => b.length - a.length);
+  let result = text;
+  for (const name of sorted) {
+    result = result.replace(
+      new RegExp(`${MENTION_LEFT_BOUNDARY}@${escapeRegExp(name)}`, "gu"),
+      "$1",
+    );
+  }
+  return result;
+}
+
+// 旧记录既没有 mentions、又拿不到角色名单时的兜底：只删「后面有明确边界」的 ASCII @token。
+// 中文角色名无法确定边界，宁可保留原文，也不能把正文一起吞掉。
+const LEGACY_MENTION_PATTERN = /(^|[^\p{L}\p{N}_@])@[A-Za-z0-9_-]+(?=$|[\s，。！？、：:；;,!?）)】」』"'…—\-])/gu;
+
+// 清理 mention 之后残留的紧邻分隔符/空白，避免标题以「：」或空格开头。
+function normalizeTitleText(text) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s+([，。！？、：；）】》」』…])/g, "$1")
+    .replace(/([（【《「『])\s+/g, "$1")
+    .replace(/^[\s，。！？、：；,.:;!?\-—]+/, "")
+    .trim();
+}
+
+function resolveDisplayTitle(session, messages = [], roleNames = []) {
   if (session?.titleCustomized && session.title?.trim()) {
     return session.title.trim();
   }
 
-  const firstUserMessage = messages.find(
-    (message) => message.role === "user" && typeof message.text === "string" && message.text.trim(),
-  );
-  return firstUserMessage?.text.replace(/\s+/g, " ").trim() || DEFAULT_TITLE;
+  const knownNames = Array.isArray(roleNames)
+    ? roleNames.filter((name) => typeof name === "string" && name.trim())
+    : [];
+  for (const message of messages) {
+    if (message.role !== "user" || typeof message.text !== "string") continue;
+    let cleaned;
+    if (Array.isArray(message.mentions)) {
+      cleaned = stripNamedMentions(message.text, message.mentions);
+    } else if (knownNames.length > 0) {
+      cleaned = stripNamedMentions(message.text, knownNames);
+    } else {
+      cleaned = message.text.replace(LEGACY_MENTION_PATTERN, "$1");
+    }
+    const title = normalizeTitleText(cleaned);
+    if (title) return title;
+  }
+  return DEFAULT_TITLE;
 }
 
 function readSession(sessionId) {

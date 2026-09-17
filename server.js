@@ -895,12 +895,18 @@ function deriveSessionParticipants(log, sessionMeta, roleNameById) {
   return participants;
 }
 
+function buildMentionableRoleNames(roles) {
+  return roles
+    .flatMap((role) => [role.name, ...(Array.isArray(role.aliases) ? role.aliases : [])])
+    .filter(Boolean);
+}
+
 app.get("/api/sessions", (_req, res) => {
   ensureLogDir();
-  // 每请求只建一次 id→name 映射，避免每个会话都同步读 roles.json
-  const roleNameById = new Map(
-    roleStore.listRoles({ includeArchived: true }).map((role) => [role.id, role.name])
-  );
+  // 每请求只建一次角色映射，避免每个会话都同步读 roles.json
+  const roles = roleStore.listRoles({ includeArchived: true });
+  const roleNameById = new Map(roles.map((role) => [role.id, role.name]));
+  const mentionableNames = buildMentionableRoleNames(roles);
   const files = fs.readdirSync(LOG_DIR).filter((f) => f.endsWith(".json"));
   const sessions = files.map((f) => {
     try {
@@ -912,7 +918,7 @@ app.get("/api/sessions", (_req, res) => {
       ).length;
       return {
         sessionId: log.sessionId,
-        title: resolveSessionTitle(sessionMeta, log),
+        title: resolveSessionTitle(sessionMeta, log, mentionableNames),
         workingDirectory: sessionMeta?.workingDirectory || "",
         createdAt: log.createdAt,
         lastMessageAt: lastMsg?.timestamp || log.createdAt,
@@ -1227,14 +1233,15 @@ function readChatLog(sessionId) {
   }
 }
 
-function resolveSessionTitle(session, log) {
-  return sessionStore.resolveDisplayTitle(session, log?.messages || []);
+function resolveSessionTitle(session, log, roleNames) {
+  return sessionStore.resolveDisplayTitle(session, log?.messages || [], roleNames);
 }
 
 function withDisplayTitle(sessionId, session, log = readChatLog(sessionId)) {
+  const roleNames = buildMentionableRoleNames(roleStore.listRoles({ includeArchived: true }));
   return {
     ...session,
-    displayTitle: resolveSessionTitle(session, log),
+    displayTitle: resolveSessionTitle(session, log, roleNames),
   };
 }
 
