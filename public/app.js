@@ -2073,12 +2073,13 @@ function setupSettings() {
       const roleId = row.getAttribute("data-role-id");
       const name = row.querySelector(".name-input")?.value?.trim();
       const model = row.querySelector(".model-input")?.value?.trim() || "";
+      const ctxK = Number(row.querySelector(".ctx-input")?.value);
       if (!roleId || !name) continue;
 
       const key = name.toLocaleLowerCase();
       if (!nameMap.has(key)) nameMap.set(key, []);
       nameMap.get(key).push(roleId);
-      updates.push({ roleId, name, model });
+      updates.push({ roleId, name, model, contextWindow: Number.isFinite(ctxK) && ctxK > 0 ? Math.round(ctxK * 1024) : undefined });
     }
 
     for (const [key, ids] of nameMap.entries()) {
@@ -2090,12 +2091,12 @@ function setupSettings() {
 
     hideSettingsError();
 
-    for (const { roleId, name, model } of updates) {
+    for (const { roleId, name, model, contextWindow } of updates) {
       try {
         const res = await fetch(`/api/roles/${roleId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, model }),
+          body: JSON.stringify({ name, model, ...(contextWindow !== undefined ? { contextWindow } : {}) }),
         });
         if (!res.ok) {
           const data = await res.json();
@@ -2151,11 +2152,12 @@ function renderSettingsForm() {
   const header = document.createElement("div");
   header.className = "setting-row";
   header.style.cssText = "font-size:12px;color:var(--text-light);font-weight:500;";
-  header.innerHTML = `<div>CLI</div><div>角色名</div><div>模型</div><div></div>`;
+  header.innerHTML = `<div>CLI</div><div>角色名</div><div>模型</div><div>上下文(k)</div><div></div>`;
   $settingsForm.appendChild(header);
 
   const allRoles = Object.entries(state.characters).map(([name, cfg]) => ({
     id: cfg.id, name, cli: cfg.cli, model: cfg.model || "", archived: cfg.archived || false,
+    contextWindow: cfg.contextWindow || 262144,
   }));
 
   for (const role of allRoles) {
@@ -2166,6 +2168,7 @@ function renderSettingsForm() {
       <div class="setting-cli">${role.cli}</div>
       <input class="name-input" type="text" value="${escapeHtml(role.name)}" placeholder="角色名" ${role.archived ? "disabled" : ""}>
       <input class="model-input" type="text" value="${escapeHtml(role.model)}" placeholder="模型" ${role.archived ? "disabled" : ""}>
+      <input class="ctx-input" type="number" min="1" step="1" value="${Math.round((role.contextWindow || 262144) / 1024)}" title="最大上下文长度（k tokens）" ${role.archived ? "disabled" : ""}>
       <div class="setting-actions">
         ${role.archived
           ? `<button class="btn-restore" data-role-id="${role.id}" title="恢复">恢复</button>`
