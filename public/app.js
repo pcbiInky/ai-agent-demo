@@ -10,7 +10,7 @@ const state = {
   eventSource: null,
   lastEventSeq: 0,   // 历史快照的事件序号，SSE 按此续订，刷新/断线不丢事件
   // 右侧栏统计 - 动态按角色名统计
-  stats: { total: 0, byRole: {}, verified: 0 },
+  stats: { total: 0, byRole: {} },
   // 角色状态: "online" | "thinking"
   charStatus: {},
   // thinking 中的 messageId -> Set<character>
@@ -408,7 +408,7 @@ function connectSSE() {
       // 召唤链 thread 回复：执行记录嵌入回复内部（与历史渲染一致）
       attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     } else {
-      appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions, data.timestamp);
+      appendAssistantMessage(data.character, data.text, data.replyId, data.threadId, data.aiMentions, data.timestamp);
       // 执行期间可能有其他消息插入，把过程记录挪到该回复正上方
       attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     }
@@ -421,14 +421,9 @@ function connectSSE() {
     }
 
     state.lastSpeaker = data.character;
-    updateStats(data.character, data.verified);
+    updateStats(data.character);
     loadSessionList();
     loadSkillTraces();
-  });
-
-  es.addEventListener("message-meta", (e) => {
-    const data = JSON.parse(e.data);
-    applyVerifiedMeta(data.messageId, data.verified);
   });
 
   es.addEventListener("error", (e) => {
@@ -584,46 +579,7 @@ function appendUserMessage(text, timestamp) {
   return div;
 }
 
-function verifiedBadgeHtml(verified) {
-  if (verified === true) return '<span class="verified-badge pass">verified</span>';
-  if (verified === false) return '<span class="verified-badge fail">unverified</span>';
-  return "";
-}
-
-function applyVerifiedMeta(messageId, verified) {
-  const el = state.messageElements[messageId];
-  if (!el) return;
-
-  const previous = el.dataset.verified;
-  const next = verified === undefined ? "" : String(verified);
-  const header = el.querySelector(".msg-header");
-  if (!header) return;
-
-  header.querySelector(".verified-badge")?.remove();
-  const badge = verifiedBadgeHtml(verified);
-  if (badge) {
-    header.insertAdjacentHTML("beforeend", badge);
-  }
-
-  if (previous !== next) {
-    if (previous !== "true" && verified === true) state.stats.verified++;
-    if (previous === "true" && verified !== true) state.stats.verified = Math.max(0, state.stats.verified - 1);
-    renderStats();
-  }
-
-  el.dataset.verified = next;
-  if (el.dataset.threadId && state.threads[el.dataset.threadId]) {
-    const thread = state.threads[el.dataset.threadId];
-    if (thread.originId === messageId) {
-      thread.originVerified = verified;
-    }
-    const reply = thread.replies.find((item) => item.id === messageId);
-    if (reply) reply.verified = verified;
-    updateThreadPanelIfOpen(el.dataset.threadId);
-  }
-}
-
-function appendAssistantMessage(character, text, verified, replyId, threadId, aiMentions, timestamp) {
+function appendAssistantMessage(character, text, replyId, threadId, aiMentions, timestamp) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
@@ -634,8 +590,6 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
   const modelLabel = model ? `${cli} · ${model}` : cli;
   const msgId = replyId || crypto.randomUUID();
 
-  const verifiedHtml = verifiedBadgeHtml(verified);
-
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
   div.dataset.msgId = msgId;
@@ -645,7 +599,6 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
       <div class="msg-header">
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">${time}</span>
-        ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
@@ -655,7 +608,6 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
 
   // 追踪消息元素
   state.messageElements[msgId] = div;
-  div.dataset.verified = verified === undefined ? "" : String(verified);
   if (threadId) div.dataset.threadId = threadId;
 
   // 如果这条消息中有 AI @mention，初始化 thread 数据（避免覆盖 loadHistory 已建好的）
@@ -666,7 +618,6 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
         originId: msgId,
         originChar: character,
         originText: text,
-        originVerified: verified,
         replies: [],
       };
     }
@@ -677,7 +628,7 @@ function appendAssistantMessage(character, text, verified, replyId, threadId, ai
 
 // ── Thread 回复渲染（主聊天流中，带引用条） ──────────────
 function appendThreadReply(data) {
-  const { character, text, verified, replyId, threadId, depth, timestamp } = data;
+  const { character, text, replyId, threadId, depth, timestamp } = data;
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
@@ -693,7 +644,7 @@ function appendThreadReply(data) {
     const existing = state.threads[threadId].replies.find(r => r.id === msgId);
     if (!existing) {
       state.threads[threadId].replies.push({
-        id: msgId, character, text, verified, depth,
+        id: msgId, character, text, depth,
       });
     }
     if (!state.isLoadingHistory) {
@@ -701,8 +652,6 @@ function appendThreadReply(data) {
       updateThreadPanelIfOpen(threadId);
     }
   }
-
-  const verifiedHtml = verifiedBadgeHtml(verified);
 
   // 引用条：显示原始消息的第一行
   let quoteHtml = "";
@@ -728,7 +677,6 @@ function appendThreadReply(data) {
       <div class="msg-header">
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
         <span class="msg-time">${time}</span>
-        ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${quoteHtml}${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
@@ -736,7 +684,6 @@ function appendThreadReply(data) {
   `;
   $messages.appendChild(div);
   state.messageElements[msgId] = div;
-  div.dataset.verified = verified === undefined ? "" : String(verified);
 
   handlePostAppend({ shouldAutoScroll });
 }
@@ -841,7 +788,7 @@ function renderThreadPanel(threadId) {
   $threadMessages.innerHTML = "";
 
   // 1. 原始消息
-  const originEl = buildThreadMessage(thread.originChar, thread.originText, false, thread.originVerified);
+  const originEl = buildThreadMessage(thread.originChar, thread.originText);
   $threadMessages.appendChild(originEl);
 
   // 分隔线
@@ -852,22 +799,20 @@ function renderThreadPanel(threadId) {
 
   // 2. 所有回复
   for (const reply of thread.replies) {
-    const replyEl = buildThreadMessage(reply.character, reply.text, true, reply.verified);
+    const replyEl = buildThreadMessage(reply.character, reply.text);
     $threadMessages.appendChild(replyEl);
   }
 
   $threadMessages.scrollTop = $threadMessages.scrollHeight;
 }
 
-function buildThreadMessage(character, text, isReply, verified) {
+function buildThreadMessage(character, text) {
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
   const displayName = getDisplayName(character);
   const cli = state.characters[character]?.cli || "";
   const model = state.characters[character]?.model;
   const modelLabel = model ? `${cli} · ${model}` : cli;
-
-  const verifiedHtml = verifiedBadgeHtml(verified);
 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
@@ -876,7 +821,6 @@ function buildThreadMessage(character, text, isReply, verified) {
     <div class="bubble-wrapper">
       <div class="msg-header">
         <span class="character-name ${charClass}">${escapeHtml(displayName)}</span>
-        ${verifiedHtml}
       </div>
       <div class="bubble markdown-body">${renderMarkdown(text)}</div>
       <div class="msg-model">${modelLabel}</div>
@@ -1520,11 +1464,10 @@ function renderMetricBar(win, index) {
 }
 
 // ── 右侧栏：统计 ─────────────────────────────────────────
-function updateStats(character, verified) {
+function updateStats(character) {
   state.stats.total++;
   if (!state.stats.byRole[character]) state.stats.byRole[character] = 0;
   state.stats.byRole[character]++;
-  if (verified === true) state.stats.verified++;
   renderStats();
 }
 
@@ -1536,7 +1479,6 @@ function renderStats() {
     ${Object.entries(state.stats.byRole).map(([name, count]) =>
       `<div class="stat-row"><span>${escapeHtml(name)} 消息</span><span>${count}</span></div>`
     ).join("")}
-    <div class="stat-row"><span>验证通过</span><span>${state.stats.verified}</span></div>
   `;
 }
 
@@ -1666,7 +1608,7 @@ async function switchSession(id) {
   clearUnreadIndicator();
   closeThread();
   closeEventSource();
-  state.stats = { total: 0, byRole: {}, verified: 0 };
+  state.stats = { total: 0, byRole: {} };
   state.threads = {};
   state.messageElements = {};
 
@@ -1745,7 +1687,7 @@ async function loadHistory(forSessionId = state.sessionId) {
     state.isLoadingHistory = true;
     clearUnreadIndicator();
     $messages.innerHTML = "";
-    state.stats = { total: 0, byRole: {}, verified: 0 };
+    state.stats = { total: 0, byRole: {} };
     state.threads = {};
     state.messageElements = {};
 
@@ -1757,7 +1699,6 @@ async function loadHistory(forSessionId = state.sessionId) {
           originId: msg.id,
           originChar: msg.character,
           originText: msg.text,
-          originVerified: msg.verified,
           replies: [],
         };
       }
@@ -1768,7 +1709,6 @@ async function loadHistory(forSessionId = state.sessionId) {
           id: msg.id,
           character: msg.character,
           text: msg.text,
-          verified: msg.verified,
           depth: msg.depth,
         });
       }
@@ -1813,7 +1753,6 @@ async function loadHistory(forSessionId = state.sessionId) {
           appendThreadReply({
             character: msg.character,
             text: msg.text,
-            verified: msg.verified,
             replyId: msg.id,
             threadId: msg.threadId,
             depth: msg.depth,
@@ -1822,7 +1761,7 @@ async function loadHistory(forSessionId = state.sessionId) {
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         } else {
           flushPerms(msg.character, msg.replyTo);
-          appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
+          appendAssistantMessage(msg.character, msg.text, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
           // 嵌入回复内部（回复内容上方），不再另起一行
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         }
@@ -1834,7 +1773,7 @@ async function loadHistory(forSessionId = state.sessionId) {
           markMessageProcessing(msg.id, msg.character);
           activeRepliedKeys.add(key);
         }
-        updateStats(msg.character, msg.verified);
+        updateStats(msg.character);
         state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
         flushPerms(msg.character, msg.replyTo);

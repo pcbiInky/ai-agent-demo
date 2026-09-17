@@ -74,7 +74,6 @@ invokeModule.invoke = async (_cli, _prompt, resumeSessionId, options = {}) => {
   return {
     text: "",
     sessionId: resumeSessionId || `stub-${character || "unknown"}`,
-    verified: true,
   };
 };
 

@@ -356,18 +356,6 @@ html, body {
 .message.qijige .bubble { background: var(--qijige-bg); border-bottom-left-radius: 4px; }
 .message.yyf .bubble { background: var(--yyf-bg); border-bottom-left-radius: 4px; }
 
-/* verified 标记 */
-.verified-badge {
-  display: inline-block;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  margin-left: 6px;
-  font-weight: 500;
-}
-.verified-badge.pass { background: #e8f5e9; color: #2e7d32; }
-.verified-badge.fail { background: #fce4ec; color: #c62828; }
-
 /* ── 错误消息 ──────────────────────────── */
 .message.error-msg .bubble {
   background: var(--error-bg);

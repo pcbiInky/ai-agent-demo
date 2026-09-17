@@ -1,17 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * 健壮性测试：覆盖本次改动的三个功能
- * 1. 超时机制（心跳检测 + 两阶段终止）
- * 2. 父进程退出时子进程清理
- * 3. 暗号验证（幻觉检测）
+ * 健壮性测试：覆盖 CLI 调用的超时机制与子进程清理。
+ * 使用 helpers/slow-cli.js 模拟，无需真实 CLI。
  *
- * 测试 1-2 使用 helpers/slow-cli.js 模拟，无需真实 CLI
- * 测试 5 需要真实 claude/trae/codex CLI
- *
- * 用法:
- *   node test/test-robustness.js           — 运行全部测试
- *   node test/test-robustness.js --quick   — 跳过需要真实 CLI 的测试
+ * 用法: node test/test-robustness.js
  */
 
 const { spawn } = require("child_process");
@@ -19,8 +12,6 @@ const path = require("path");
 
 const SLOW_CLI = path.join(__dirname, "helpers", "slow-cli.js");
 const INVOKE_PATH = path.join(__dirname, "..", "invoke.js");
-
-const quickMode = process.argv.includes("--quick");
 
 let passed = 0;
 let failed = 0;
@@ -99,35 +90,8 @@ async function testBackwardCompat() {
     const result = await invokeWithFakeCli("normal");
     assert(typeof result.text === "string" && result.text.length > 0, `返回文本: "${result.text.trim()}"`);
     assert(typeof result.sessionId === "string", `返回 sessionId: "${result.sessionId}"`);
-    assert(result.verified === undefined, "未启用 verify 时无 verified 字段");
   } catch (err) {
     assert(false, `不应报错: "${err.message}"`);
-  }
-}
-
-// ── 测试 5: 暗号验证 — 真实 CLI ──────────────────────────
-async function testVerifyWithRealCli() {
-  const clis = ["claude", "trae", "codex"];
-  
-  for (const cli of clis) {
-    console.log(`\n=== 测试 5: 暗号验证 (真实 ${cli} CLI) ===`);
-
-    const { invoke } = require(INVOKE_PATH);
-
-    try {
-      const result = await invoke(cli, "1+1等于几？请只回答数字", null, { verify: true });
-      assert(typeof result.verified === "boolean", `verified 字段存在: ${result.verified}`);
-      assert(!result.text.includes("VERIFY:"), `VERIFY 标记已从输出中清除`);
-
-      if (result.verified) {
-        log("✅", "暗号校验通过 — AI 忠实遵循了指令");
-      } else {
-        log("⚠️", "暗号校验未通过 — AI 未在末尾输出 VERIFY（不一定是幻觉，可能是指令遵循问题）");
-      }
-      console.log(`   回复内容: "${result.text.trim()}"`);
-    } catch (err) {
-      assert(false, `调用失败: "${err.message}"`);
-    }
   }
 }
 
@@ -195,18 +159,10 @@ async function main() {
   console.log("║     invoke.js 健壮性测试             ║");
   console.log("╚══════════════════════════════════════╝");
 
-  if (quickMode) {
-    console.log("(--quick 模式：跳过真实 CLI 测试)\n");
-  }
-
   await testBackwardCompat();
   await testStderrKeepsAlive();
   await testTimeoutKill();
   await testSigtermThenSigkill();
-
-  if (!quickMode) {
-    await testVerifyWithRealCli();
-  }
 
   console.log("\n══════════════════════════════════════");
   console.log(`结果: ${passed} 通过, ${failed} 失败`);

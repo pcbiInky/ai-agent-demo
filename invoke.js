@@ -420,16 +420,14 @@ function cleanupMcpRegistrations() {
  * @param {string} [sessionId] - 可选，传入则继续上次对话；不传则创建新会话
  * @param {object} [options]
  * @param {number} [options.timeoutMs=600000] - 无活跃输出超时时间（毫秒），默认 10 分钟
- * @param {boolean} [options.verify=false] - 是否启用暗号验证（幻觉检测）
  * @param {string} [options.browserSessionId] - 浏览器会话 ID（权限代理需要）
  * @param {string} [options.character] - 角色名（权限代理需要）
  * @param {string|number} [options.permissionServerPort] - 权限服务端口（权限代理需要）
- * @returns {Promise<{ text: string, sessionId: string, verified?: boolean }>}
+ * @returns {Promise<{ text: string, sessionId: string }>}
  */
 function invoke(cli, prompt, sessionId, options = {}) {
   const {
     timeoutMs = 1800_000,
-    verify = false,
     browserSessionId,
     character,
     model,
@@ -448,20 +446,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
   const isResume = !!sessionId;
   const id = sessionId || randomUUID();
 
-  // 暗号验证：注入 canary + 诚实性指令
-  let canary = null;
   let systemPrompt = null;
   let finalPrompt = prompt;
-
-  if (verify) {
-    canary = randomUUID().slice(0, 6);
-
-    // 使用 system prompt 而不是 user prompt
-    // 这样可以避免模型把验证指令当作噪音忽略
-    systemPrompt =
-      '重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。\n' +
-      `验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}`;
-  }
 
   // MCP 工具代理提示：告知模型必须使用 MCP Server 提供的工具
   const mcpHint = (config.supportsPermissionTool && browserSessionId)
@@ -501,13 +487,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
     }
   }
 
-  // 不支持 system prompt 的 CLI：回退到 user prompt 末尾追加验证指令
-  if (verify && !config.supportsSystemPrompt) {
-    finalPrompt += "\n\n---" +
-      '\n重要：如果你对答案不确定，请直接说"我不确定"或"我不知道"，不要编造信息。' +
-      `\n[验证码: ${canary}，请在回答最末尾单独一行输出 VERIFY:${canary}]`;
-  }
-
   // 通用参数：-p <prompt> + session 参数 + 各 CLI 特有参数
   let args;
   if (typeof config.buildArgs === "function") {
@@ -515,7 +494,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
       prompt: finalPrompt,
       isResume,
       sessionId: id,
-      verify,
       systemPrompt,
     });
   } else {
@@ -523,7 +501,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
       "-p", finalPrompt,
       ...(isResume ? ["--resume", id] : ["--session-id", id]),
     ];
-    // 有 system prompt 就注入（验证指令 + MCP 工具提示）
+    // 有 system prompt 就注入（MCP 工具提示 + 全局约束）
     if (systemPrompt && config.supportsSystemPrompt) {
       args.push("--append-system-prompt", systemPrompt);
     }
@@ -598,11 +576,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
         getRoleCardMetrics({ cli })
           .then((metrics) => onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data: metrics }))
           .catch(() => {});
-      }
-      if (canary) {
-        const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result.text);
-        const text = result.text.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
-        return { text, sessionId: result.sessionId, verified };
       }
       return { text: result.text, sessionId: result.sessionId };
     });
@@ -776,13 +749,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
       if (aborted) {
         // 被 signal 提前终止 — 正常 resolve（消息已通过 MCP SendMessage 发出）
-        if (canary) {
-          const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result);
-          const text = result.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
-          resolve({ text, sessionId: reportedSessionId || id, verified });
-        } else {
-          resolve({ text: result, sessionId: reportedSessionId || id });
-        }
+        resolve({ text: result, sessionId: reportedSessionId || id });
       } else if (child.killed) {
         reject(new Error(`${config.command} 超时 (${timeoutMs}ms 无活跃输出)`));
       } else if (code !== 0) {
@@ -795,10 +762,6 @@ function invoke(cli, prompt, sessionId, options = {}) {
         err.stderr = stderr;
         err.exitCode = code;
         reject(err);
-      } else if (canary) {
-        const verified = new RegExp(`VERIFY:${canary}\\s*$`).test(result);
-        const text = result.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd();
-        resolve({ text, sessionId: reportedSessionId || id, verified });
       } else {
         resolve({ text: result, sessionId: reportedSessionId || id });
       }
@@ -829,7 +792,7 @@ module.exports = {
 // 直接运行:
 //   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题"                              — 新会话
 //   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId>                  — 继续对话
-//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId> '{"verify":true}'  — 带选项
+//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId> '{"timeoutMs":600000}' — 带选项
 if (require.main === module) {
   const [cli, prompt, sessionId, optionsStr] = process.argv.slice(2);
   if (!cli || !prompt) {
@@ -837,7 +800,7 @@ if (require.main === module) {
     console.error('示例:');
     console.error('  node invoke.js claude "你好"');
     console.error('  node invoke.js claude "你好" "session-id-123"');
-    console.error('  node invoke.js claude "你好" "" \'{"verify":true}\'');
+    console.error('  node invoke.js claude "你好" "" \'{"timeoutMs":600000}\'');
     process.exit(1);
   }
 
@@ -855,9 +818,6 @@ if (require.main === module) {
     .then((r) => {
       console.log(r.text);
       console.error(`\n[sessionId: ${r.sessionId}]`);
-      if (r.verified !== undefined) {
-        console.error(`[verified: ${r.verified}]`);
-      }
     })
     .catch((err) => {
       console.error(err.message);

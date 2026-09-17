@@ -139,8 +139,6 @@ const approvedRequests = new Map();
 const invokeAbortControllers = new Map();
 // browserSessionId:character -> number（该角色在当前会话通过 MCP SendMessage 成功发消息次数）
 const mcpSendCounts = new Map();
-// browserSessionId:character -> messageId（当前 invoke 期间最近一次通过 MCP SendMessage 发出的消息）
-const pendingMcpReplies = new Map();
 // browserSessionId:character -> { depth, threadId, lineage }
 // 当前 invoke 的链路上下文：所在线程、当前深度，以及从主线到当前节点的角色路径
 const invokeChainCallers = new Map();
@@ -184,10 +182,6 @@ function markMcpSend(sessionId, character) {
   return next;
 }
 
-function getPendingMcpReplyKey(sessionId, character) {
-  return `${sessionId}:${character}`;
-}
-
 function getInvokeSendGuardKey(sessionId, character) {
   return `${sessionId}:${character}`;
 }
@@ -225,51 +219,6 @@ function clearActiveThinking(sessionId, character, messageId = null) {
   const key = getActiveThinkingKey(sessionId, character);
   if (messageId && activeThinking.get(key) !== messageId) return;
   activeThinking.delete(key);
-}
-
-function registerPendingMcpReply(sessionId, character, messageId) {
-  pendingMcpReplies.set(getPendingMcpReplyKey(sessionId, character), messageId);
-}
-
-function clearPendingMcpReply(sessionId, character) {
-  pendingMcpReplies.delete(getPendingMcpReplyKey(sessionId, character));
-}
-
-function extractVerifyMeta(text) {
-  const rawText = typeof text === "string" ? text : String(text || "");
-  const matched = /\n?VERIFY:(\w+)\s*$/.test(rawText);
-  if (!matched) {
-    return { text: rawText, verified: undefined };
-  }
-
-  return {
-    text: rawText.replace(/\n?VERIFY:\w+\s*$/, "").trimEnd(),
-    verified: true,
-  };
-}
-
-function finalizePendingMcpVerification(sessionId, character, verified) {
-  if (verified === undefined) return;
-
-  const key = getPendingMcpReplyKey(sessionId, character);
-  const messageId = pendingMcpReplies.get(key);
-  if (!messageId) return;
-
-  let effectiveVerified = verified;
-  const filePath = path.join(LOG_DIR, `${sessionId}.json`);
-  try {
-    const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    const msg = log.messages.find((item) => item.id === messageId);
-    if (msg?.verified === true && verified === false) {
-      effectiveVerified = true;
-    }
-  } catch {
-    // ignore and fall back to invoke result
-  }
-
-  updateMessageInLog(sessionId, messageId, { verified: effectiveVerified });
-  emitSSE(sessionId, "message-meta", { messageId, verified: effectiveVerified });
-  pendingMcpReplies.delete(key);
 }
 
 // ── 审批记录管理（一次性消费 + TTL）────────────────────────
@@ -1027,7 +976,6 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     // 从落盘的 session-context 读取 provider sessionId
     const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
     const sendCountBefore = getMcpSendCount(browserSessionId, character);
-    clearPendingMcpReply(browserSessionId, character);
     resetInvokeSendGuard(browserSessionId, character);
     setActiveThinking(browserSessionId, character, thinkingMessageId, thinkingThreadId);
     // 在串行队列内绑定 invoke 上下文，确保不会被并发覆盖
@@ -1040,7 +988,6 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     try {
       const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
-        verify: true,
         browserSessionId,
         character,
         model: roleModel,
@@ -1059,9 +1006,6 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       });
       const sendCountAfter = getMcpSendCount(browserSessionId, character);
       result.usedMcpSendMessage = sendCountAfter > sendCountBefore;
-      if (result.usedMcpSendMessage) {
-        finalizePendingMcpVerification(browserSessionId, character, result.verified);
-      }
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       recordSkillTrace(browserSessionId, skillDecision, "ok");
@@ -1071,7 +1015,6 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       onResult(result);
       resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
-      clearPendingMcpReply(browserSessionId, character);
       recordSkillTrace(browserSessionId, skillDecision, "error");
       resetInvokeSendGuard(browserSessionId, character);
       clearActiveThinking(browserSessionId, character, thinkingMessageId);
@@ -1570,7 +1513,6 @@ app.post("/api/mcp-send-message", (req, res) => {
     return res.status(409).json({ error: "当前不在可发送的 invoke 上下文" });
   }
 
-  const verifyMeta = extractVerifyMeta(text);
   if (!getRoleConfig(character)) {
     return res.status(400).json({ error: `未知角色: ${character}` });
   }
@@ -1610,28 +1552,22 @@ app.post("/api/mcp-send-message", (req, res) => {
       id: messageId,
       role: "assistant",
       character,
-      text: verifyMeta.text,
+      text,
       ...(replyToMessageId && { replyTo: replyToMessageId }),
       timestamp: mcpTimestamp,
       source: "mcp-tool",
-      ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
       ...(effectiveThreadId && { threadId: effectiveThreadId }),
       ...(effectiveDepth > 0 && { depth: effectiveDepth }),
       ...(effectiveAiMentions.length > 0 && { aiMentions: effectiveAiMentions }),
     });
 
-    if (replyToMessageId) {
-      registerPendingMcpReply(browserSessionId, character, messageId);
-    }
-
     emitSSE(browserSessionId, "reply", {
       character,
       ...(replyToMessageId && { messageId: replyToMessageId }),
       replyId: messageId,
-      text: verifyMeta.text,
+      text,
       timestamp: mcpTimestamp,
       source: "mcp-tool",
-      ...(verifyMeta.verified !== undefined && { verified: verifyMeta.verified }),
       ...(effectiveThreadId && { threadId: effectiveThreadId }),
       ...(effectiveDepth > 0 && { depth: effectiveDepth }),
       ...(effectiveAiMentions.length > 0 && { aiMentions: effectiveAiMentions }),
@@ -1772,10 +1708,7 @@ module.exports = {
     getSkillTraces,
     isMentionAllowedInSession,
     appendToLog,
-    extractVerifyMeta,
     storeApproval,
-    registerPendingMcpReply,
-    finalizePendingMcpVerification,
     invokeChainCallers,
     emitSSE,
     setActiveThinking,
