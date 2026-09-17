@@ -596,6 +596,9 @@ html, body {
 .metric-bar-fill-secondary {
   background: #4b8bff;
 }
+.metric-bar-fill-ctx {
+  background: #f08c00;
+}
 .metric-bar-fill-low {
   background: #f59e42;
 }
@@ -607,8 +610,16 @@ html, body {
 }
 .role-card-footer {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+.role-card-footer .metric-bar {
+  flex: 1;
+  min-width: 0;
+}
+.role-card-footer .metric-pill {
+  flex-shrink: 0;
 }
 .metric-pill {
   font-size: 11px;
@@ -1120,7 +1131,7 @@ html, body {
 }
 
 /* ── 角色管理：归档/恢复/新增 ─────────── */
-.setting-row { grid-template-columns: 60px 1fr 1fr 60px; }
+.setting-row { grid-template-columns: 60px 1fr 1fr 70px 60px; }
 .setting-row.archived { opacity: 0.5; }
 .setting-actions { display: flex; gap: 4px; align-items: center; }
 .btn-archive, .btn-restore {
@@ -1174,7 +1185,8 @@ html, body {
   #app { grid-template-columns: 1fr; }
   #sidebar-left, #sidebar-right { display: none; }
   #settings-btn { left: 12px; bottom: 12px; }
-  .setting-row { grid-template-columns: 1fr 1fr; }
+  .setting-row { grid-template-columns: 60px 1fr 1fr; }
+  .setting-row .ctx-input, .setting-row .setting-actions { grid-column: span 2; }
 }
 @media (min-width: 901px) and (max-width: 1100px) {
   #app { grid-template-columns: 200px 1fr; }

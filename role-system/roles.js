@@ -12,6 +12,14 @@ const ROLES_FILE = path.join(DATA_DIR, "roles.json");
 // 简单的写锁，防止并发写竞争
 let _writeLock = Promise.resolve();
 
+// 默认最大上下文长度：256k tokens（可在设置中按角色调整）
+const DEFAULT_CONTEXT_WINDOW = 262144;
+
+function normalizeContextWindow(value) {
+  const n = Number(value);
+  return { contextWindow: Number.isFinite(n) && n > 0 ? n : DEFAULT_CONTEXT_WINDOW };
+}
+
 function withLock(fn) {
   const next = _writeLock.then(fn, fn);
   _writeLock = next.catch(() => {});
@@ -23,8 +31,10 @@ function ensureDataDir() {
 }
 
 function normalizeRole(role) {
+  const contextWindow = Number(role.contextWindow);
   return {
     ...role,
+    contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : DEFAULT_CONTEXT_WINDOW,
     aliases: Array.isArray(role.aliases) ? [...new Set(role.aliases.filter(Boolean))] : [],
   };
 }
@@ -75,7 +85,7 @@ function getRoleByAlias(name) {
 
 // ── 创建 ──
 
-function createRole({ name, cli, model = "", avatar = "" }) {
+function createRole({ name, cli, model = "", avatar = "", contextWindow }) {
   return withLock(() => {
     const data = readRolesFile();
 
@@ -95,6 +105,7 @@ function createRole({ name, cli, model = "", avatar = "" }) {
       cli,
       model,
       avatar: avatar || name[0] || "?",
+      ...normalizeContextWindow(contextWindow),
       archived: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -121,7 +132,7 @@ function updateRole(id, updates) {
       role.aliases = [...new Set([...(role.aliases || []), role.name])];
     }
 
-    const allowed = ["name", "cli", "model", "avatar"];
+    const allowed = ["name", "cli", "model", "avatar", "contextWindow"];
     for (const key of allowed) {
       if (updates[key] !== undefined) role[key] = updates[key];
     }

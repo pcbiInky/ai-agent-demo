@@ -579,6 +579,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
       signal,
       env: acpEnv,
       onEvent: (event) => {
+        // dsh 随回复推送的上下文用量：上报为角色卡 ctx 指标
+        if (event?.type === "usage_update" && typeof onRuntimeEvent === "function") {
+          const data = { supportsTokenUsage: true };
+          if (event.used != null) data.contextTokens = event.used;
+          if (event.size != null) data.modelContextWindow = event.size;
+          if (Object.keys(data).length > 1) {
+            onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data });
+          }
+          return;
+        }
         if (typeof onRuntimeEvent === "function") onRuntimeEvent(event);
       },
     }).then((result) => {

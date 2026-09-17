@@ -1356,7 +1356,7 @@ function renderCharStatuses() {
 
     const footerSection = `
       <div class="role-card-footer">
-        <span class="metric-pill">ctx ${contextTokens !== null ? formatTokenK(contextTokens) : '--'}</span>
+        ${renderCtxBar(contextTokens, member.contextWindow)}
         <span class="metric-pill">total ${totalTokens !== null ? formatTokenK(totalTokens) : '--'}</span>
       </div>
     `;
@@ -1468,6 +1468,33 @@ function getUsageWindows(member, metrics) {
   return legacy;
 }
 
+// ctx 上下文占用条：橙色进度条，长度 = contextTokens / contextWindow。
+// contextWindow 默认 256k，可在设置中按角色调整；无数据时显示 --。
+function renderCtxBar(contextTokens, contextWindow) {
+  const size = Number(contextWindow) > 0 ? Number(contextWindow) : 262144;
+  if (contextTokens === null || contextTokens === undefined) {
+    return `
+      <div class="metric-bar metric-bar-primary">
+        <span class="metric-bar-label">ctx</span>
+        <div class="metric-bar-track">
+          <div class="metric-bar-fill metric-bar-fill-ctx" style="width: 0%"></div>
+        </div>
+        <span class="metric-bar-value">--</span>
+      </div>
+    `;
+  }
+  const used = Math.max(0, Number(contextTokens) || 0);
+  const pct = Math.min(100, Math.round((used / size) * 100));
+  return `
+    <div class="metric-bar metric-bar-primary">
+      <span class="metric-bar-label" title="${escapeHtml(`ctx ${formatTokenK(used)} / ${formatTokenK(size)}`)}">ctx</span>
+      <div class="metric-bar-track">
+        <div class="metric-bar-fill metric-bar-fill-ctx" style="width: ${pct}%"></div>
+      </div>
+      <span class="metric-bar-value">${pct}%</span>
+    </div>
+  `;
+}
 function renderMetricBar(win, index) {
   const pct = win.usedPercent ?? null;
   const isPrimary = index === 0;
