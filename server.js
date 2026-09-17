@@ -423,10 +423,11 @@ app.delete("/api/sessions/:sessionId/members/:roleId", (req, res) => {
 });
 
 app.get("/api/sessions/:sessionId", (req, res) => {
-  const session = sessionStore.getOrCreateSession(req.params.sessionId);
-  const memberIds = sessionStore.getSessionMembers(req.params.sessionId);
+  const sessionId = req.params.sessionId;
+  const session = sessionStore.getOrCreateSession(sessionId);
+  const memberIds = sessionStore.getSessionMembers(sessionId);
   const members = memberIds.map(id => roleStore.getRoleById(id)).filter(Boolean);
-  res.json({ session, members });
+  res.json({ session: withDisplayTitle(sessionId, session), members });
 });
 
 app.patch("/api/sessions/:sessionId", (req, res) => {
@@ -436,8 +437,9 @@ app.patch("/api/sessions/:sessionId", (req, res) => {
     if (typeof req.body.workingDirectory === "string") {
       updates.workingDirectory = normalizeWorkingDirectory(req.body.workingDirectory);
     }
-    const session = sessionStore.updateSessionMeta(req.params.sessionId, updates);
-    res.json({ session });
+    const sessionId = req.params.sessionId;
+    const session = sessionStore.updateSessionMeta(sessionId, updates);
+    res.json({ session: withDisplayTitle(sessionId, session) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -862,6 +864,15 @@ function listActiveThinking(sessionId) {
   return thinking;
 }
 
+// 统计会话中等待铲屎官手动审批的权限请求数（自动通过的不会进入 pendingPermissions）
+function countPendingApprovals(sessionId) {
+  let count = 0;
+  for (const pending of pendingPermissions.values()) {
+    if (pending.browserSessionId === sessionId) count++;
+  }
+  return count;
+}
+
 app.get("/api/sessions", (_req, res) => {
   ensureLogDir();
   const files = fs.readdirSync(LOG_DIR).filter((f) => f.endsWith(".json"));
@@ -870,14 +881,20 @@ app.get("/api/sessions", (_req, res) => {
       const log = JSON.parse(fs.readFileSync(path.join(LOG_DIR, f), "utf-8"));
       const lastMsg = log.messages[log.messages.length - 1];
       const sessionMeta = sessionStore.readSession(log.sessionId);
-        return {
-          sessionId: log.sessionId,
-          title: sessionMeta?.title || "新对话",
-          workingDirectory: sessionMeta?.workingDirectory || "",
-          createdAt: log.createdAt,
-          lastMessageAt: lastMsg?.timestamp || log.createdAt,
-          messageCount: log.messages.length,
-        };
+      const unreadMessageCount = log.messages.filter(
+        (message) => message.role === "assistant" || message.role === "error",
+      ).length;
+      return {
+        sessionId: log.sessionId,
+        title: resolveSessionTitle(sessionMeta, log),
+        workingDirectory: sessionMeta?.workingDirectory || "",
+        createdAt: log.createdAt,
+        lastMessageAt: lastMsg?.timestamp || log.createdAt,
+        messageCount: log.messages.length,
+        unreadMessageCount,
+        activeTaskCount: listActiveThinking(log.sessionId).length,
+        pendingApprovalCount: countPendingApprovals(log.sessionId),
+      };
     } catch {
       return null;
     }
@@ -1173,6 +1190,25 @@ async function drainParentReturnQueue(sessionId, parentCharacter) {
 // ── 聊天记录持久化 ────────────────────────────────────────
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function readChatLog(sessionId) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(LOG_DIR, `${sessionId}.json`), "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function resolveSessionTitle(session, log) {
+  return sessionStore.resolveDisplayTitle(session, log?.messages || []);
+}
+
+function withDisplayTitle(sessionId, session, log = readChatLog(sessionId)) {
+  return {
+    ...session,
+    displayTitle: resolveSessionTitle(session, log),
+  };
 }
 
 function appendToLog(sessionId, message) {
@@ -1594,6 +1630,22 @@ app.post("/api/abort-invoke", (req, res) => {
   controller.abort();
   console.log(`[用户终止] ${character} (${abortKey})`);
   clearActiveThinking(browserSessionId, character);
+  // 任务终止时一并清理该角色待审批的权限请求，前端待审批标识随之消失
+  for (const [requestId, pending] of pendingPermissions) {
+    if (pending.browserSessionId !== browserSessionId || pending.character !== character) continue;
+    clearTimeout(pending.timer);
+    pendingPermissions.delete(requestId);
+    updatePermissionInLog(browserSessionId, requestId, {
+      status: "deny",
+      resolutionMessage: "任务已被终止",
+    });
+    emitSSE(browserSessionId, "permission-resolved", {
+      requestId,
+      behavior: "deny",
+      message: "任务已被终止",
+    });
+    pending.resolve({ behavior: "deny", message: "任务已被终止" });
+  }
   emitSSE(browserSessionId, "abort", { character });
   res.json({ ok: true, aborted: true });
 });

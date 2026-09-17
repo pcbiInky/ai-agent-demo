@@ -4,7 +4,9 @@ const state = {
   characters: {},      // name -> { cli, avatar, id, archived, model }
   profiles: {},        // (deprecated, kept for backwards compat during transition)
   sessionMembers: [],  // 当前会话的成员角色列表 [{ id, name, cli, ... }]
-    sessionMeta: { title: "新对话", workingDirectory: "" },
+  sessionMeta: { title: "新对话", displayTitle: "新对话", titleCustomized: false, workingDirectory: "" },
+  sessionReadCounts: null,
+  sessionSummaries: {},
   eventSource: null,
   lastEventSeq: 0,   // 历史快照的事件序号，SSE 按此续订，刷新/断线不丢事件
   // 右侧栏统计 - 动态按角色名统计
@@ -29,6 +31,8 @@ const state = {
 };
 
 const PROFILE_STORAGE_KEY = "characterProfilesV2";
+const SESSION_READ_COUNTS_KEY = "sessionReadCountsV1";
+const SESSION_LIST_REFRESH_MS = 3000;
 const BOTTOM_THRESHOLD_PX = 40;
 
 // ── DOM 元素 ──────────────────────────────────────────────
@@ -87,6 +91,10 @@ async function init() {
 
   await loadHistory();
   await loadSessionList();
+  startSessionListRefresh();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadSessionList();
+  });
   await loadSkillsOverview();
   await loadSkillTraces();
   connectSSE();
@@ -152,16 +160,18 @@ async function loadSessionMeta() {
   try {
     const res = await fetch(`/api/sessions/${state.sessionId}`);
     const data = await res.json();
-    state.sessionMeta = data.session || { title: "新对话", workingDirectory: "" };
+    state.sessionMeta = data.session || { title: "新对话", displayTitle: "新对话", titleCustomized: false, workingDirectory: "" };
   } catch {
-    state.sessionMeta = { title: "新对话", workingDirectory: "" };
+    state.sessionMeta = { title: "新对话", displayTitle: "新对话", titleCustomized: false, workingDirectory: "" };
   }
   renderSessionMeta();
 }
 
 function renderSessionMeta() {
   if ($chatTitleText) {
-    $chatTitleText.textContent = state.sessionMeta?.title || "新对话";
+    const displayTitle = state.sessionMeta?.displayTitle || state.sessionMeta?.title || "新对话";
+    $chatTitleText.textContent = displayTitle;
+    $chatTitleText.title = displayTitle;
   }
   if ($chatSubtitle) {
     $chatSubtitle.textContent = state.sessionMeta?.workingDirectory || "未设置";
@@ -280,7 +290,7 @@ function showSessionMetaModal() {
       <p class="modal-desc">设置当前对话的名称和工作目录。角色会优先在该目录内执行开发操作。</p>
       <div class="session-meta-fields">
         <label class="session-meta-label">对话名称</label>
-        <input id="session-title-input" class="session-meta-input" value="${escapeHtml(state.sessionMeta?.title || "新对话")}">
+        <input id="session-title-input" class="session-meta-input" value="${escapeAttribute(state.sessionMeta?.titleCustomized ? state.sessionMeta.title : "")}" placeholder="留空则显示第一条聊天记录">
         <label class="session-meta-label">工作目录</label>
         <div class="session-meta-row">
           <input id="session-workdir-input" class="session-meta-input" value="${escapeHtml(state.sessionMeta?.workingDirectory || "")}" placeholder="/absolute/path">
@@ -311,7 +321,7 @@ function showSessionMetaModal() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: ($titleInput.value || "").trim() || "新对话",
+          title: ($titleInput.value || "").trim(),
           workingDirectory: ($workdirInput.value || "").trim(),
         }),
       });
@@ -386,6 +396,7 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "thinking");
     showThinking(data.character, data.messageId);
+    loadSessionList();
   });
 
   es.addEventListener("reply", (e) => {
@@ -424,6 +435,7 @@ function connectSSE() {
       setCharStatus(data.character, "online");
       finalizeThinking(data.character, data.messageId, "error");
       appendErrorMessage(data.character, data.error);
+      loadSessionList();
       loadSkillTraces();
     }
   });
@@ -449,6 +461,7 @@ function connectSSE() {
       finalizeThinking(data.character, el.id.replace(`thinking-${data.character}-`, ""), "error");
     }
     appendSystemNotice(`${getDisplayName(data.character)} 的执行已被用户终止`);
+    loadSessionList();
   });
 
   es.addEventListener("status", (e) => {
@@ -460,6 +473,7 @@ function connectSSE() {
       // 完成事件携带 messageId 时，按 character + messageId 精确清理 live thinking
       if (data.messageId) finalizeThinking(data.character, data.messageId, "done");
     }
+    loadSessionList();
   });
 
   // ── 角色运行时指标事件 ──
@@ -475,11 +489,13 @@ function connectSSE() {
   es.addEventListener("permission", (e) => {
     const data = JSON.parse(e.data);
     showPermissionCard(data);
+    loadSessionList();
   });
 
   es.addEventListener("permission-resolved", (e) => {
     const data = JSON.parse(e.data);
     resolvePermissionCard(data.requestId, data.behavior, data.message);
+    loadSessionList();
   });
 }
 
@@ -536,6 +552,7 @@ async function sendMessage() {
         const timeEl = userMsgEl.querySelector(".msg-time");
         if (timeEl) timeEl.textContent = formatTimeShort(data.timestamp);
       }
+      await Promise.all([loadSessionMeta(), loadSessionList()]);
     }
   } catch {
     appendErrorMessage("系统", "网络错误，无法发送消息");
@@ -1495,19 +1512,79 @@ function renderStats() {
 }
 
 // ── 左侧栏：会话列表 ─────────────────────────────────────
+let sessionListLoading = false;
+let sessionListRefreshTimer = null;
+
+function ensureSessionReadCounts(sessions) {
+  if (state.sessionReadCounts !== null) return;
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_READ_COUNTS_KEY));
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+      state.sessionReadCounts = saved;
+      return;
+    }
+  } catch {
+    // 首次启用或旧数据损坏时，以当前消息数建立基线。
+  }
+
+  state.sessionReadCounts = Object.fromEntries(
+    sessions.map((session) => [session.sessionId, session.unreadMessageCount || 0]),
+  );
+  persistSessionReadCounts();
+}
+
+function persistSessionReadCounts() {
+  try {
+    localStorage.setItem(SESSION_READ_COUNTS_KEY, JSON.stringify(state.sessionReadCounts || {}));
+  } catch {
+    // localStorage 不可用时仍可在当前页面周期内维护未读状态。
+  }
+}
+
+function markSessionRead(sessionId, messageCount) {
+  if (!sessionId || state.sessionReadCounts === null) return;
+  const nextCount = Math.max(0, Number(messageCount) || 0);
+  if ((state.sessionReadCounts[sessionId] || 0) >= nextCount) return;
+  state.sessionReadCounts[sessionId] = nextCount;
+  persistSessionReadCounts();
+}
+
+function startSessionListRefresh() {
+  if (sessionListRefreshTimer) clearInterval(sessionListRefreshTimer);
+  sessionListRefreshTimer = setInterval(loadSessionList, SESSION_LIST_REFRESH_MS);
+}
+
 async function loadSessionList() {
+  if (sessionListLoading) return;
+  sessionListLoading = true;
+
   try {
     const res = await fetch("/api/sessions");
+    if (!res.ok) throw new Error("加载会话列表失败");
     const data = await res.json();
+    const sessions = data.sessions || [];
 
-    if (data.sessions.length === 0) {
+    if (sessions.length === 0) {
       $sessionList.innerHTML = '<div style="padding:16px;color:var(--text-light);font-size:13px">暂无对话</div>';
       return;
     }
 
+    ensureSessionReadCounts(sessions);
+    state.sessionSummaries = Object.fromEntries(sessions.map((session) => [session.sessionId, session]));
+
+    const currentSummary = state.sessionSummaries[state.sessionId];
+    if (currentSummary && document.visibilityState !== "hidden") {
+      markSessionRead(state.sessionId, currentSummary.unreadMessageCount);
+    }
+
     $sessionList.innerHTML = "";
-    for (const s of data.sessions) {
+    for (const s of sessions) {
       const isCurrent = s.sessionId === state.sessionId;
+      const readCount = state.sessionReadCounts?.[s.sessionId] || 0;
+      const unreadCount = isCurrent && document.visibilityState !== "hidden"
+        ? 0
+        : Math.max(0, (s.unreadMessageCount || 0) - readCount);
       const div = document.createElement("div");
       div.className = `session-item${isCurrent ? " active" : ""}`;
       const activeRoles = Object.entries(state.characters).filter(([, c]) => !c.archived).slice(0, 3);
@@ -1516,10 +1593,23 @@ async function loadSessionList() {
         const av = getAvatar(name, cfg.avatar);
         return '<span class="mini-avatar" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
       }).join('');
+      const title = s.title || s.sessionId.slice(0, 12);
+      const approvalBadge = s.pendingApprovalCount > 0
+        ? `<span class="session-approval-badge" role="status" aria-label="${s.pendingApprovalCount} 个任务等待审批" title="${s.pendingApprovalCount} 个任务等待审批">审批</span>`
+        : "";
+      const taskIndicator = s.activeTaskCount > 0
+        ? `<span class="session-task-spinner" role="status" aria-label="${s.activeTaskCount} 个任务执行中" title="${s.activeTaskCount} 个任务执行中"></span>`
+        : "";
+      const unreadBadge = unreadCount > 0
+        ? `<span class="session-unread-badge" aria-label="${unreadCount} 条未读消息" title="${unreadCount} 条未读消息">${unreadCount > 99 ? "99+" : unreadCount}</span>`
+        : "";
       div.innerHTML = `
         <div class="session-avatars">${avatarsHtml}</div>
-          <div class="session-preview">${escapeHtml(s.title || s.sessionId.slice(0, 12))}${isCurrent ? " (当前)" : ""}</div>
-          <div class="session-path">${escapeHtml(s.workingDirectory || s.sessionId)}</div>
+        <div class="session-title-row">
+          <div class="session-preview" title="${escapeAttribute(title)}">${escapeHtml(title)}${isCurrent ? " (当前)" : ""}</div>
+          <div class="session-indicators">${approvalBadge}${taskIndicator}${unreadBadge}</div>
+        </div>
+        <div class="session-path">${escapeHtml(s.workingDirectory || s.sessionId)}</div>
         <div class="session-meta">
           <span>${s.messageCount} 条消息</span>
           <span>${formatTime(s.lastMessageAt)}</span>
@@ -1528,11 +1618,17 @@ async function loadSessionList() {
       div.addEventListener("click", () => switchSession(s.sessionId));
       $sessionList.appendChild(div);
     }
-  } catch { /* ignore */ }
+  } catch {
+    // 保留上一次成功渲染的会话列表。
+  } finally {
+    sessionListLoading = false;
+  }
 }
 
 async function switchSession(id) {
   state.sessionId = id;
+  const summary = state.sessionSummaries[id];
+  if (summary) markSessionRead(id, summary.unreadMessageCount);
   sessionStorage.setItem("sessionId", id);
   $sessionDisplay.textContent = id.slice(0, 8) + "...";
   clearUnreadIndicator();
@@ -1828,6 +1924,12 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+function escapeAttribute(str) {
+  return escapeHtml(String(str ?? ""))
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // ── Markdown 渲染 ─────────────────────────────────────────

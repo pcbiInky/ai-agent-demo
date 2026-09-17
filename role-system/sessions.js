@@ -18,13 +18,32 @@ function sessionFilePath(sessionId) {
 
 function normalizeSession(sessionId, raw) {
   const session = raw || { sessionId, members: {}, updatedAt: Date.now() };
+  const normalizedTitle = typeof session.title === "string" && session.title.trim()
+    ? session.title.trim()
+    : DEFAULT_TITLE;
+  const titleCustomized = typeof session.titleCustomized === "boolean"
+    ? session.titleCustomized
+    : normalizedTitle !== DEFAULT_TITLE;
+
   return {
     sessionId,
-    title: typeof session.title === "string" && session.title.trim() ? session.title.trim() : DEFAULT_TITLE,
+    title: normalizedTitle,
+    titleCustomized,
     workingDirectory: typeof session.workingDirectory === "string" ? session.workingDirectory.trim() : "",
     members: session.members || {},
     updatedAt: session.updatedAt || Date.now(),
   };
+}
+
+function resolveDisplayTitle(session, messages = []) {
+  if (session?.titleCustomized && session.title?.trim()) {
+    return session.title.trim();
+  }
+
+  const firstUserMessage = messages.find(
+    (message) => message.role === "user" && typeof message.text === "string" && message.text.trim(),
+  );
+  return firstUserMessage?.text.replace(/\s+/g, " ").trim() || DEFAULT_TITLE;
 }
 
 function readSession(sessionId) {
@@ -99,7 +118,9 @@ function setProviderSessionId(sessionId, roleId, providerSessionId) {
 function updateSessionMeta(sessionId, updates = {}) {
   const session = getOrCreateSession(sessionId);
   if (typeof updates.title === "string") {
-    session.title = updates.title.trim() || DEFAULT_TITLE;
+    const title = updates.title.trim();
+    session.title = title || DEFAULT_TITLE;
+    session.titleCustomized = Boolean(title);
   }
   if (typeof updates.workingDirectory === "string") {
     session.workingDirectory = updates.workingDirectory.trim();
@@ -142,6 +163,7 @@ function patchMemberRuntimeMetrics(sessionId, roleId, patch) {
 
 module.exports = {
   DEFAULT_TITLE,
+  resolveDisplayTitle,
   getOrCreateSession,
   getSessionMembers,
   inviteToSession,

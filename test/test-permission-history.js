@@ -197,12 +197,119 @@ async function testPublicWebFetchAutoApproval() {
   }
 }
 
+async function waitForAsync(check, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const value = await check();
+    if (value) return value;
+    await sleep(25);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function getSessionSummary(sessionId) {
+  const list = await getJson("/api/sessions");
+  const sessions = list.body?.sessions || [];
+  return sessions.find((session) => session.sessionId === sessionId) || null;
+}
+
+function buildManualWriteRequest(sessionId, requestId) {
+  return {
+    toolName: "Write",
+    toolUseId: requestId,
+    input: {
+      file_path: "/tmp/demo.txt",
+      content: "hello",
+    },
+    browserSessionId: sessionId,
+    character: "YYF",
+    timestamp: Date.now(),
+  };
+}
+
+async function testSessionPendingApprovalCount() {
+  const sessionId = `approval-count-${crypto.randomUUID()}`;
+  const allowRequestId = `perm-${crypto.randomUUID()}`;
+  const denyRequestId = `perm-${crypto.randomUUID()}`;
+  const autoRequestId = `perm-${crypto.randomUUID()}`;
+  cleanupLog(sessionId);
+
+  const allowPromise = postJson("/api/permission-request", buildManualWriteRequest(sessionId, allowRequestId));
+
+  try {
+    const pendingSummary = await waitForAsync(async () => {
+      const summary = await getSessionSummary(sessionId);
+      return summary && summary.pendingApprovalCount === 1 ? summary : null;
+    }, "pendingApprovalCount to reach 1");
+    assert(pendingSummary.pendingApprovalCount === 1, "sessions endpoint reports pendingApprovalCount 1 for pending manual Write");
+
+    await postJson("/api/permission-response", { requestId: allowRequestId, behavior: "allow" });
+    const allowResult = await allowPromise;
+    assert(allowResult.body?.behavior === "allow", "manual Write resolves with allow");
+
+    const afterAllow = await getSessionSummary(sessionId);
+    assert(afterAllow && afterAllow.pendingApprovalCount === 0, "pendingApprovalCount returns to 0 after allow");
+
+    const denyPromise = postJson("/api/permission-request", buildManualWriteRequest(sessionId, denyRequestId));
+    try {
+      await waitForAsync(async () => {
+        const summary = await getSessionSummary(sessionId);
+        return summary && summary.pendingApprovalCount === 1 ? summary : null;
+      }, "pendingApprovalCount to reach 1 again");
+
+      await postJson("/api/permission-response", { requestId: denyRequestId, behavior: "deny" });
+      const denyResult = await denyPromise;
+      assert(denyResult.body?.behavior === "deny", "manual Write resolves with deny");
+
+      const afterDeny = await getSessionSummary(sessionId);
+      assert(afterDeny && afterDeny.pendingApprovalCount === 0, "pendingApprovalCount returns to 0 after deny");
+    } finally {
+      try {
+        await postJson("/api/permission-response", { requestId: denyRequestId, behavior: "deny" });
+      } catch {
+        // ignore cleanup errors
+      }
+      try {
+        await denyPromise;
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+
+    const autoResult = await postJson("/api/permission-request", {
+      toolName: "WebFetch",
+      toolUseId: autoRequestId,
+      input: { url: "https://93.184.216.34/docs", prompt: "summarize" },
+      browserSessionId: sessionId,
+      character: "YYF",
+      timestamp: Date.now(),
+    });
+    assert(autoResult.body?.behavior === "allow", "public WebFetch is auto-approved in approval count test");
+
+    const afterAuto = await getSessionSummary(sessionId);
+    assert(afterAuto && afterAuto.pendingApprovalCount === 0, "auto-approved request never counts as pending approval");
+  } finally {
+    try {
+      await postJson("/api/permission-response", { requestId: allowRequestId, behavior: "deny" });
+    } catch {
+      // ignore cleanup errors
+    }
+    try {
+      await allowPromise;
+    } catch {
+      // ignore cleanup errors
+    }
+    cleanupLog(sessionId);
+  }
+}
+
 async function main() {
   const tempServer = await createTestServer();
 
   try {
     await testPermissionRequestsPersistAndUpdateInHistory();
     await testPublicWebFetchAutoApproval();
+    await testSessionPendingApprovalCount();
   } catch (err) {
     console.error(err.stack || err.message || String(err));
     failed += 1;
