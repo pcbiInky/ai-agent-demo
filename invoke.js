@@ -518,25 +518,32 @@ function invoke(cli, prompt, sessionId, options = {}) {
     // claude / codex 暂不支持运行时模型切换，预留扩展位
   }
 
-  // ── dsh（ACP）：双向 JSON-RPC，走独立驱动，不复用 argv/stdout 单向路径 ──
-  if (config.permissionStyle === "acp") {
-    const acpPermission = (config.supportsPermissionTool && browserSessionId)
-      ? preparePermissionTransport(cli, {
-          browserSessionId,
-          character: character || "",
-          workingDirectory: workingDirectory || "",
-          permissionServerPort,
-        })
-      : { mcpServers: [] };
-
-    const acpEnv = { ...process.env };
-    if (config.supportsPermissionTool && browserSessionId) {
-      Object.assign(acpEnv, buildPermissionEnv(
-        permissionServerPort,
+  // ── 权限代理上下文统一组装：ACP 与 spawn 分支复用同一份 prepared/env ──
+  const usePermission = Boolean(config.supportsPermissionTool && browserSessionId);
+  const preparedPermission = usePermission
+    ? preparePermissionTransport(cli, {
         browserSessionId,
+        character: character || "",
+        workingDirectory: workingDirectory || "",
+        permissionServerPort,
+      })
+    : null;
+  const permissionEnv = usePermission
+    ? buildPermissionEnv(
+        permissionServerPort,
+        browserSessionId || "",
         character || "",
         workingDirectory || ""
-      ));
+      )
+    : null;
+
+  // ── dsh（ACP）：双向 JSON-RPC，走独立驱动，不复用 argv/stdout 单向路径 ──
+  if (config.permissionStyle === "acp") {
+    const acpPermission = preparedPermission || { mcpServers: [] };
+
+    const acpEnv = { ...process.env };
+    if (permissionEnv) {
+      Object.assign(acpEnv, permissionEnv);
     }
 
     const acpInvoke = cli === "kimi" ? invokeKimiAcp : invokeDshAcp;
@@ -583,27 +590,15 @@ function invoke(cli, prompt, sessionId, options = {}) {
 
   // ── 权限代理：MCP 工具代理（禁用内置工具，全部走 MCP Server 审批+执行）──
   // 所有 CLI 都在单次 invoke 内注入独立的 permission server 配置，避免并发串号
-  const cleanupPaths = [];
-  const permissionEnv = buildPermissionEnv(
-    permissionServerPort,
-    browserSessionId || "",
-    character || "",
-    workingDirectory || ""
-  );
+  // spawn 分支复用上面已统一组装的 preparedPermission / permissionEnv
+  const cleanupPaths = preparedPermission ? [...preparedPermission.cleanupPaths] : [];
 
-  if (config.supportsPermissionTool && browserSessionId) {
-    const preparedPermission = preparePermissionTransport(cli, {
-      browserSessionId,
-      character: character || "",
-      workingDirectory: workingDirectory || "",
-      permissionServerPort,
-    });
+  if (preparedPermission) {
     if (cli === "codex") {
       args = insertCodexOptionArgs(args, isResume, preparedPermission.args);
     } else {
       args.push(...preparedPermission.args);
     }
-    cleanupPaths.push(...preparedPermission.cleanupPaths);
   }
 
   return new Promise((resolve, reject) => {

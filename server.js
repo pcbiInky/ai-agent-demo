@@ -951,6 +951,22 @@ function parseMentions(text, sessionId) {
 }
 
 // ── invoke 串行队列 ───────────────────────────────────────
+// 回调兜底：同步 throw 与异步 rejection 都在队列内部消化，
+// 保证 enqueueInvoke 链本身永不 rejected（防止毒化同 key 的后续链）
+function runQueueCallback(callback, arg, label) {
+  if (typeof callback !== "function") return;
+  try {
+    const returned = callback(arg);
+    if (returned && typeof returned.catch === "function") {
+      returned.catch((err) => {
+        console.error(`[invoke-queue] ${label} 异步异常: ${err?.message || err}`);
+      });
+    }
+  } catch (err) {
+    console.error(`[invoke-queue] ${label} 同步异常: ${err?.message || err}`);
+  }
+}
+
 function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onError, options = {}) {
   const {
     skillDecision = null,
@@ -961,7 +977,11 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   const roleConfig = getRoleConfig(character);
   const roleId = roleConfig?.id || character;
   const key = `${browserSessionId}:${roleId}`;
-  const prev = invokeQueues.get(key) || Promise.resolve();
+  // 从 Map 取出的 prev 若为 rejected（历史链意外拒绝），集中消化并记录，
+  // 保证无论前链结果如何，本次队列任务都照常执行（不毒化后续链）
+  const prev = (invokeQueues.get(key) || Promise.resolve()).catch((err) => {
+    console.error(`[invoke-queue] 前链 rejected 已消化: ${err?.message || err}`);
+  });
 
   // 模型从角色配置读取
   const model = roleConfig?.model || undefined;
@@ -972,20 +992,23 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   const abortController = new AbortController();
   invokeAbortControllers.set(key, abortController);
 
+  // 任务体整体包 try：setup、invoke、回调与失败清理都在内部消化异常，
+  // 保证 next 恒为 fulfilled，不会以 rejected 状态毒化后续链
   const next = prev.then(async () => {
-    // 从落盘的 session-context 读取 provider sessionId
-    const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
-    const sendCountBefore = getMcpSendCount(browserSessionId, character);
-    resetInvokeSendGuard(browserSessionId, character);
-    setActiveThinking(browserSessionId, character, thinkingMessageId, thinkingThreadId);
-    // 在串行队列内绑定 invoke 上下文，确保不会被并发覆盖
-    const chainKey = `${browserSessionId}:${character}`;
-    if (invokeContext) {
-      invokeChainCallers.set(chainKey, invokeContext);
-    } else {
-      invokeChainCallers.delete(chainKey);
-    }
+    let chainKey = null;
     try {
+      // 从落盘的 session-context 读取 provider sessionId
+      const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
+      const sendCountBefore = getMcpSendCount(browserSessionId, character);
+      resetInvokeSendGuard(browserSessionId, character);
+      setActiveThinking(browserSessionId, character, thinkingMessageId, thinkingThreadId);
+      // 在串行队列内绑定 invoke 上下文，确保不会被并发覆盖
+      chainKey = `${browserSessionId}:${character}`;
+      if (invokeContext) {
+        invokeChainCallers.set(chainKey, invokeContext);
+      } else {
+        invokeChainCallers.delete(chainKey);
+      }
       const workingDirectory = sessionStore.readSession(browserSessionId)?.workingDirectory || "";
       const result = await invoke(cli, prompt, cliSessionId || undefined, {
         browserSessionId,
@@ -1012,21 +1035,34 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       clearActiveThinking(browserSessionId, character, thinkingMessageId);
       // 完成事件携带 messageId，前端按 character + messageId 精确清理 live thinking
       emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
-      onResult(result);
+      runQueueCallback(onResult, result, "onResult");
       resetInvokeSendGuard(browserSessionId, character);
     } catch (err) {
-      recordSkillTrace(browserSessionId, skillDecision, "error");
-      resetInvokeSendGuard(browserSessionId, character);
-      clearActiveThinking(browserSessionId, character, thinkingMessageId);
-      emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
-      onError(err);
+      // 失败清理自身再兜一层，防止清理路径抛错把 next 变成 rejected
+      try {
+        recordSkillTrace(browserSessionId, skillDecision, "error");
+        resetInvokeSendGuard(browserSessionId, character);
+        clearActiveThinking(browserSessionId, character, thinkingMessageId);
+        emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
+      } catch (teardownErr) {
+        console.error(`[invoke-queue] ${character} 失败清理异常: ${teardownErr?.message || teardownErr}`);
+      }
+      runQueueCallback(onError, err, "onError");
     } finally {
       invokeAbortControllers.delete(key);
-      invokeChainCallers.delete(chainKey);
+      if (chainKey) invokeChainCallers.delete(chainKey);
     }
   });
 
   invokeQueues.set(key, next);
+  // 链空闲后回收：双分支清理同时覆盖 fulfilled/rejected，不派生未处理 rejection；
+  // 身份校验确保只删除自己入队的链，避免旧链误删后来并发入队的新链
+  const cleanup = () => {
+    if (invokeQueues.get(key) === next) {
+      invokeQueues.delete(key);
+    }
+  };
+  next.then(cleanup, cleanup);
 }
 
 function buildInvokeContext(character, threadId, depth, lineage) {
@@ -1710,6 +1746,8 @@ module.exports = {
     appendToLog,
     storeApproval,
     invokeChainCallers,
+    invokeQueues,
+    enqueueInvoke,
     emitSSE,
     setActiveThinking,
     listActiveThinking,
