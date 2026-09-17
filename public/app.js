@@ -1346,7 +1346,6 @@ function renderCharStatuses() {
     const cliLabel = member.model ? `${member.cli} · ${member.model}` : member.cli;
     const usageWindows = getUsageWindows(member, metrics);
     const contextTokens = metrics.contextTokens ?? null;
-    const totalTokens = metrics.totalTokens ?? null;
 
     const usageSection = usageWindows.length > 0 ? `
       <div class="role-card-metrics">
@@ -1357,7 +1356,6 @@ function renderCharStatuses() {
     const footerSection = `
       <div class="role-card-footer">
         ${renderCtxBar(contextTokens, member.contextWindow)}
-        <span class="metric-pill">total ${totalTokens !== null ? formatTokenK(totalTokens) : '--'}</span>
       </div>
     `;
 

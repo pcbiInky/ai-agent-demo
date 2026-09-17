@@ -618,9 +618,6 @@ html, body {
   flex: 1;
   min-width: 0;
 }
-.role-card-footer .metric-pill {
-  flex-shrink: 0;
-}
 .metric-pill {
   font-size: 11px;
   color: var(--text-light);
