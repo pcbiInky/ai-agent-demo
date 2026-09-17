@@ -1421,7 +1421,8 @@ ${recentSummary}
 async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageId, threadId, depth, chainCounter, sourceMessageId, lineage = [fromCharacter]) {
   if (depth >= MAX_DEPTH) return;
 
-  for (const targetChar of aiMentions) {
+  // 调用方可能传入重复目标，统一在此去重，避免重复 invoke
+  for (const targetChar of [...new Set(aiMentions)]) {
     if (chainCounter.count >= MAX_AI_CHAIN_CALLS) {
       emitSSE(sessionId, "system-notice", {
         text: `AI 互动已达上限（${MAX_AI_CHAIN_CALLS} 次），停止自动唤醒`,
@@ -1583,7 +1584,8 @@ app.post("/api/mcp-send-message", (req, res) => {
     const currentDepth = chainContext?.depth || 0;
     const currentLineage = Array.isArray(chainContext?.lineage) ? chainContext.lineage : [character];
     const contextThreadId = threadId || chainContext?.threadId || null;
-    const explicitTargets = Array.isArray(atTargets) ? atTargets : [];
+    // 去重：避免同一角色被重复召唤导致重复 invoke（同 key 回复还会互相搬运执行记录）
+    const explicitTargets = Array.isArray(atTargets) ? [...new Set(atTargets)] : [];
     const parentFrame = getParentFrame({
       depth: currentDepth,
       lineage: currentLineage,

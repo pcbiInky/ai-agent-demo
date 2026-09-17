@@ -56,6 +56,17 @@ const sessions = {
     lastSeq: 9,
     activeThinking: [{ character: "金渐层k", messageId: "n1" }],
   },
+  // 同角色对同父消息两条回复（重复召唤）：执行记录应留在先渲染的回复里
+  "sess-3": {
+    messages: [
+      { id: "m1", role: "user", text: "dup", timestamp: 1 },
+      { id: "p1", role: "permission", requestId: "reqd1", character: "YYF", toolName: "Bash", input: { command: "dup-cmd" }, timestamp: 2, messageId: "m1", status: "allow" },
+      { id: "r1", role: "assistant", character: "YYF", text: "回复一", replyTo: "m1", timestamp: 3, aiMentions: [], verified: true },
+      { id: "r2", role: "assistant", character: "YYF", text: "回复二", replyTo: "m1", timestamp: 4, aiMentions: [], verified: true },
+    ],
+    lastSeq: 20,
+    activeThinking: [],
+  },
 };
 
 let sess1FetchCount = 0;
@@ -79,6 +90,9 @@ class MockEventSource {
 function stubFetch(url) {
   const ok = (payload) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
   if (url.includes("/api/history")) {
+    if (url.includes("sess-3")) {
+      return ok({ sessionId: "sess-3", createdAt: 0, ...sessions["sess-3"] });
+    }
     if (url.includes("sess-1")) {
       sess1FetchCount += 1;
       if (sess1FetchCount === 2) {
@@ -201,6 +215,20 @@ const waitFor = async (fn, n = 80) => {
       await sleep(100);
       assert(!document.getElementById("thinking-金渐层k-n1"), "完成后空 live thinking 被移除");
     }
+
+    // ── 同角色同父消息两条回复：记录留在先渲染的 r1，不被搬到 r2 ──
+    esInstances.length = 0;
+    dom.window.eval('switchSession("sess-3")');
+    await waitFor(() => !!document.querySelector('[data-msg-id="r1"]'));
+    const r1 = document.querySelector('[data-msg-id="r1"]');
+    const r2 = document.querySelector('[data-msg-id="r2"]');
+    const r1Embed = r1 && r1.querySelector(":scope > .bubble-wrapper > .thinking-embed");
+    const r2Embed = r2 && r2.querySelector(":scope > .bubble-wrapper > .thinking-embed");
+    assert(!!r1Embed, "先渲染的回复一保留执行记录");
+    assert(!!r1Embed && r1Embed.querySelectorAll(".perm-card").length === 1, "回复一的嵌入块含 1 张卡片");
+    assert(!r2Embed, "后渲染的回复二不搬走执行记录");
+    const dupStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-YYF-m1-"));
+    assert(!dupStandalone, "重复回复场景无独立过程记录行");
 
     // ── 全文无未归档 thinking 残留 ──
     let residue = false;

@@ -1041,6 +1041,8 @@ function attachThinkingToReply(character, messageId, replyEl) {
   const container = document.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`)
     || document.getElementById(`thinking-${character}-${messageId}`);
   if (!container) return;
+  // 同角色对同父消息产生多条回复时，记录留在先渲染的回复里，不再整块搬移
+  if (container.classList.contains("thinking-embed")) return;
 
   const header = replyEl.querySelector(".bubble-wrapper .msg-header");
   const scrollArea = container.querySelector(".thinking-scroll-area");
