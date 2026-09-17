@@ -42,6 +42,10 @@ const sessions = {
       { id: "a1", role: "assistant", character: "YYF", text: "主线回复", replyTo: "m1", timestamp: 3, aiMentions: [], verified: true, source: "mcp-tool" },
       { id: "o1", role: "assistant", character: "YYF", text: "thread 发起", replyTo: "m1", timestamp: 4, aiMentions: ["晔晔"], verified: true, threadId: "t1", source: "mcp-tool" },
       { id: "d1", role: "assistant", character: "YYF", text: "thread 深层回复", replyTo: "m1", timestamp: 5, aiMentions: [], verified: true, threadId: "t1", depth: 1, source: "mcp-tool" },
+      // 召唤链：YYF 在 thread 里 @晔晔，晔晔的深层回复 + 其执行记录绑定 c1
+      { id: "c1", role: "assistant", character: "YYF", text: "@晔晔 来看一下", replyTo: "m1", timestamp: 6, aiMentions: ["晔晔"], verified: true, threadId: "t1" },
+      { id: "pc1", role: "permission", requestId: "reqc1", character: "晔晔", toolName: "Bash", input: { command: "chain-cmd" }, timestamp: 7, messageId: "c1", status: "allow" },
+      { id: "d2", role: "assistant", character: "晔晔", text: "晔晔的链式回复", replyTo: "c1", timestamp: 8, aiMentions: [], verified: true, threadId: "t1", depth: 1 },
     ],
     lastSeq: 5,
     activeThinking: [{ character: "YYF", messageId: "m1" }],
@@ -87,7 +91,7 @@ function stubFetch(url) {
     const lastSeq = sess2FetchCount === 1 ? 9 : 12; // resync 重载后序号推进
     return ok({ sessionId: "sess-2", createdAt: 0, ...sessions["sess-2"], lastSeq });
   }
-  if (url.includes("/api/characters")) return ok({ characters: { "YYF": { cli: "codex", id: "r1" }, "金渐层k": { cli: "kimi", id: "r2" } } });
+  if (url.includes("/api/characters")) return ok({ characters: { "YYF": { cli: "codex", id: "r1" }, "金渐层k": { cli: "kimi", id: "r2" }, "晔晔": { cli: "dsh", id: "r3" } } });
   if (url.includes("/members") && !url.includes("runtime-metrics")) return ok({ members: [] });
   if (url.includes("/api/sessions/") && url.includes("skill-traces")) return ok({ traces: [] });
   if (url.includes("/api/sessions/") && !url.includes("runtime-metrics")) return ok({ session: { title: "t", workingDirectory: "/x" } });
@@ -144,6 +148,20 @@ const waitFor = async (fn, n = 80) => {
     await sleep(100);
     assert(!mainReply.querySelector(".msg-processing") && !(deepReply && deepReply.querySelector(".msg-processing")), "完成事件清除'处理中'标记");
     assert(!document.getElementById("thinking-YYF-m1"), "完成后无 live thinking 残留");
+
+    // ── 召唤链：thread 深层回复的执行记录嵌入该回复，不另起角色行 ──
+    const chainReply = document.querySelector('[data-msg-id="d2"]');
+    assert(!!chainReply, "链式回复已渲染");
+    const chainEmbed = chainReply && chainReply.querySelector(":scope > .bubble-wrapper > .thinking-embed");
+    assert(!!chainEmbed, "链式回复内嵌执行记录");
+    if (chainEmbed) {
+      assert(chainEmbed.querySelectorAll(".perm-card").length === 1, "链式嵌入块含 1 张卡片");
+      const t = chainEmbed.querySelector(".msg-time");
+      assert(t && t.textContent === "过程记录 · 1 条执行记录", `链式嵌入摘要正确: ${t && t.textContent}`);
+    }
+    // 嵌入块本身保留归档 id（供后续权限请求定位），只校验顶层没有独立行
+    const standaloneChain = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-晔晔-c1-"));
+    assert(!standaloneChain, "链式场景无独立过程记录行");
 
     // ── resync 闭环：关旧 → 重载（挂起）→ 此刻切会话 → 旧快照不得覆盖 B ──
     es1.emit("resync", {});

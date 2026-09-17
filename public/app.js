@@ -405,6 +405,8 @@ function connectSSE() {
 
     if (data.threadId && data.depth > 0) {
       appendThreadReply(data);
+      // 召唤链 thread 回复：执行记录嵌入回复内部（与历史渲染一致）
+      attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     } else {
       appendAssistantMessage(data.character, data.text, data.verified, data.replyId, data.threadId, data.aiMentions, data.timestamp);
       // 执行期间可能有其他消息插入，把过程记录挪到该回复正上方
@@ -1763,10 +1765,11 @@ async function loadHistory(forSessionId = state.sessionId) {
       for (const rec of records) appendPermRecord(container, rec);
     };
 
-    // 预判哪些执行记录能匹配到回复/错误消息（replyTo + 角色）
+    // 预判哪些执行记录能匹配到回复/错误消息（replyTo + 角色）；
+    // 召唤链的 thread 深层回复同样消费其执行记录
     const replyKeys = new Set();
     for (const msg of log.messages) {
-      if (msg.role === "assistant" && !(msg.threadId && msg.depth > 0) && msg.replyTo) {
+      if (msg.role === "assistant" && msg.replyTo) {
         replyKeys.add(permKey(msg.character, msg.replyTo));
       } else if (msg.role === "error" && msg.replyTo) {
         replyKeys.add(permKey(msg.character, msg.replyTo));
@@ -1778,6 +1781,8 @@ async function loadHistory(forSessionId = state.sessionId) {
         appendUserMessage(msg.text, msg.timestamp);
       } else if (msg.role === "assistant") {
         if (msg.threadId && msg.depth > 0) {
+          // 召唤链的 thread 深层回复：执行记录同样嵌入该回复，不另起一行
+          flushPerms(msg.character, msg.replyTo);
           appendThreadReply({
             character: msg.character,
             text: msg.text,
@@ -1787,6 +1792,7 @@ async function loadHistory(forSessionId = state.sessionId) {
             depth: msg.depth,
             timestamp: msg.timestamp,
           });
+          attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         } else {
           flushPerms(msg.character, msg.replyTo);
           appendAssistantMessage(msg.character, msg.text, msg.verified, msg.id, msg.threadId, msg.aiMentions, msg.timestamp);
