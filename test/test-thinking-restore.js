@@ -273,7 +273,7 @@ const waitFor = async (fn, n = 80) => {
       const t = liveEmbed.querySelector(".msg-time");
       assert(t && t.textContent.includes("执行中断"), `实时错误嵌入摘要保持"执行中断": ${t && t.textContent}`);
     }
-    // reply/error 已经归档后，CLI 仍可能补发最后一个 reasoning 事件；
+    // reply/error 已经归档后，CLI 仍可能补发最后一条过程 message；
     // 必须追加到现有嵌入块，不能再创建第二条独立 Thinking 标签。
     liveEs.emit("thinking-content", {
       character: "YYF",

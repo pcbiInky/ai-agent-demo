@@ -18,77 +18,85 @@ function assert(condition, label) {
 const codexText = [];
 const codexMeta = [];
 const codexRuntime = [];
-__test.parseCodexJsonEvent(
-  { type: "thread.started", thread_id: "thread-1" },
+const codexState = {};
+const parseCodex = (event) => __test.parseCodexJsonEvent(
+  event,
   (text) => codexText.push(text),
   (meta) => codexMeta.push(meta),
-  (event) => codexRuntime.push(event)
+  (runtimeEvent) => codexRuntime.push(runtimeEvent),
+  codexState
 );
-__test.parseCodexJsonEvent(
-  { type: "item.completed", item: { type: "reasoning", text: "检查调用链" } },
-  (text) => codexText.push(text),
-  (meta) => codexMeta.push(meta),
-  (event) => codexRuntime.push(event)
+
+parseCodex({ type: "thread.started", thread_id: "thread-1" });
+parseCodex({ type: "turn.started" });
+parseCodex({
+  type: "item.completed",
+  item: { id: "item-0", type: "agent_message", text: "我会先检查调用链。" },
+});
+assert(codexRuntime.length === 0 && codexText.length === 0, "Codex 首条 agent_message 先暂存以判定是否为最终回复");
+
+parseCodex({
+  type: "item.started",
+  item: { id: "item-1", type: "command_execution", command: "rg parseCodexJsonEvent" },
+});
+assert(codexRuntime.length === 1, "Codex 后续开始执行工具时，前一条 agent_message 转为过程信息");
+assert(
+  codexRuntime[0]?.type === "thinking"
+    && codexRuntime[0]?.text === "我会先检查调用链。"
+    && codexRuntime[0]?.delta === false,
+  "Codex 过程信息保留 agent_message 完整文本"
 );
-__test.parseCodexJsonEvent(
-  { type: "item.completed", item: { type: "agent_message", text: "最终回复" } },
-  (text) => codexText.push(text),
-  (meta) => codexMeta.push(meta),
-  (event) => codexRuntime.push(event)
-);
+
+parseCodex({
+  type: "item.completed",
+  item: { id: "item-2", type: "reasoning", text: "内部推理摘要" },
+});
+assert(codexRuntime.length === 1, "Codex reasoning item 不再作为 Thinking 过程展示");
+
+parseCodex({
+  type: "item.completed",
+  item: { id: "item-3", type: "agent_message", text: "最终回复" },
+});
+parseCodex({
+  type: "turn.completed",
+  usage: { reasoning_output_tokens: 26 },
+});
 
 assert(codexMeta[0]?.sessionId === "thread-1", "Codex thread.started 仍提取 sessionId");
-assert(codexRuntime.length === 1 && codexRuntime[0].type === "thinking", "Codex reasoning 转换为 thinking 运行时事件");
-assert(codexRuntime[0]?.text === "检查调用链" && codexRuntime[0]?.delta === false, "Codex thinking 保留完整文本语义");
-assert(codexText.join("") === "最终回复", "Codex agent_message 仍作为最终文本");
+assert(codexText.join("") === "最终回复", "Codex 最后一条 agent_message 作为最终回复");
+assert(codexRuntime.length === 1, "Codex 不再生成 reasoning token 占位记录");
 
-const codexFallbackRuntime = [];
-const codexFallbackState = {};
-__test.parseCodexJsonEvent(
-  { type: "turn.started" },
+const consecutiveText = [];
+const consecutiveRuntime = [];
+const consecutiveState = {};
+const parseConsecutive = (event) => __test.parseCodexJsonEvent(
+  event,
+  (text) => consecutiveText.push(text),
   () => {},
-  () => {},
-  (event) => codexFallbackRuntime.push(event),
-  codexFallbackState
+  (runtimeEvent) => consecutiveRuntime.push(runtimeEvent),
+  consecutiveState
 );
-__test.parseCodexJsonEvent(
-  { type: "turn.completed", usage: { reasoning_output_tokens: 26 } },
-  () => {},
-  () => {},
-  (event) => codexFallbackRuntime.push(event),
-  codexFallbackState
-);
-assert(codexFallbackRuntime.length === 1, "Codex 未输出 reasoning item 时生成 Thinking 记录");
-assert(
-  codexFallbackRuntime[0]?.text.includes("26 个 reasoning tokens"),
-  "Codex Thinking 记录包含实际 reasoning token 数"
-);
+parseConsecutive({ type: "turn.started" });
+parseConsecutive({ type: "item.completed", item: { type: "agent_message", text: "先说明计划" } });
+parseConsecutive({ type: "item.completed", item: { type: "agent_message", text: "最终结论" } });
+parseConsecutive({ type: "turn.completed" });
+assert(consecutiveRuntime[0]?.text === "先说明计划", "连续 agent_message 中前一条归入过程信息");
+assert(consecutiveText.join("") === "最终结论", "连续 agent_message 中最后一条作为最终回复");
 
-const codexReasoningRuntime = [];
-const codexReasoningState = {};
+const singleText = [];
+const singleRuntime = [];
+const singleState = {};
+__test.parseCodexJsonEvent({ type: "turn.started" }, (text) => singleText.push(text), () => {}, (event) => singleRuntime.push(event), singleState);
 __test.parseCodexJsonEvent(
-  { type: "turn.started" },
+  { type: "item.completed", item: { type: "agent_message", text: "只有最终回复" } },
+  (text) => singleText.push(text),
   () => {},
-  () => {},
-  (event) => codexReasoningRuntime.push(event),
-  codexReasoningState
+  (event) => singleRuntime.push(event),
+  singleState
 );
-__test.parseCodexJsonEvent(
-  { type: "item.completed", item: { type: "reasoning", text: "已有推理摘要" } },
-  () => {},
-  () => {},
-  (event) => codexReasoningRuntime.push(event),
-  codexReasoningState
-);
-__test.parseCodexJsonEvent(
-  { type: "turn.completed", usage: { reasoning_output_tokens: 18 } },
-  () => {},
-  () => {},
-  (event) => codexReasoningRuntime.push(event),
-  codexReasoningState
-);
-assert(codexReasoningRuntime.length === 1, "Codex 已有 reasoning 文本时不重复生成占位记录");
-assert(codexReasoningRuntime[0]?.text === "已有推理摘要", "Codex 优先展示 CLI 返回的真实 reasoning 文本");
+__test.parseCodexJsonEvent({ type: "turn.completed" }, (text) => singleText.push(text), () => {}, (event) => singleRuntime.push(event), singleState);
+assert(singleRuntime.length === 0, "只有一条 agent_message 时不创建空的 Thinking 过程");
+assert(singleText.join("") === "只有最终回复", "只有一条 agent_message 时仍返回最终回复");
 
 const claudeText = [];
 const claudeRuntime = [];

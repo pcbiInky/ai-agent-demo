@@ -43,39 +43,45 @@ function parseClaudeJsonEvent(event, onText, onMeta, onRuntimeEvent) {
   }
 }
 
+function flushCodexProgressMessage(state, onRuntimeEvent) {
+  const text = typeof state.pendingAgentMessage === "string" ? state.pendingAgentMessage : "";
+  if (text) emitThinkingEvent(onRuntimeEvent, text);
+  state.pendingAgentMessage = "";
+}
+
+function flushCodexFinalMessage(state, onText) {
+  const text = typeof state.pendingAgentMessage === "string" ? state.pendingAgentMessage : "";
+  if (text) onText(text);
+  state.pendingAgentMessage = "";
+}
+
 function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent, state = {}) {
   if (event?.type === "thread.started" && event.thread_id) {
     onMeta?.({ sessionId: event.thread_id });
   }
   if (event?.type === "turn.started") {
-    state.sawReasoningText = false;
+    state.pendingAgentMessage = "";
     return;
   }
   if (event?.type === "turn.completed") {
-    const reasoningTokens = Number(event.usage?.reasoning_output_tokens);
-    if (!state.sawReasoningText && Number.isFinite(reasoningTokens) && reasoningTokens > 0) {
-      emitThinkingEvent(
-        onRuntimeEvent,
-        `Codex CLI 未返回可展示的推理文本，本轮使用了 ${reasoningTokens} 个 reasoning tokens。`
-      );
-      state.sawReasoningText = true;
-    }
+    flushCodexFinalMessage(state, onText);
     return;
   }
-  if (event?.type !== "item.completed") return;
-  if (event.item?.type === "agent_message") {
+
+  const isAgentMessage = event?.type === "item.completed"
+    && event.item?.type === "agent_message";
+  if (isAgentMessage) {
+    // Codex 会用 agent_message 同时输出过程说明和最终回复。
+    // 暂存最新一条：后续还有 item 时，上一条属于过程；turn.completed 时，最后一条才是最终回复。
+    flushCodexProgressMessage(state, onRuntimeEvent);
     const text = typeof event.item.text === "string" ? event.item.text : "";
-    if (text) onText(text);
+    state.pendingAgentMessage = text;
     return;
   }
-  if (event.item?.type === "reasoning") {
-    const text = typeof event.item.text === "string"
-      ? event.item.text
-      : typeof event.item.summary === "string"
-        ? event.item.summary
-        : "";
-    if (text) state.sawReasoningText = true;
-    emitThinkingEvent(onRuntimeEvent, text);
+
+  // agent_message 后继续出现任意 item，说明该 message 是执行过程说明，而非最终回复。
+  if (typeof event?.type === "string" && event.type.startsWith("item.")) {
+    flushCodexProgressMessage(state, onRuntimeEvent);
   }
 }
 
@@ -125,11 +131,12 @@ const CLI_CONFIG = {
       }
       return ["exec", "--json", prompt];
     },
-    // JSONL 输出：提取 agent_message 文本 + thread_id（作为 sessionId 统一概念）
+    // JSONL 输出：中间 agent_message 作为过程信息，最后一条作为最终回复；
+    // 同时提取 thread_id（作为 sessionId 统一概念）。
     // 指标从 lib/codex-metrics.js 统一获取（见 close 事件处理）
     parse: (stdout, onText, onMeta, onRuntimeEvent) => {
       const rl = createInterface({ input: stdout });
-      const parseState = { sawReasoningText: false };
+      const parseState = { pendingAgentMessage: "" };
       rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
@@ -138,6 +145,8 @@ const CLI_CONFIG = {
           // 忽略非 JSON 行
         }
       });
+      // 兼容异常 JSONL：即使缺少 turn.completed，也不要丢失最后一条 agent_message。
+      rl.on("close", () => flushCodexFinalMessage(parseState, onText));
     },
     // Codex CLI 不支持 system prompt，回退到 user prompt
     supportsSystemPrompt: false,

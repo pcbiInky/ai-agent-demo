@@ -402,8 +402,8 @@ function connectSSE() {
   es.addEventListener("thinking-content", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "thinking");
-    // reply/error 可能先于 CLI 最后的 reasoning 事件到达；优先复用已嵌入回复的归档容器，
-    // 避免同一轮后续 thinking 又创建一条独立“Thinking 过程”记录。
+    // reply/error 可能先于 CLI 最后一条过程 message 到达；优先复用已嵌入回复的归档容器，
+    // 避免同一轮后续过程信息又创建一条独立“Thinking 过程”记录。
     const container = findThinkingElement(data.character, data.messageId)
       || showThinking(data.character, data.messageId);
     if (container) appendThinkingContent(container, data);
