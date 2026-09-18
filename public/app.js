@@ -402,8 +402,10 @@ function connectSSE() {
   es.addEventListener("thinking-content", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "thinking");
-    showThinking(data.character, data.messageId);
-    const container = findThinkingElement(data.character, data.messageId);
+    // reply/error 可能先于 CLI 最后的 reasoning 事件到达；优先复用已嵌入回复的归档容器，
+    // 避免同一轮后续 thinking 又创建一条独立“Thinking 过程”记录。
+    const container = findThinkingElement(data.character, data.messageId)
+      || showThinking(data.character, data.messageId);
     if (container) appendThinkingContent(container, data);
   });
 
@@ -865,7 +867,7 @@ function appendErrorMessage(character, error, timestamp) {
 // ── Thinking ──────────────────────────────────────────────
 function showThinking(character, messageId) {
   const existing = document.getElementById(`thinking-${character}-${messageId}`);
-  if (existing) return;
+  if (existing) return existing;
 
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
@@ -902,6 +904,7 @@ function showThinking(character, messageId) {
   bindThinkingHeader(div);
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
+  return div;
 }
 
 // 点击已完成的过程记录头部时折叠/展开（参考 clowder-ai 的折叠交互）
@@ -1242,7 +1245,36 @@ function resolvePermissionCard(requestId, behavior, message) {
   }
 }
 
-function markPermResolved(requestId, behavior, message) {
+function getBashRecordsDetails(container) {
+    const scrollArea = container.querySelector(".thinking-scroll-area");
+    if (!scrollArea) return null;
+    let details = scrollArea.querySelector(".bash-records");
+    if (!details) {
+      details = document.createElement("details");
+      details.className = "bash-records";
+      details.innerHTML = `
+        <summary class="bash-records-summary"></summary>
+        <div class="bash-records-content"></div>
+      `;
+      const permContainer = scrollArea.querySelector(".perm-container");
+      if (permContainer) permContainer.after(details);
+      else scrollArea.appendChild(details);
+    }
+    return details;
+  }
+
+  // 已允许的 Bash 卡片移入二级折叠组（默认折叠，类似 Thinking 过程），并刷新条数
+  function foldBashPermCard(card) {
+    const scrollArea = card.closest(".thinking-scroll-area");
+    if (!scrollArea) return; // 降级独立卡片不折叠
+    const details = getBashRecordsDetails(scrollArea.parentElement);
+    if (!details) return;
+    details.querySelector(".bash-records-content").appendChild(card);
+    const count = details.querySelectorAll(".perm-card").length;
+    details.querySelector(".bash-records-summary").textContent = `Bash 执行记录 · ${count} 条`;
+  }
+
+  function markPermResolved(requestId, behavior, message) {
   const card = document.getElementById(`perm-card-${requestId}`);
   const actionsEl = document.getElementById(`perm-actions-${requestId}`);
   const isAuto = message && message.includes("默认授权");
@@ -1251,6 +1283,8 @@ function markPermResolved(requestId, behavior, message) {
     card.classList.remove("expanded");
     card.classList.add("resolved");
     if (isAuto) card.classList.add("auto-resolved");
+      const permTool = card.querySelector(".perm-summary-tool")?.textContent;
+      if (behavior === "allow" && permTool === "Bash") foldBashPermCard(card);
   }
 
   if (actionsEl) {

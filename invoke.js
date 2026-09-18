@@ -43,9 +43,24 @@ function parseClaudeJsonEvent(event, onText, onMeta, onRuntimeEvent) {
   }
 }
 
-function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent) {
+function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent, state = {}) {
   if (event?.type === "thread.started" && event.thread_id) {
     onMeta?.({ sessionId: event.thread_id });
+  }
+  if (event?.type === "turn.started") {
+    state.sawReasoningText = false;
+    return;
+  }
+  if (event?.type === "turn.completed") {
+    const reasoningTokens = Number(event.usage?.reasoning_output_tokens);
+    if (!state.sawReasoningText && Number.isFinite(reasoningTokens) && reasoningTokens > 0) {
+      emitThinkingEvent(
+        onRuntimeEvent,
+        `Codex CLI 未返回可展示的推理文本，本轮使用了 ${reasoningTokens} 个 reasoning tokens。`
+      );
+      state.sawReasoningText = true;
+    }
+    return;
   }
   if (event?.type !== "item.completed") return;
   if (event.item?.type === "agent_message") {
@@ -59,6 +74,7 @@ function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent) {
       : typeof event.item.summary === "string"
         ? event.item.summary
         : "";
+    if (text) state.sawReasoningText = true;
     emitThinkingEvent(onRuntimeEvent, text);
   }
 }
@@ -113,10 +129,11 @@ const CLI_CONFIG = {
     // 指标从 lib/codex-metrics.js 统一获取（见 close 事件处理）
     parse: (stdout, onText, onMeta, onRuntimeEvent) => {
       const rl = createInterface({ input: stdout });
+      const parseState = { sawReasoningText: false };
       rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
-          parseCodexJsonEvent(JSON.parse(line), onText, onMeta, onRuntimeEvent);
+          parseCodexJsonEvent(JSON.parse(line), onText, onMeta, onRuntimeEvent, parseState);
         } catch {
           // 忽略非 JSON 行
         }

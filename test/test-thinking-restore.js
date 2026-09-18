@@ -273,6 +273,20 @@ const waitFor = async (fn, n = 80) => {
       const t = liveEmbed.querySelector(".msg-time");
       assert(t && t.textContent.includes("执行中断"), `实时错误嵌入摘要保持"执行中断": ${t && t.textContent}`);
     }
+    // reply/error 已经归档后，CLI 仍可能补发最后一个 reasoning 事件；
+    // 必须追加到现有嵌入块，不能再创建第二条独立 Thinking 标签。
+    liveEs.emit("thinking-content", {
+      character: "YYF",
+      messageId: "rt-err-1",
+      text: "补充最终判断",
+      delta: false,
+    });
+    await sleep(50);
+    assert(!document.getElementById("thinking-YYF-rt-err-1"), "归档后迟到 thinking 不创建新的 live 记录");
+    assert(liveEmbed.querySelector(".thinking-content").textContent.includes("补充最终判断"), "归档后迟到 thinking 合并到原折叠");
+    const sameKeyThinking = document.querySelectorAll('[id^="thinking-archive-YYF-rt-err-1-"]');
+    assert(sameKeyThinking.length === 1, "同一轮只保留一个 Thinking 过程标签");
+
     const liveStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-YYF-rt-err-1-"));
     assert(!liveStandalone, "实时错误场景无独立过程记录行");
 

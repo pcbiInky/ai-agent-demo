@@ -403,6 +403,29 @@ html, body {
   margin-top: 0;
 }
 
+/* Bash 执行记录二级折叠：已完成的 Bash 卡片归组，默认折叠（类似 Thinking 过程） */
+.bash-records {
+  margin-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 4px;
+}
+.bash-records > summary {
+  cursor: pointer;
+  color: var(--text-light);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+.bash-records-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.bash-records-content .perm-card {
+  margin-top: 0;
+}
+
 .message.thinking-finished .process-step { opacity: 0.92; }
 
 .thinking-process {
