@@ -193,13 +193,15 @@ const waitFor = async (fn, n = 80) => {
 
       const chatContainer = document.getElementById("chat-container");
       const scrollArea = chainEmbed.querySelector(".thinking-scroll-area");
+      const liveContent = chainEmbed.querySelector(".thinking-live-content");
+      const toolRecords = chainEmbed.querySelector(".tool-records");
+      assert(!!liveContent, "工具执行记录上方内容使用独立窗口");
+      assert(!!toolRecords && toolRecords.parentElement === scrollArea, "工具执行记录位于独立窗口之外");
       chatContainer.scrollTop = 100;
-      chatContainer.getBoundingClientRect = () => ({ top: 0, bottom: 500 });
-      scrollArea.getBoundingClientRect = () => ({ top: 300, bottom: 650 });
       chainEmbed.querySelector(".thinking-embed-header").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       await sleep(50);
       assert(chainEmbed.classList.contains("expanded"), "点击过程记录后展开 Thinking 窗口");
-      assert(chatContainer.scrollTop === 262, "展开 Thinking 时外层消息列表自动补齐底部可视区域");
+      assert(chatContainer.scrollTop === 100, "展开 Thinking 不再推动外层消息列表");
     }
     // 嵌入块本身保留归档 id（供后续权限请求定位），只校验顶层没有独立行
     const standaloneChain = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-晔晔-c1-"));
@@ -277,8 +279,14 @@ const waitFor = async (fn, n = 80) => {
         await sleep(50);
         assert(liveThinkingContent.scrollTop === 320, "实时 Thinking 追加时只跟随内层内容滚动");
       }
+      const liveTopWindow = document.getElementById("thinking-YYF-rt-err-1")?.querySelector(".thinking-live-content");
+      if (liveTopWindow) {
+        Object.defineProperty(liveTopWindow, "scrollHeight", { configurable: true, value: 480 });
+        liveTopWindow.scrollTop = 0;
+      }
       liveEs.emit("permission", { requestId: "req-rt-err", character: "YYF", toolName: "Bash", input: { command: "boom" }, messageId: "rt-err-1" });
-    await sleep(50);
+      await sleep(50);
+      assert(liveTopWindow?.scrollTop === 480, "新工具步骤只跟随上方独立窗口滚动");
     liveEs.emit("error", { character: "YYF", messageId: "rt-err-1", error: "实时故障" });
     await sleep(100);
     const liveErr = [...document.querySelectorAll(".error-msg")].find((el) => (el.textContent || "").includes("实时故障"));

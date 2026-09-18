@@ -888,8 +888,10 @@ function showThinking(character, messageId) {
           <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M9 18l6-6-6-6"/></svg>
         </div>
           <div class="thinking-scroll-area">
-            <div class="process-log"></div>
-            <div class="perm-container"></div>
+            <div class="thinking-live-content">
+              <div class="process-log"></div>
+              <div class="perm-container"></div>
+            </div>
             <details class="thinking-process" hidden open>
               <summary>Thinking 过程</summary>
               <div class="thinking-content"></div>
@@ -914,24 +916,8 @@ function bindThinkingHeader(div) {
   header.addEventListener("click", () => {
     if (!div.classList.contains("thinking-finished")) return;
     div.dataset.userToggled = "true";
-    const expanded = div.classList.toggle("expanded");
-    if (!expanded) return;
-
-    const reveal = () => revealExpandedThinking(div);
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(reveal);
-    else setTimeout(reveal, 0);
+    div.classList.toggle("expanded");
   });
-}
-
-function revealExpandedThinking(div) {
-  const scrollArea = div.querySelector(".thinking-scroll-area");
-  if (!$chatContainer || !scrollArea) return;
-
-  const chatRect = $chatContainer.getBoundingClientRect();
-  const areaRect = scrollArea.getBoundingClientRect();
-  const viewportPadding = 12;
-  const bottomOverflow = areaRect.bottom - (chatRect.bottom - viewportPadding);
-  if (bottomOverflow > 0) $chatContainer.scrollTop += bottomOverflow;
 }
 
 // 更新过程记录头部的摘要：一行标题 + 执行记录条数
@@ -974,8 +960,10 @@ function showArchivedThinking(character, messageId) {
         <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
       </div>
         <div class="thinking-scroll-area">
-          <div class="process-log"></div>
-          <div class="perm-container"></div>
+          <div class="thinking-live-content">
+            <div class="process-log"></div>
+            <div class="perm-container"></div>
+          </div>
           <details class="thinking-process" hidden>
             <summary>Thinking 过程</summary>
             <div class="thinking-content"></div>
@@ -1165,9 +1153,9 @@ function appendPermRecord(container, { requestId, toolName, input, status = "pen
   const permContainer = container.querySelector(".perm-container");
   if (permContainer) {
     permContainer.insertAdjacentHTML("beforeend", buildPermCardHtml(requestId, toolName, input));
-    // 滚动 thinking 区域到底部，确保新卡片可见
-    const scrollArea = container.querySelector(".thinking-scroll-area");
-    if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+    // 上方实时过程是独立滚动窗口；新步骤到达时只跟随该窗口到底部
+    const liveContent = container.querySelector(".thinking-live-content");
+    if (liveContent) liveContent.scrollTop = liveContent.scrollHeight;
   }
 
   if (status && status !== "pending") {
@@ -1283,8 +1271,10 @@ function getToolRecordsDetails(container) {
       <summary class="tool-records-summary"></summary>
       <div class="tool-records-content"></div>
     `;
+    const liveContent = scrollArea.querySelector(".thinking-live-content");
     const permContainer = scrollArea.querySelector(".perm-container");
-    if (permContainer) permContainer.after(details);
+    if (liveContent) liveContent.after(details);
+    else if (permContainer) permContainer.after(details);
     else scrollArea.appendChild(details);
   }
   return details;
