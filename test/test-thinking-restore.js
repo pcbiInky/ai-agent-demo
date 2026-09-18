@@ -190,6 +190,16 @@ const waitFor = async (fn, n = 80) => {
       assert(chainEmbed.querySelectorAll(".perm-card").length === 1, "链式嵌入块含 1 张卡片");
       const t = chainEmbed.querySelector(".msg-time");
       assert(t && t.textContent === "过程记录 · 1 条执行记录", `链式嵌入摘要正确: ${t && t.textContent}`);
+
+      const chatContainer = document.getElementById("chat-container");
+      const scrollArea = chainEmbed.querySelector(".thinking-scroll-area");
+      chatContainer.scrollTop = 100;
+      chatContainer.getBoundingClientRect = () => ({ top: 0, bottom: 500 });
+      scrollArea.getBoundingClientRect = () => ({ top: 300, bottom: 650 });
+      chainEmbed.querySelector(".thinking-embed-header").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      await sleep(50);
+      assert(chainEmbed.classList.contains("expanded"), "点击过程记录后展开 Thinking 窗口");
+      assert(chatContainer.scrollTop === 262, "展开 Thinking 时外层消息列表自动补齐底部可视区域");
     }
     // 嵌入块本身保留归档 id（供后续权限请求定位），只校验顶层没有独立行
     const standaloneChain = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-晔晔-c1-"));

@@ -914,8 +914,24 @@ function bindThinkingHeader(div) {
   header.addEventListener("click", () => {
     if (!div.classList.contains("thinking-finished")) return;
     div.dataset.userToggled = "true";
-    div.classList.toggle("expanded");
+    const expanded = div.classList.toggle("expanded");
+    if (!expanded) return;
+
+    const reveal = () => revealExpandedThinking(div);
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(reveal);
+    else setTimeout(reveal, 0);
   });
+}
+
+function revealExpandedThinking(div) {
+  const scrollArea = div.querySelector(".thinking-scroll-area");
+  if (!$chatContainer || !scrollArea) return;
+
+  const chatRect = $chatContainer.getBoundingClientRect();
+  const areaRect = scrollArea.getBoundingClientRect();
+  const viewportPadding = 12;
+  const bottomOverflow = areaRect.bottom - (chatRect.bottom - viewportPadding);
+  if (bottomOverflow > 0) $chatContainer.scrollTop += bottomOverflow;
 }
 
 // 更新过程记录头部的摘要：一行标题 + 执行记录条数
