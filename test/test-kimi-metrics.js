@@ -6,6 +6,10 @@
  * 维度为 5h + month（没有 week）。
  */
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
 let passed = 0;
 let failed = 0;
 
@@ -160,6 +164,140 @@ async function testGetKimiRoleCardMetricsInvalidJson() {
   eq(result.sources.usage, "invalid-json", "invalid-json: source tagged");
 }
 
+function testShouldRefreshCredentials() {
+  const { shouldRefreshCredentials } = reload();
+  const now = 1_000;
+  eq(
+    shouldRefreshCredentials({ accessToken: "a", refreshToken: "r", expiresAt: now + 200, expiresIn: 900 }, now),
+    true,
+    "refresh threshold: refreshes near expiry"
+  );
+  eq(
+    shouldRefreshCredentials({ accessToken: "a", refreshToken: "r", expiresAt: now + 600, expiresIn: 900 }, now),
+    false,
+    "refresh threshold: keeps sufficiently fresh token"
+  );
+  eq(
+    shouldRefreshCredentials({ accessToken: "a", refreshToken: null, expiresAt: now - 1, expiresIn: 900 }, now),
+    false,
+    "refresh threshold: cannot refresh without refresh token"
+  );
+}
+
+function testCredentialsRoundTrip() {
+  const mod = reload();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "kimi-credentials-"));
+  const credentialsPath = path.join(tempDir, "credentials", "kimi-code.json");
+  try {
+    mod.writeKimiCredentials(credentialsPath, {
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresAt: 2_000,
+      expiresIn: 900,
+      scope: "kimi-code",
+      tokenType: "Bearer",
+    });
+    const loaded = mod.readKimiCredentials(credentialsPath);
+    eq(loaded.accessToken, "access", "credentials round trip: access token");
+    eq(loaded.refreshToken, "refresh", "credentials round trip: refresh token");
+    eq(loaded.expiresAt, 2_000, "credentials round trip: expiry");
+    if (process.platform !== "win32") {
+      eq(fs.statSync(credentialsPath).mode & 0o777, 0o600, "credentials round trip: private file mode");
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testExpiredCredentialsRefreshBeforeUsage() {
+  const mod = reload();
+  let credentials = {
+    accessToken: "expired-access",
+    refreshToken: "old-refresh",
+    expiresAt: 900,
+    expiresIn: 900,
+    scope: "kimi-code",
+    tokenType: "Bearer",
+  };
+  let refreshCalls = 0;
+  let usageCalls = 0;
+  const result = await mod.getKimiRoleCardMetrics({
+    credentialsPath: "/test/kimi-code.json",
+    usagesUrl: "https://usage.test/usages",
+    oauthTokenUrl: "https://auth.test/api/oauth/token",
+    nowSeconds: () => 1_000,
+    readCredentials: () => credentials,
+    writeCredentials: (_path, next) => { credentials = next; },
+    fetchImpl: async (url, options) => {
+      if (url.includes("oauth/token")) {
+        refreshCalls += 1;
+        const form = new URLSearchParams(options.body);
+        eq(form.get("grant_type"), "refresh_token", "expired refresh: refresh_token grant");
+        eq(form.get("refresh_token"), "old-refresh", "expired refresh: sends stored refresh token");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: "fresh-access",
+            refresh_token: "fresh-refresh",
+            expires_in: 900,
+            scope: "kimi-code",
+            token_type: "Bearer",
+          }),
+        };
+      }
+      usageCalls += 1;
+      eq(options.headers.Authorization, "Bearer fresh-access", "expired refresh: usage uses refreshed token");
+      return { ok: true, status: 200, json: async () => REAL_BODY };
+    },
+  });
+  eq(refreshCalls, 1, "expired refresh: token endpoint called once");
+  eq(usageCalls, 1, "expired refresh: usage endpoint called once");
+  eq(credentials.expiresAt, 1_900, "expired refresh: refreshed expiry persisted");
+  eq(result.usageWindows.length, 2, "expired refresh: quota is visible immediately");
+}
+
+async function testUsage401ForcesRefreshAndRetry() {
+  const mod = reload();
+  let credentials = {
+    accessToken: "rejected-access",
+    refreshToken: "old-refresh",
+    expiresAt: 10_000,
+    expiresIn: 900,
+  };
+  let usageCalls = 0;
+  let refreshCalls = 0;
+  const result = await mod.getKimiRoleCardMetrics({
+    credentialsPath: "/test/kimi-code-401.json",
+    usagesUrl: "https://usage.test/usages",
+    oauthTokenUrl: "https://auth.test/api/oauth/token",
+    nowSeconds: () => 1_000,
+    readCredentials: () => credentials,
+    writeCredentials: (_path, next) => { credentials = next; },
+    fetchImpl: async (url, options) => {
+      if (url.includes("oauth/token")) {
+        refreshCalls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: "fresh-after-401",
+            refresh_token: "fresh-refresh",
+            expires_in: 900,
+          }),
+        };
+      }
+      usageCalls += 1;
+      if (usageCalls === 1) return { ok: false, status: 401 };
+      eq(options.headers.Authorization, "Bearer fresh-after-401", "401 retry: uses refreshed token");
+      return { ok: true, status: 200, json: async () => REAL_BODY };
+    },
+  });
+  eq(refreshCalls, 1, "401 retry: refresh called once");
+  eq(usageCalls, 2, "401 retry: usage called twice");
+  eq(result.usageWindows.length, 2, "401 retry: quota recovered");
+}
+
 async function main() {
   try {
     testNormalizeRealBody();
@@ -167,6 +305,10 @@ async function main() {
     testNormalizeMissingMonth();
     testNormalizeNullBody();
     testWindowDurationMinutes();
+    testShouldRefreshCredentials();
+    testCredentialsRoundTrip();
+    await testExpiredCredentialsRefreshBeforeUsage();
+    await testUsage401ForcesRefreshAndRetry();
     await testGetKimiRoleCardMetricsSuccess();
     await testGetKimiRoleCardMetricsNoCredentials();
     await testGetKimiRoleCardMetricsFetchRejects();

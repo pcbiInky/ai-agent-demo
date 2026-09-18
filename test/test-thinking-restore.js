@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 过程记录恢复 / 折叠 / 嵌入的回归测试（jsdom 模拟刷新与切会话）
 // 覆盖：按快照序号建连、已回复+active（主线与 thread 深层）、resync 闭环、
-//       旧连接迟到 resync、resync 与切会话并发不串写、未回复 active 终止按钮、完成事件清理
+//       旧连接迟到 resync、resync 与切会话并发不串写、未回复 active 终止按钮、完成事件清理、
+//       错误消息绑定（实时 error SSE 与历史重放的执行记录均嵌入错误气泡）
 const fs = require("fs");
 const path = require("path");
 
@@ -67,6 +68,16 @@ const sessions = {
     lastSeq: 20,
     activeThinking: [],
   },
+  // 历史错误绑定：permission.messageId 与 error.replyTo 对应
+  "sess-4": {
+    messages: [
+      { id: "e1", role: "user", text: "触发故障", timestamp: 1 },
+      { id: "ep1", role: "permission", requestId: "req-e1", character: "晔晔", toolName: "Bash", input: { command: "err-cmd" }, timestamp: 2, messageId: "e1", status: "allow" },
+      { id: "ee1", role: "error", character: "晔晔", error: "历史故障", replyTo: "e1", timestamp: 3 },
+    ],
+    lastSeq: 30,
+    activeThinking: [],
+  },
 };
 
 let sess1FetchCount = 0;
@@ -90,6 +101,9 @@ class MockEventSource {
 function stubFetch(url) {
   const ok = (payload) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
   if (url.includes("/api/history")) {
+    if (url.includes("sess-4")) {
+      return ok({ sessionId: "sess-4", createdAt: 0, ...sessions["sess-4"] });
+    }
     if (url.includes("sess-3")) {
       return ok({ sessionId: "sess-3", createdAt: 0, ...sessions["sess-3"] });
     }
@@ -229,6 +243,40 @@ const waitFor = async (fn, n = 80) => {
     assert(!r2Embed, "后渲染的回复二不搬走执行记录");
     const dupStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-YYF-m1-"));
     assert(!dupStandalone, "重复回复场景无独立过程记录行");
+
+    // ── 实时：error SSE 后执行记录嵌入错误气泡，摘要保持"执行中断" ──
+    const liveEs = esInstances[0];
+    liveEs.emit("thinking", { character: "YYF", messageId: "rt-err-1" });
+    await sleep(50);
+    liveEs.emit("permission", { requestId: "req-rt-err", character: "YYF", toolName: "Bash", input: { command: "boom" }, messageId: "rt-err-1" });
+    await sleep(50);
+    liveEs.emit("error", { character: "YYF", messageId: "rt-err-1", error: "实时故障" });
+    await sleep(100);
+    const liveErr = [...document.querySelectorAll(".error-msg")].find((el) => (el.textContent || "").includes("实时故障"));
+    assert(!!liveErr, "实时错误气泡已渲染");
+    const liveEmbed = liveErr && liveErr.querySelector(":scope > .bubble-wrapper > .thinking-embed");
+    assert(!!liveEmbed, "实时错误气泡内嵌执行记录");
+    if (liveEmbed) {
+      assert(liveEmbed.querySelectorAll(".perm-card").length === 1, "实时错误嵌入块含 1 张卡片");
+      const t = liveEmbed.querySelector(".msg-time");
+      assert(t && t.textContent.includes("执行中断"), `实时错误嵌入摘要保持"执行中断": ${t && t.textContent}`);
+    }
+    const liveStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-YYF-rt-err-1-"));
+    assert(!liveStandalone, "实时错误场景无独立过程记录行");
+
+    // ── 历史：permission.messageId 与 error.replyTo 对应，重放后执行记录嵌入错误气泡 ──
+    esInstances.length = 0;
+    dom.window.eval('switchSession("sess-4")');
+    await waitFor(() => !![...document.querySelectorAll(".error-msg")].find((el) => (el.textContent || "").includes("历史故障")));
+    const histErr = [...document.querySelectorAll(".error-msg")].find((el) => (el.textContent || "").includes("历史故障"));
+    assert(!!histErr, "历史错误气泡已渲染");
+    const histEmbed = histErr && histErr.querySelector(":scope > .bubble-wrapper > .thinking-embed");
+    assert(!!histEmbed, "历史错误气泡内嵌执行记录");
+    if (histEmbed) {
+      assert(histEmbed.querySelectorAll(".perm-card").length === 1, "历史错误嵌入块含 1 张卡片");
+    }
+    const histStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-晔晔-e1-"));
+    assert(!histStandalone, "历史错误场景无独立过程记录行");
 
     // ── 全文无未归档 thinking 残留 ──
     let residue = false;

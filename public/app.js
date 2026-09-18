@@ -431,7 +431,9 @@ function connectSSE() {
       const data = JSON.parse(e.data);
       setCharStatus(data.character, "online");
       finalizeThinking(data.character, data.messageId, "error");
-      appendErrorMessage(data.character, data.error);
+      const errorEl = appendErrorMessage(data.character, data.error);
+      // 归档后的执行记录嵌入错误气泡内部，不再作为独立行残留
+      if (data.messageId) attachThinkingToReply(data.character, data.messageId, errorEl);
       loadSessionList();
       loadSkillTraces();
     }
@@ -835,7 +837,7 @@ function updateThreadPanelIfOpen(threadId) {
   }
 }
 
-function appendErrorMessage(character, error) {
+function appendErrorMessage(character, error, timestamp) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
   const avatar = getAvatar(character, "!");
@@ -848,13 +850,14 @@ function appendErrorMessage(character, error) {
     <div class="bubble-wrapper">
       <div class="msg-header">
         <span class="character-name">${escapeHtml(displayName)}</span>
-        <span class="msg-time">${formatTimeShort(Date.now())}</span>
+        <span class="msg-time">${formatTimeShort(timestamp || Date.now())}</span>
       </div>
       <div class="bubble">${escapeHtml(error)}</div>
     </div>
   `;
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
+  return div;
 }
 
 // ── Thinking ──────────────────────────────────────────────
@@ -1777,7 +1780,9 @@ async function loadHistory(forSessionId = state.sessionId) {
         state.lastSpeaker = msg.character;
       } else if (msg.role === "error") {
         flushPerms(msg.character, msg.replyTo);
-        appendErrorMessage(msg.character, msg.error);
+        const errorEl = appendErrorMessage(msg.character, msg.error, msg.timestamp);
+        // 执行记录嵌入错误气泡内部（replyTo 即对应 thinking 的 messageId）
+        if (msg.replyTo) attachThinkingToReply(msg.character, msg.replyTo, errorEl);
       } else if (msg.role === "permission") {
         const key = permKey(msg.character, msg.messageId);
         if (replyKeys.has(key)) {
