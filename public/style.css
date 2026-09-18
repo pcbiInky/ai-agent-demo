@@ -405,6 +405,31 @@ html, body {
 
 .message.thinking-finished .process-step { opacity: 0.92; }
 
+.thinking-process {
+  margin-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 6px;
+}
+.thinking-process[hidden] { display: none; }
+.thinking-process summary {
+  cursor: pointer;
+  color: var(--text-light);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+.thinking-content {
+  margin-top: 6px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+  color: #495057;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── 输入区 ────────────────────────────── */
 #input-area {
   padding: 12px 20px;
@@ -1246,18 +1271,6 @@ html, body {
   background: var(--error-text);
   color: #fff;
 }
-.msg-processing {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-light);
-  background: rgba(0,0,0,0.04);
-  padding: 1px 8px;
-  border-radius: 8px;
-  margin-left: 4px;
-}
-
 /* ── Skill 面板 ─────────────────────────── */
 #skill-trace-list,
 #skill-list {

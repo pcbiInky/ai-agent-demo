@@ -130,6 +130,9 @@ const sseClients = new Map();
 const pendingPermissions = new Map();
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
+// sessionId:thinkingRecordId -> 累积中的 thinking 日志；SSE 即时推送，磁盘按窗口节流写入
+const pendingThinkingLogs = new Map();
+const THINKING_LOG_FLUSH_MS = 400;
 // browserSessionId -> { seq, journal }（近期 SSE 事件，供刷新/断线后按序号续订）
 const sseStreams = new Map();
 const SSE_JOURNAL_LIMIT = 200;
@@ -262,6 +265,100 @@ function buildPermissionLogEntry({
 
 function appendPermissionToLog(sessionId, payload) {
   appendToLog(sessionId, buildPermissionLogEntry(payload));
+}
+
+function getThinkingLogKey(sessionId, recordId) {
+  return `${sessionId}:${recordId}`;
+}
+
+function scheduleThinkingLogFlush(key) {
+  const pending = pendingThinkingLogs.get(key);
+  if (!pending || pending.timer) return;
+  const retryDelay = THINKING_LOG_FLUSH_MS * Math.min(4, 2 ** pending.retryCount);
+  pending.timer = setTimeout(() => flushThinkingToLog(key), retryDelay);
+  pending.timer.unref?.();
+}
+
+function appendThinkingToLog(sessionId, payload) {
+  const { id, character, messageId, threadId, text, delta = false, timestamp } = payload;
+  if (!id || !messageId || typeof text !== "string" || !text.trim()) return;
+
+  const key = getThinkingLogKey(sessionId, id);
+  let pending = pendingThinkingLogs.get(key);
+  if (!pending) {
+    pending = {
+      sessionId,
+      id,
+      character,
+      messageId,
+      threadId,
+      timestamp: timestamp || Date.now(),
+      text: "",
+      dirty: false,
+      finalRequested: false,
+      retryCount: 0,
+      timer: null,
+    };
+    pendingThinkingLogs.set(key, pending);
+  }
+
+  const separator = pending.text && !delta ? "\n\n" : "";
+  pending.text += separator + text;
+  pending.dirty = true;
+  pending.retryCount = 0;
+  scheduleThinkingLogFlush(key);
+}
+
+function flushThinkingToLog(key, { final = false } = {}) {
+  const pending = pendingThinkingLogs.get(key);
+  if (!pending) return;
+
+  if (final) pending.finalRequested = true;
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = null;
+  }
+  if (!pending.dirty) {
+    if (pending.finalRequested) pendingThinkingLogs.delete(key);
+    return;
+  }
+
+  const filePath = path.join(LOG_DIR, `${pending.sessionId}.json`);
+  try {
+    const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    let record = log.messages.find((message) => message.id === pending.id);
+    if (!record) {
+      record = {
+        id: pending.id,
+        role: "thinking",
+        character: pending.character,
+        messageId: pending.messageId,
+        text: "",
+        timestamp: pending.timestamp,
+        ...(pending.threadId && { threadId: pending.threadId }),
+      };
+      log.messages.push(record);
+    }
+    record.text = pending.text;
+    fs.writeFileSync(filePath, JSON.stringify(log, null, 2));
+    pending.dirty = false;
+    pending.retryCount = 0;
+  } catch (err) {
+    pending.retryCount += 1;
+    console.error(`[thinking-log] 写入失败，将保留缓冲重试: ${err?.message || err}`);
+  }
+
+  if (!pending.dirty && pending.finalRequested) {
+    pendingThinkingLogs.delete(key);
+  } else if (pending.dirty) {
+    scheduleThinkingLogFlush(key);
+  }
+}
+
+function flushPendingThinkingForSession(sessionId) {
+  for (const [key, pending] of pendingThinkingLogs) {
+    if (pending.sessionId === sessionId) flushThinkingToLog(key);
+  }
 }
 
 function updatePermissionInLog(sessionId, requestId, updates) {
@@ -787,9 +884,12 @@ app.get("/api/history", (req, res) => {
   const { sessionId } = req.query;
   if (!sessionId) return res.status(400).json({ error: "sessionId 不能为空" });
 
+  // thinking SSE 先于节流落盘；生成快照前同步刷新本会话缓冲，
+  // 保证 lastSeq 覆盖的 thinking 事件也已经进入历史，不留刷新丢失窗口。
+  flushPendingThinkingForSession(sessionId);
   const filePath = path.join(LOG_DIR, `${sessionId}.json`);
   try {
-    // 先读日志文件，再取事件序号：日志先于事件推送落盘，
+    // 先读日志文件，再取事件序号：日志先于快照序号返回，
     // 因此快照里已有的消息其事件序号必然 <= lastSeq，续订时不会重复
     const log = JSON.parse(fs.readFileSync(filePath, "utf-8"));
     res.json({
@@ -996,6 +1096,8 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   // 保证 next 恒为 fulfilled，不会以 rejected 状态毒化后续链
   const next = prev.then(async () => {
     let chainKey = null;
+    const thinkingRecordId = crypto.randomUUID();
+    const thinkingLogKey = getThinkingLogKey(browserSessionId, thinkingRecordId);
     try {
       // 从落盘的 session-context 读取 provider sessionId
       const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
@@ -1024,6 +1126,18 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
             updateRoleRuntimeMetrics(browserSessionId, roleId, runtimeEvent.data);
           } else if (runtimeEvent.type === "context_compacted") {
             updateRoleRuntimeMetrics(browserSessionId, roleId, runtimeEvent.data);
+          } else if (runtimeEvent.type === "thinking" && thinkingMessageId && runtimeEvent.text) {
+            const thinkingPayload = {
+              id: thinkingRecordId,
+              character,
+              messageId: thinkingMessageId,
+              ...(thinkingThreadId && { threadId: thinkingThreadId }),
+              text: runtimeEvent.text,
+              delta: runtimeEvent.delta === true,
+              timestamp: runtimeEvent.timestamp || Date.now(),
+            };
+            appendThinkingToLog(browserSessionId, thinkingPayload);
+            emitSSE(browserSessionId, "thinking-content", thinkingPayload);
           }
         },
       });
@@ -1032,6 +1146,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       // 落盘 provider sessionId
       sessionStore.setProviderSessionId(browserSessionId, roleId, result.sessionId);
       recordSkillTrace(browserSessionId, skillDecision, "ok");
+      flushThinkingToLog(thinkingLogKey, { final: true });
       clearActiveThinking(browserSessionId, character, thinkingMessageId);
       // 完成事件携带 messageId，前端按 character + messageId 精确清理 live thinking
       emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
@@ -1042,6 +1157,7 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       try {
         recordSkillTrace(browserSessionId, skillDecision, "error");
         resetInvokeSendGuard(browserSessionId, character);
+        flushThinkingToLog(thinkingLogKey, { final: true });
         clearActiveThinking(browserSessionId, character, thinkingMessageId);
         emitSSE(browserSessionId, "status", { character, status: "online", messageId: thinkingMessageId });
       } catch (teardownErr) {
@@ -1378,7 +1494,7 @@ function buildContextPrompt(sessionId, prompt, character, { depth = 0, fromChara
 
 【共享聊天记录】
 - 聊天记录文件: ${logPath}
-- 格式: JSON { sessionId, createdAt, messages: [{ id, role, character, text, timestamp, threadId?, replyToThread?, aiMentions? }] }
+- 格式: JSON { sessionId, createdAt, messages: [{ id, role, character, text, timestamp, messageId?, threadId?, replyToThread?, aiMentions? }] }；role 可能为 user、assistant、permission、thinking 或 error
 - 参与角色: ${characterInfo}
 - 用户昵称: 铲屎官
 - 会话信息:
@@ -1744,6 +1860,10 @@ module.exports = {
     getSkillTraces,
     isMentionAllowedInSession,
     appendToLog,
+    appendThinkingToLog,
+    flushThinkingToLog,
+    getThinkingLogKey,
+    pendingThinkingLogs,
     storeApproval,
     invokeChainCallers,
     invokeQueues,

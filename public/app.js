@@ -399,6 +399,14 @@ function connectSSE() {
     loadSessionList();
   });
 
+  es.addEventListener("thinking-content", (e) => {
+    const data = JSON.parse(e.data);
+    setCharStatus(data.character, "thinking");
+    showThinking(data.character, data.messageId);
+    const container = findThinkingElement(data.character, data.messageId);
+    if (container) appendThinkingContent(container, data);
+  });
+
   es.addEventListener("reply", (e) => {
     const data = JSON.parse(e.data);
     finalizeThinking(data.character, data.messageId, "done");
@@ -413,10 +421,7 @@ function connectSSE() {
       attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     }
 
-    // MCP 消息：invoke 可能还在运行（CLI 退出前），用处理中标记提示用户
-    if (data.source === "mcp-tool") {
-      markMessageProcessing(data.replyId, data.character);
-    } else {
+    if (data.source !== "mcp-tool") {
       setCharStatus(data.character, "online");
     }
 
@@ -452,7 +457,6 @@ function connectSSE() {
   es.addEventListener("abort", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "online");
-    clearMessageProcessing(data.character);
     // 找到所有该角色正在 thinking 的元素，标记为已终止
     const els = document.querySelectorAll(`[id^="thinking-${data.character}-"]`);
     for (const el of els) {
@@ -466,9 +470,7 @@ function connectSSE() {
   es.addEventListener("status", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, data.status);
-    // invoke 真正结束时清除消息上的"处理中"标记
     if (data.status === "online") {
-      clearMessageProcessing(data.character);
       // 完成事件携带 messageId 时，按 character + messageId 精确清理 live thinking
       if (data.messageId) finalizeThinking(data.character, data.messageId, "done");
     }
@@ -883,10 +885,14 @@ function showThinking(character, messageId) {
           <button class="abort-btn" title="终止执行" data-character="${escapeHtml(character)}">终止</button>
           <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M9 18l6-6-6-6"/></svg>
         </div>
-        <div class="thinking-scroll-area">
-          <div class="process-log"></div>
-          <div class="perm-container"></div>
-        </div>
+          <div class="thinking-scroll-area">
+            <div class="process-log"></div>
+            <div class="perm-container"></div>
+            <details class="thinking-process" hidden open>
+              <summary>Thinking 过程</summary>
+              <div class="thinking-content"></div>
+            </details>
+          </div>
       </div>
   `;
   // 绑定终止按钮
@@ -948,10 +954,14 @@ function showArchivedThinking(character, messageId) {
         <span class="msg-time">过程记录</span>
         <svg class="thinking-toggle-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
       </div>
-      <div class="thinking-scroll-area">
-        <div class="process-log"></div>
-        <div class="perm-container"></div>
-      </div>
+        <div class="thinking-scroll-area">
+          <div class="process-log"></div>
+          <div class="perm-container"></div>
+          <details class="thinking-process" hidden>
+            <summary>Thinking 过程</summary>
+            <div class="thinking-content"></div>
+          </details>
+        </div>
     </div>
   `;
   bindThinkingHeader(div);
@@ -964,7 +974,8 @@ function finalizeThinking(character, messageId, status = "done") {
   if (!el) return;
   const hasPerm = !!el.querySelector(".perm-card");
   const hasStep = !!el.querySelector(".process-step");
-  if (!hasPerm && !hasStep) {
+  const hasThinking = !!el.querySelector(".thinking-content")?.textContent?.trim();
+  if (!hasPerm && !hasStep && !hasThinking) {
     el.remove();
     return;
   }
@@ -975,10 +986,25 @@ function finalizeThinking(character, messageId, status = "done") {
 
   // 默认折叠；执行过程中用户手动展开过则保留其状态
   if (el.dataset.userToggled !== "true") el.classList.remove("expanded");
+  const thinkingProcess = el.querySelector(".thinking-process");
+  if (thinkingProcess) thinkingProcess.open = false;
   updateThinkingSummary(el, status);
 
   const buttons = el.querySelectorAll(".perm-summary-actions .perm-btn");
   for (const btn of buttons) btn.disabled = true;
+}
+
+function appendThinkingContent(container, { text, delta = false }) {
+  if (!container || typeof text !== "string" || !text.trim()) return;
+  const details = container.querySelector(".thinking-process");
+  const content = details?.querySelector(".thinking-content");
+  if (!details || !content) return;
+  details.hidden = false;
+  if (!container.classList.contains("thinking-finished")) details.open = true;
+  const separator = content.textContent && !delta ? "\n\n" : "";
+  content.appendChild(document.createTextNode(separator + text));
+  const scrollArea = container.querySelector(".thinking-scroll-area");
+  if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
 }
 
 // 把过程记录嵌入到绑定回复内部（回复内容上方），不再另起一行角色记录；
@@ -1027,25 +1053,6 @@ async function abortInvoke(character) {
   } catch (err) {
     console.error("[abort] 请求失败:", err);
   }
-}
-
-// ── 消息级"处理中"标记（invoke 未结束时显示在消息上方）──
-function markMessageProcessing(msgId, character) {
-  const el = state.messageElements[msgId];
-  if (!el) return;
-  // 在消息 header 中追加处理中标记
-  const header = el.querySelector(".msg-header");
-  if (!header || header.querySelector(".msg-processing")) return;
-  const badge = document.createElement("span");
-  badge.className = "msg-processing";
-  badge.dataset.character = character;
-  badge.innerHTML = '<span class="thinking-spinner"></span>仍在处理中';
-  header.appendChild(badge);
-}
-
-function clearMessageProcessing(character) {
-  const badges = document.querySelectorAll(`.msg-processing[data-character="${character}"]`);
-  for (const badge of badges) badge.remove();
 }
 
 // ── 权限审批卡片（紧凑模式） ────────────────────────────
@@ -1721,7 +1728,7 @@ async function loadHistory(forSessionId = state.sessionId) {
     // 执行记录先按 角色+用户消息 暂存，渲染到绑定的回复/错误消息时
     // 再建容器，保证过程记录紧跟该回复，而不是留在执行期间的原位置；
     // 匹配不到回复的（如执行被中断）按原时间位置渲染
-    const pendingPerms = new Map(); // key: character|messageId -> records[]
+    const pendingPerms = new Map(); // key: character|messageId -> permission/thinking records[]
     const permKey = (character, messageId) => `${character}|${messageId}`;
     const activeKeys = new Set(activeThinkingList.map((t) => permKey(t.character, t.messageId)));
     // 快照 active 且回复已落盘的 key：恢复标记而不是新建空 thinking
@@ -1732,7 +1739,10 @@ async function loadHistory(forSessionId = state.sessionId) {
       if (!records) return;
       pendingPerms.delete(permKey(character, messageId));
       const container = showArchivedThinking(character, messageId);
-      for (const rec of records) appendPermRecord(container, rec);
+      for (const rec of records) {
+        if (rec.role === "thinking") appendThinkingContent(container, rec);
+        else appendPermRecord(container, rec);
+      }
     };
 
     // 预判哪些执行记录能匹配到回复/错误消息（replyTo + 角色）；
@@ -1769,11 +1779,9 @@ async function loadHistory(forSessionId = state.sessionId) {
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         }
         // 快照仍 active 但回复已落盘（主线与 thread 深层回复都覆盖）：
-        // invoke 尚未退出，在回复上恢复"处理中"标记，
-        // 与实时 reply 路径一致，不再额外新建空 thinking
+        // 不再额外新建空 thinking，角色状态仍保持为 thinking
         const key = permKey(msg.character, msg.replyTo);
         if (msg.replyTo && activeKeys.has(key)) {
-          markMessageProcessing(msg.id, msg.character);
           activeRepliedKeys.add(key);
         }
         updateStats(msg.character);
@@ -1798,11 +1806,24 @@ async function loadHistory(forSessionId = state.sessionId) {
           const container = showArchivedThinking(msg.character, msg.messageId);
           appendPermRecord(container, msg);
         }
+      } else if (msg.role === "thinking") {
+        const key = permKey(msg.character, msg.messageId);
+        if (replyKeys.has(key)) {
+          if (!pendingPerms.has(key)) pendingPerms.set(key, []);
+          pendingPerms.get(key).push(msg);
+        } else if (activeKeys.has(key)) {
+          showThinking(msg.character, msg.messageId);
+          const container = findThinkingElement(msg.character, msg.messageId);
+          if (container) appendThinkingContent(container, msg);
+        } else {
+          const container = showArchivedThinking(msg.character, msg.messageId);
+          appendThinkingContent(container, msg);
+        }
       }
     }
 
     // 恢复仍在执行中的 invoke（含还没有任何执行记录的），保持"处理中"可见；
-    // 已有回复落盘的只保留"处理中"标记，不再新建空 thinking
+    // 已有回复落盘的不再新建空 thinking
     for (const t of activeThinkingList) {
       if (!activeRepliedKeys.has(permKey(t.character, t.messageId))) {
         showThinking(t.character, t.messageId);
@@ -1813,7 +1834,10 @@ async function loadHistory(forSessionId = state.sessionId) {
     // 兜底：理论上已清空，防止异常导致暂存记录丢失
     for (const records of pendingPerms.values()) {
       const container = showArchivedThinking(records[0].character, records[0].messageId);
-      for (const rec of records) appendPermRecord(container, rec);
+      for (const rec of records) {
+        if (rec.role === "thinking") appendThinkingContent(container, rec);
+        else appendPermRecord(container, rec);
+      }
     }
 
     // 汇总每个过程记录容器的摘要（标题 + 条数），含嵌入回复内部的

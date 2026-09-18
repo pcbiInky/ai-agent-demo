@@ -27,6 +27,42 @@ process.on("exit", cleanupChildren);
 const KIMI_LOCAL_COMMAND = path.join(os.homedir(), ".kimi-code", "bin", "kimi");
 const KIMI_DEFAULT_COMMAND = fs.existsSync(KIMI_LOCAL_COMMAND) ? KIMI_LOCAL_COMMAND : "kimi";
 
+function emitThinkingEvent(onRuntimeEvent, text, { delta = false } = {}) {
+  if (typeof onRuntimeEvent !== "function" || typeof text !== "string" || !text.trim()) return;
+  onRuntimeEvent({ type: "thinking", text, delta, timestamp: Date.now() });
+}
+
+function parseClaudeJsonEvent(event, onText, onMeta, onRuntimeEvent) {
+  if (event?.type !== "assistant") return;
+  for (const block of event.message?.content ?? []) {
+    if (block?.type === "text" && block.text) {
+      onText(block.text);
+    } else if (block?.type === "thinking") {
+      emitThinkingEvent(onRuntimeEvent, block.thinking || block.text || "");
+    }
+  }
+}
+
+function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent) {
+  if (event?.type === "thread.started" && event.thread_id) {
+    onMeta?.({ sessionId: event.thread_id });
+  }
+  if (event?.type !== "item.completed") return;
+  if (event.item?.type === "agent_message") {
+    const text = typeof event.item.text === "string" ? event.item.text : "";
+    if (text) onText(text);
+    return;
+  }
+  if (event.item?.type === "reasoning") {
+    const text = typeof event.item.text === "string"
+      ? event.item.text
+      : typeof event.item.summary === "string"
+        ? event.item.summary
+        : "";
+    emitThinkingEvent(onRuntimeEvent, text);
+  }
+}
+
 // CLI 配置表：只定义各 CLI 的差异部分
 // session 参数两者一致：首次 --session-id <uuid>，后续 --resume <uuid>
 const CLI_CONFIG = {
@@ -34,17 +70,12 @@ const CLI_CONFIG = {
     command: "claude",
     extraArgs: ["--output-format", "stream-json", "--verbose"],
     // stream-json: 逐行解析 NDJSON，提取 assistant 事件中的文本
-    parse: (stdout, onText) => {
+    parse: (stdout, onText, onMeta, onRuntimeEvent) => {
       const rl = createInterface({ input: stdout });
       rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
-          const event = JSON.parse(line);
-          if (event.type === "assistant") {
-            for (const block of event.message?.content ?? []) {
-              if (block.type === "text" && block.text) onText(block.text);
-            }
-          }
+          parseClaudeJsonEvent(JSON.parse(line), onText, onMeta, onRuntimeEvent);
         } catch {
           // 忽略非 JSON 行
         }
@@ -80,19 +111,12 @@ const CLI_CONFIG = {
     },
     // JSONL 输出：提取 agent_message 文本 + thread_id（作为 sessionId 统一概念）
     // 指标从 lib/codex-metrics.js 统一获取（见 close 事件处理）
-    parse: (stdout, onText, onMeta) => {
+    parse: (stdout, onText, onMeta, onRuntimeEvent) => {
       const rl = createInterface({ input: stdout });
       rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
-          const event = JSON.parse(line);
-          if (event.type === "thread.started" && event.thread_id) {
-            onMeta?.({ sessionId: event.thread_id });
-          }
-          if (event.type === "item.completed" && event.item?.type === "agent_message") {
-            const text = typeof event.item.text === "string" ? event.item.text : "";
-            if (text) onText(text);
-          }
+          parseCodexJsonEvent(JSON.parse(line), onText, onMeta, onRuntimeEvent);
         } catch {
           // 忽略非 JSON 行
         }
@@ -666,7 +690,7 @@ function invoke(cli, prompt, sessionId, options = {}) {
       result += text;
     }, (meta) => {
       if (meta?.sessionId) reportedSessionId = meta.sessionId;
-    });
+    }, onRuntimeEvent);
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -780,6 +804,8 @@ module.exports = {
     buildMcpHint,
     prependPrioritySections,
     buildUserPromptForCli,
+    parseClaudeJsonEvent,
+    parseCodexJsonEvent,
     resolveCliInvocation,
   },
 };
