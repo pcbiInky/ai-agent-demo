@@ -49,9 +49,14 @@ function flushCodexProgressMessage(state, onRuntimeEvent) {
   state.pendingAgentMessage = "";
 }
 
-function flushCodexFinalMessage(state, onText) {
+function flushCodexFinalMessage(state, onText, onRuntimeEvent) {
   const text = typeof state.pendingAgentMessage === "string" ? state.pendingAgentMessage : "";
-  if (text) onText(text);
+  if (text) {
+    // 所有 agent_message 都属于过程；最后一条用横线与前面的过程内容分隔。
+    emitThinkingEvent(onRuntimeEvent, `────────────────\n${text}`);
+    // 保留原始输出仅供缺少 SendMessage 时的协议违规诊断，不作为网页最终回复。
+    onText(text);
+  }
   state.pendingAgentMessage = "";
 }
 
@@ -64,24 +69,18 @@ function parseCodexJsonEvent(event, onText, onMeta, onRuntimeEvent, state = {}) 
     return;
   }
   if (event?.type === "turn.completed") {
-    flushCodexFinalMessage(state, onText);
+    flushCodexFinalMessage(state, onText, onRuntimeEvent);
     return;
   }
 
   const isAgentMessage = event?.type === "item.completed"
     && event.item?.type === "agent_message";
   if (isAgentMessage) {
-    // Codex 会用 agent_message 同时输出过程说明和最终回复。
-    // 暂存最新一条：后续还有 item 时，上一条属于过程；turn.completed 时，最后一条才是最终回复。
+    // 暂存最新一条，以便在下一条到达时确认前一条不是最后一条。
+    // 最后一条在 turn.completed 时加横线后同样写入 Thinking。
     flushCodexProgressMessage(state, onRuntimeEvent);
     const text = typeof event.item.text === "string" ? event.item.text : "";
     state.pendingAgentMessage = text;
-    return;
-  }
-
-  // agent_message 后继续出现任意 item，说明该 message 是执行过程说明，而非最终回复。
-  if (typeof event?.type === "string" && event.type.startsWith("item.")) {
-    flushCodexProgressMessage(state, onRuntimeEvent);
   }
 }
 
@@ -131,7 +130,8 @@ const CLI_CONFIG = {
       }
       return ["exec", "--json", prompt];
     },
-    // JSONL 输出：中间 agent_message 作为过程信息，最后一条作为最终回复；
+    // JSONL 输出：所有 agent_message 都作为过程信息；
+    // 最后一条仅保留在 result.text 中用于协议违规诊断，网页最终回复统一由 SendMessage 提供。
     // 同时提取 thread_id（作为 sessionId 统一概念）。
     // 指标从 lib/codex-metrics.js 统一获取（见 close 事件处理）
     parse: (stdout, onText, onMeta, onRuntimeEvent) => {
@@ -145,8 +145,8 @@ const CLI_CONFIG = {
           // 忽略非 JSON 行
         }
       });
-      // 兼容异常 JSONL：即使缺少 turn.completed，也不要丢失最后一条 agent_message。
-      rl.on("close", () => flushCodexFinalMessage(parseState, onText));
+      // 兼容异常 JSONL：即使缺少 turn.completed，也把最后一条 agent_message 写入 Thinking。
+      rl.on("close", () => flushCodexFinalMessage(parseState, onText, onRuntimeEvent));
     },
     // Codex CLI 不支持 system prompt，回退到 user prompt
     supportsSystemPrompt: false,

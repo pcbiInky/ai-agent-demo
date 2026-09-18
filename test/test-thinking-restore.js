@@ -255,6 +255,8 @@ const waitFor = async (fn, n = 80) => {
       liveEs.emit("thinking-content", { character: "YYF", messageId: "rt-err-1", text: "正在定位故障", delta: false });
       await sleep(50);
       const liveThinking = document.getElementById("thinking-YYF-rt-err-1")?.querySelector(".thinking-process");
+      assert(!!liveThinking && !liveThinking.hidden, "收到 Thinking 内容后网页显示 Thinking 折叠标签");
+      assert(!!liveThinking && liveThinking.querySelector("summary")?.textContent === "Thinking 过程", "网页 Thinking 折叠标题正确");
       assert(!!liveThinking && liveThinking.open, "执行中 Thinking 内容展开显示");
       assert(!!liveThinking && liveThinking.textContent.includes("正在定位故障"), "执行中 Thinking 内容实时追加");
       liveEs.emit("permission", { requestId: "req-rt-err", character: "YYF", toolName: "Bash", input: { command: "boom" }, messageId: "rt-err-1" });

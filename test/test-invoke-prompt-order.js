@@ -19,7 +19,18 @@ function assert(condition, label) {
 function main() {
   const basePrompt = "【你的身份】\n你是 YYF";
   const mcpHint = __test.buildMcpHint();
+  const codexMcpHint = __test.buildMcpHint({ requiresToolSearch: true });
   const globalConstraint = "【技能: Demo】\n这里是一个很长的技能说明";
+
+  assert(
+    codexMcpHint.includes("agent_message 显示为 Thinking")
+      && codexMcpHint.includes("它不算第2条所说的最终对外回复"),
+    "Codex MCP protocol requires visible progress messages for Thinking"
+  );
+  assert(
+    !mcpHint.includes("agent_message 显示为 Thinking"),
+    "ACP and other CLIs keep their existing Thinking semantics"
+  );
 
   const nonSystemPrompt = __test.buildUserPromptForCli(basePrompt, {
     supportsSystemPrompt: false,
