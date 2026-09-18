@@ -1219,19 +1219,31 @@ function togglePermDetail(requestId) {
 }
 
 async function respondPermission(requestId, behavior) {
-  markPermResolved(requestId, behavior);
+  const actionsEl = document.getElementById(`perm-actions-${requestId}`);
+  // 先进入处理中状态：临时禁用按钮，请求成功后才标记已处理并折叠
+  if (actionsEl) {
+    for (const btn of actionsEl.querySelectorAll(".perm-btn")) btn.disabled = true;
+    actionsEl.querySelector(".perm-send-fail")?.remove();
+  }
+  let permOk = false;
 
   try {
-    await fetch("/api/permission-response", {
+    const res = await fetch("/api/permission-response", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ requestId, behavior }),
     });
+    permOk = res.ok;
   } catch {
-    const actionsEl = document.getElementById(`perm-actions-${requestId}`);
-    if (actionsEl) {
-      actionsEl.innerHTML = '<span class="perm-pending" style="color:var(--error-text)">发送失败</span>';
-    }
+    permOk = false;
+  }
+
+  if (permOk) {
+    markPermResolved(requestId, behavior);
+  } else if (actionsEl) {
+    // 失败：恢复按钮可点并提示重试，卡片保持待审批状态不折叠
+    for (const btn of actionsEl.querySelectorAll(".perm-btn")) btn.disabled = false;
+    actionsEl.insertAdjacentHTML("beforeend", '<span class="perm-send-fail" style="color:var(--error-text);font-size:11px;align-self:center">发送失败，请重试</span>');
   }
 }
 
@@ -1245,36 +1257,36 @@ function resolvePermissionCard(requestId, behavior, message) {
   }
 }
 
-function getBashRecordsDetails(container) {
-    const scrollArea = container.querySelector(".thinking-scroll-area");
-    if (!scrollArea) return null;
-    let details = scrollArea.querySelector(".bash-records");
-    if (!details) {
-      details = document.createElement("details");
-      details.className = "bash-records";
-      details.innerHTML = `
-        <summary class="bash-records-summary"></summary>
-        <div class="bash-records-content"></div>
-      `;
-      const permContainer = scrollArea.querySelector(".perm-container");
-      if (permContainer) permContainer.after(details);
-      else scrollArea.appendChild(details);
-    }
-    return details;
+function getToolRecordsDetails(container) {
+  const scrollArea = container.querySelector(".thinking-scroll-area");
+  if (!scrollArea) return null;
+  let details = scrollArea.querySelector(".tool-records");
+  if (!details) {
+    details = document.createElement("details");
+    details.className = "tool-records";
+    details.innerHTML = `
+      <summary class="tool-records-summary"></summary>
+      <div class="tool-records-content"></div>
+    `;
+    const permContainer = scrollArea.querySelector(".perm-container");
+    if (permContainer) permContainer.after(details);
+    else scrollArea.appendChild(details);
   }
+  return details;
+}
 
-  // 已允许的 Bash 卡片移入二级折叠组（默认折叠，类似 Thinking 过程），并刷新条数
-  function foldBashPermCard(card) {
-    const scrollArea = card.closest(".thinking-scroll-area");
-    if (!scrollArea) return; // 降级独立卡片不折叠
-    const details = getBashRecordsDetails(scrollArea.parentElement);
-    if (!details) return;
-    details.querySelector(".bash-records-content").appendChild(card);
-    const count = details.querySelectorAll(".perm-card").length;
-    details.querySelector(".bash-records-summary").textContent = `Bash 执行记录 · ${count} 条`;
-  }
+// 已处理的工具卡片（所有 MCP 工具）移入二级折叠组（默认折叠，类似 Thinking 过程），并刷新条数
+function foldResolvedPermCard(card) {
+  const scrollArea = card.closest(".thinking-scroll-area");
+  if (!scrollArea) return; // 降级独立卡片不折叠
+  const details = getToolRecordsDetails(scrollArea.parentElement);
+  if (!details) return;
+  details.querySelector(".tool-records-content").appendChild(card);
+  const count = details.querySelectorAll(".perm-card").length;
+  details.querySelector(".tool-records-summary").textContent = `工具执行记录 · ${count} 条`;
+}
 
-  function markPermResolved(requestId, behavior, message) {
+function markPermResolved(requestId, behavior, message) {
   const card = document.getElementById(`perm-card-${requestId}`);
   const actionsEl = document.getElementById(`perm-actions-${requestId}`);
   const isAuto = message && message.includes("默认授权");
@@ -1283,8 +1295,8 @@ function getBashRecordsDetails(container) {
     card.classList.remove("expanded");
     card.classList.add("resolved");
     if (isAuto) card.classList.add("auto-resolved");
-      const permTool = card.querySelector(".perm-summary-tool")?.textContent;
-      if (behavior === "allow" && permTool === "Bash") foldBashPermCard(card);
+    // 处理完（允许/拒绝）即归入二级折叠；待审批的留在折叠外以便操作
+    foldResolvedPermCard(card);
   }
 
   if (actionsEl) {

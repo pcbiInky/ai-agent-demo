@@ -403,26 +403,26 @@ html, body {
   margin-top: 0;
 }
 
-/* Bash 执行记录二级折叠：已完成的 Bash 卡片归组，默认折叠（类似 Thinking 过程） */
-.bash-records {
+/* 工具执行记录二级折叠：已处理（允许/拒绝）的 MCP 工具卡片归组，默认折叠（类似 Thinking 过程）；待审批的卡片留在折叠外 */
+.tool-records {
   margin-top: 6px;
   border-top: 1px solid rgba(0, 0, 0, 0.08);
   padding-top: 4px;
 }
-.bash-records > summary {
+.tool-records > summary {
   cursor: pointer;
   color: var(--text-light);
   font-size: 12px;
   font-weight: 600;
   user-select: none;
 }
-.bash-records-content {
+.tool-records-content {
   display: flex;
   flex-direction: column;
   gap: 4px;
   margin-top: 4px;
 }
-.bash-records-content .perm-card {
+.tool-records-content .perm-card {
   margin-top: 0;
 }
 
