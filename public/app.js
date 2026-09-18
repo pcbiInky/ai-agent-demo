@@ -1006,8 +1006,7 @@ function appendThinkingContent(container, { text, delta = false }) {
   if (!container.classList.contains("thinking-finished")) details.open = true;
   const separator = content.textContent && !delta ? "\n\n" : "";
   content.appendChild(document.createTextNode(separator + text));
-  const scrollArea = container.querySelector(".thinking-scroll-area");
-  if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+  content.scrollTop = content.scrollHeight;
 }
 
 // 把过程记录嵌入到绑定回复内部（回复内容上方），不再另起一行角色记录；

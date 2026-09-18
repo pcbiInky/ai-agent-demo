@@ -259,6 +259,14 @@ const waitFor = async (fn, n = 80) => {
       assert(!!liveThinking && liveThinking.querySelector("summary")?.textContent === "Thinking 过程", "网页 Thinking 折叠标题正确");
       assert(!!liveThinking && liveThinking.open, "执行中 Thinking 内容展开显示");
       assert(!!liveThinking && liveThinking.textContent.includes("正在定位故障"), "执行中 Thinking 内容实时追加");
+      const liveThinkingContent = liveThinking?.querySelector(".thinking-content");
+      if (liveThinkingContent) {
+        Object.defineProperty(liveThinkingContent, "scrollHeight", { configurable: true, value: 320 });
+        liveThinkingContent.scrollTop = 0;
+        liveEs.emit("thinking-content", { character: "YYF", messageId: "rt-err-1", text: "继续分析", delta: false });
+        await sleep(50);
+        assert(liveThinkingContent.scrollTop === 320, "实时 Thinking 追加时只跟随内层内容滚动");
+      }
       liveEs.emit("permission", { requestId: "req-rt-err", character: "YYF", toolName: "Bash", input: { command: "boom" }, messageId: "rt-err-1" });
     await sleep(50);
     liveEs.emit("error", { character: "YYF", messageId: "rt-err-1", error: "实时故障" });

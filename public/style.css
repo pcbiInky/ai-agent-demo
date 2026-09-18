@@ -442,8 +442,12 @@ html, body {
   user-select: none;
 }
 .thinking-content {
+  max-height: min(36vh, 360px);
   margin-top: 6px;
   padding: 7px 9px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.45);
   color: #495057;
