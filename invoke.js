@@ -210,6 +210,9 @@ function buildMcpHint({ requiresToolSearch = false } = {}) {
   const toolSearchProtocol = requiresToolSearch
     ? "0.新版 Codex 会延迟暴露 MCP 工具。本轮第一个工具动作必须调用 tool_search 搜索 `permission SendMessage`；需要其他 permission 工具时也先搜索 `permission <工具名>`。即使你暂时看不到 mcp__permission__*，也不能回答 TOOL_MISSING 或断言工具不存在；必须先用 tool_search 激活/发现工具，然后再调用 mcp__permission__SendMessage。\n"
     : "";
+  const progressMessageProtocol = requiresToolSearch
+    ? "5.执行过程中，输出简短的过程 message，只描述接下来要做什么。宿主会把这类 agent_message 显示为 Thinking；它不算第2条所说的最终对外回复，无需调用 SendMessage。最终正文仍只能通过 SendMessage 发送。\n"
+    : "";
 
   return "\n\n【最重要协议】\n" +
     toolSearchProtocol +
@@ -219,6 +222,7 @@ function buildMcpHint({ requiresToolSearch = false } = {}) {
     "若 SendMessage 失败，请根据错误原因修正参数后重试；成功后不要再次调用 SendMessage。\n" +
     "3.每次被召唤(单次 invoke)最多只能成功发送一条消息；如需召唤其他角色，请在 atTargets 中显式填写角色名列表。\n" +
     "4.调用 Bash 时优先传 cwd 参数，不要使用 cd /path && command 这种形式。\n" +
+    progressMessageProtocol +
     "\n【MCP 工具】\n" +
     "你的所有工具操作（Bash、Read、Edit、Write、Glob、Grep、WebFetch、WebSearch、NotebookEdit、SendMessage）" +
     "均由 MCP Server \"permission\" 提供，工具名称格式为 mcp__permission__<工具名>。";
