@@ -1622,11 +1622,11 @@ async function loadSessionList() {
       const memberNames = Array.isArray(s.memberNames)
         ? s.memberNames
         : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
-      const avatarsHtml = memberNames.slice(0, 3).map((name) => {
+      const avatarsHtml = memberNames.map((name) => {
         const cfg = state.characters[name] || {};
         const charClass = getCharClass(name);
         const av = getAvatar(name, cfg.avatar);
-        return '<span class="mini-avatar" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
+        return '<span class="mini-avatar" title="' + escapeAttribute(name) + '" aria-label="' + escapeAttribute(name) + '" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
       }).join('');
       const title = s.title || s.sessionId.slice(0, 12);
       const approvalBadge = s.pendingApprovalCount > 0

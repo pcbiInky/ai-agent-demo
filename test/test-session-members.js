@@ -13,6 +13,7 @@ const sessionStore = require("../role-system/sessions");
 const projectRoot = path.join(__dirname, "..");
 const logsDir = path.join(projectRoot, "chat-logs");
 const sessionsDir = path.join(projectRoot, "role-system", "data", "sessions");
+const appSource = fs.readFileSync(path.join(projectRoot, "public", "app.js"), "utf8");
 
 let baseUrl = "";
 let passed = 0;
@@ -49,6 +50,11 @@ async function getMemberNames(sessionId) {
 }
 
 async function main() {
+  assert(
+    !appSource.includes("memberNames.slice(0, 3)"),
+    "session list does not truncate participant avatars to three",
+  );
+
   const tempServer = http.createServer(server.app);
   await new Promise((resolve) => tempServer.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${tempServer.address().port}`;

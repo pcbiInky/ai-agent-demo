@@ -134,7 +134,7 @@ html, body {
 }
 .session-item .session-path { font-size: 11px; color: var(--text-light); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 4px; display: flex; justify-content: space-between; }
-.session-item .session-avatars { display: flex; gap: -4px; margin-bottom: 4px; }
+.session-item .session-avatars { display: flex; flex-wrap: wrap; row-gap: 2px; margin-bottom: 4px; }
 .session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid white; }
 
 /* ── 中间聊天区 ────────────────────────── */
