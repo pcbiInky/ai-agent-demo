@@ -43,6 +43,21 @@ function parseClaudeJsonEvent(event, onText, onMeta, onRuntimeEvent) {
   }
 }
 
+function parseQoderJsonEvent(event, onText, onMeta, onRuntimeEvent) {
+  if (event?.type === "system" && event.subtype === "init" && event.session_id) {
+    onMeta?.({ sessionId: event.session_id });
+    return;
+  }
+  if (event?.type !== "assistant") return;
+  for (const block of event.message?.content ?? []) {
+    if (block?.type === "text" && block.text) {
+      onText(block.text);
+    } else if (block?.type === "thinking") {
+      emitThinkingEvent(onRuntimeEvent, block.thinking || block.text || "");
+    }
+  }
+}
+
 function flushCodexProgressMessage(state, onRuntimeEvent) {
   const text = typeof state.pendingAgentMessage === "string" ? state.pendingAgentMessage : "";
   if (text) emitThinkingEvent(onRuntimeEvent, text);
@@ -153,6 +168,26 @@ const CLI_CONFIG = {
     // 通过 codex mcp add/remove 动态管理 MCP 服务器
     supportsPermissionTool: true,
     permissionStyle: "codex-mcp-cli",
+  },
+  qoder: {
+    command: process.env.QODER_CLI_COMMAND || "qodercli",
+    extraArgs: ["--output-format", "stream-json"],
+    // Qoder stream-json 与 Claude 的 assistant content 结构兼容，
+    // 并在 system/init 事件中返回可恢复的 session_id。
+    parse: (stdout, onText, onMeta, onRuntimeEvent) => {
+      const rl = createInterface({ input: stdout });
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        try {
+          parseQoderJsonEvent(JSON.parse(line), onText, onMeta, onRuntimeEvent);
+        } catch {
+          // 忽略非 JSON 行
+        }
+      });
+    },
+    supportsSystemPrompt: true,
+    supportsPermissionTool: true,
+    permissionStyle: "qoder-mcp-config-file",
   },
   dsh: {
     command: process.env.DSH_CLI_COMMAND || "dsh",
@@ -372,6 +407,25 @@ function preparePermissionTransport(cli, { browserSessionId, character = "", wor
     };
   }
 
+  if (config.permissionStyle === "qoder-mcp-config-file") {
+    const mcpConfig = {
+      mcpServers: {
+        permission: permissionConfig,
+      },
+    };
+    const tmpMcpConfig = path.join(os.tmpdir(), `mcp-qoder-perm-${randomUUID().slice(0, 8)}.json`);
+    fs.writeFileSync(tmpMcpConfig, JSON.stringify(mcpConfig));
+    return {
+      args: [
+        "--mcp-config", tmpMcpConfig,
+        "--strict-mcp-config",
+        "--tools", "",
+        ...MCP_TOOL_NAMES.flatMap((name) => ["--allowed-tools", name]),
+      ],
+      cleanupPaths: [tmpMcpConfig],
+    };
+  }
+
   if (config.permissionStyle === "codex-mcp-cli") {
     return {
       args: buildPerInvokePermissionOverrides(permissionConfig),
@@ -469,7 +523,7 @@ function cleanupMcpRegistrations() {
 
 /**
  * 调用指定的 AI CLI，返回回复文本和 sessionId
- * @param {"claude" | "trae" | "codex" | "dsh" | "kimi"} cli - CLI 名称
+ * @param {"claude" | "trae" | "codex" | "qoder" | "dsh" | "kimi"} cli - CLI 名称
  * @param {string} prompt - 提问内容
  * @param {string} [sessionId] - 可选，传入则继续上次对话；不传则创建新会话
  * @param {object} [options]
@@ -568,6 +622,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
   if (model) {
     if (cli === "trae") {
       args.push("-c", `model.name=${model}`);
+    } else if (cli === "qoder") {
+      args.push("--model", model);
     }
     // claude / codex 暂不支持运行时模型切换，预留扩展位
   }
@@ -835,19 +891,20 @@ module.exports = {
     prependPrioritySections,
     buildUserPromptForCli,
     parseClaudeJsonEvent,
+    parseQoderJsonEvent,
     parseCodexJsonEvent,
     resolveCliInvocation,
   },
 };
 
 // 直接运行:
-//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题"                              — 新会话
-//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId>                  — 继续对话
-//   node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" <sessionId> '{"timeoutMs":600000}' — 带选项
+//   node invoke.js <claude|trae|codex|qoder|dsh|kimi> "你的问题"                              — 新会话
+//   node invoke.js <claude|trae|codex|qoder|dsh|kimi> "你的问题" <sessionId>                  — 继续对话
+//   node invoke.js <claude|trae|codex|qoder|dsh|kimi> "你的问题" <sessionId> '{"timeoutMs":600000}' — 带选项
 if (require.main === module) {
   const [cli, prompt, sessionId, optionsStr] = process.argv.slice(2);
   if (!cli || !prompt) {
-    console.error('用法: node invoke.js <claude|trae|codex|dsh|kimi> "你的问题" [sessionId] [options]');
+    console.error('用法: node invoke.js <claude|trae|codex|qoder|dsh|kimi> "你的问题" [sessionId] [options]');
     console.error('示例:');
     console.error('  node invoke.js claude "你好"');
     console.error('  node invoke.js claude "你好" "session-id-123"');

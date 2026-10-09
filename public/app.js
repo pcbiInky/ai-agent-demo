@@ -2244,6 +2244,7 @@ function showCreateRoleModal() {
           <option value="claude">claude</option>
           <option value="trae">trae</option>
           <option value="codex">codex</option>
+          <option value="qoder">qoder</option>
           <option value="dsh">dsh</option>
           <option value="kimi">kimi</option>
         </select></label>
@@ -2323,6 +2324,7 @@ function getCharClass(character) {
   const cli = state.characters[character]?.cli;
   if (cli === "trae") return "qijige";
   if (cli === "codex") return "yyf";
+  if (cli === "qoder") return "qoder";
   if (cli === "dsh") return "dsh";
   if (cli === "kimi") return "kimi";
   return "faker";

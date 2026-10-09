@@ -1379,7 +1379,7 @@ function getSkillBindings(skillId) {
 
 function buildSkillDecision(sessionId, prompt, character) {
   const roleConfig = getRoleConfig(character);
-  const supportsPermissionTool = ["claude", "trae", "codex", "dsh", "kimi"].includes(roleConfig?.cli || "");
+  const supportsPermissionTool = ["claude", "trae", "codex", "qoder", "dsh", "kimi"].includes(roleConfig?.cli || "");
   const skillDecision = resolveRequestSkills({
     prompt,
     character,

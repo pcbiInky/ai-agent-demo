@@ -136,6 +136,52 @@ function testClaudeUsesInvokeEnvForPermissionServer() {
   );
 }
 
+function testQoderUsesPerInvokePermissionConfig() {
+  assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
+  if (typeof __test?.preparePermissionTransport !== "function") return;
+
+  const prepared = __test.preparePermissionTransport("qoder", {
+    browserSessionId: "session-qoder",
+    character: "Qoder",
+    workingDirectory: "/tmp/worktree-qoder",
+    permissionServerPort: "4666",
+  });
+
+  const configIndex = prepared.args.indexOf("--mcp-config");
+  assert(configIndex >= 0, "qoder invoke passes a temporary MCP config file");
+  if (configIndex < 0) return;
+
+  const configPath = prepared.args[configIndex + 1];
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  } finally {
+    cleanup(configPath);
+  }
+
+  const permissionConfig = parsed?.mcpServers?.permission;
+  assert(prepared.args.includes("--strict-mcp-config"), "qoder only loads the per-invoke MCP config");
+  const toolsIndex = prepared.args.indexOf("--tools");
+  assert(toolsIndex >= 0 && prepared.args[toolsIndex + 1] === "", "qoder built-in tools are disabled");
+  assert(
+    prepared.args.some((value, index) => value === "--allowed-tools" && prepared.args[index + 1] === "mcp__permission__SendMessage"),
+    "qoder preauthorizes permission SendMessage"
+  );
+  assert(
+    permissionConfig?.command === "node" &&
+      Array.isArray(permissionConfig?.args) &&
+      permissionConfig.args[0] === path.join(__dirname, "..", "permission-server.js"),
+    "qoder temp MCP config points to permission-server entrypoint"
+  );
+  assert(
+    permissionConfig?.env?.PERMISSION_SERVER_PORT === "4666" &&
+      permissionConfig.env.PERMISSION_BROWSER_SESSION === "session-qoder" &&
+      permissionConfig.env.PERMISSION_CHARACTER === "Qoder" &&
+      permissionConfig.env.PERMISSION_WORKING_DIRECTORY === "/tmp/worktree-qoder",
+    "qoder temp MCP config includes isolated invoke context"
+  );
+}
+
 function testCodexUsesPerInvokePermissionConfig() {
   assert(typeof __test?.preparePermissionTransport === "function", "invoke exposes preparePermissionTransport helper");
   if (typeof __test?.preparePermissionTransport !== "function") return;
@@ -252,6 +298,7 @@ function testKimiDeclaresPermissionServerOverAcp() {
 function main() {
   testTraeUsesPerInvokePermissionConfig();
   testClaudeUsesInvokeEnvForPermissionServer();
+  testQoderUsesPerInvokePermissionConfig();
   testCodexUsesPerInvokePermissionConfig();
   testDshDeclaresPermissionServerOverAcp();
   testKimiDeclaresPermissionServerOverAcp();
