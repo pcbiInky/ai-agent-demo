@@ -4,6 +4,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
 const { getRoleCardMetrics } = require("./lib/role-metrics");
+const { mergeQodercnContextMetrics } = require("./lib/qodercn-metrics");
 const roleStore = require("./role-system/roles");
 const sessionStore = require("./role-system/sessions");
 const { ensureRoleSystemInitialized } = require("./role-system/migrations");
@@ -611,10 +612,14 @@ function emitSSE(sessionId, event, data) {
 function updateRoleRuntimeMetrics(sessionId, roleId, patch) {
   const key = `${sessionId}:${roleId}`;
   const existing = roleRuntimeMetrics.get(key) || {};
+  const role = roleStore.getRoleById(roleId);
+  const effectivePatch = role?.cli === "qodercn"
+    ? mergeQodercnContextMetrics(existing, patch)
+    : patch;
   // null 占位字段不参与合并：额度刷新（如 dsh 余额）会带 contextTokens: null，
   // 不能覆盖 ACP usage_update 已上报的 ctx 指标
   const sanitized = {};
-  for (const [k, v] of Object.entries(patch || {})) {
+  for (const [k, v] of Object.entries(effectivePatch || {})) {
     if (v !== null) sanitized[k] = v;
   }
   const updated = { ...existing, ...sanitized, updatedAt: Date.now() };
@@ -622,7 +627,6 @@ function updateRoleRuntimeMetrics(sessionId, roleId, patch) {
   // 落盘到 sessionStore
   sessionStore.patchMemberRuntimeMetrics(sessionId, roleId, updated);
   // 通过 SSE 推送到前端
-  const role = roleStore.getRoleById(roleId);
   emitSSE(sessionId, "role-metrics", {
     roleId,
     character: role?.name || roleId,

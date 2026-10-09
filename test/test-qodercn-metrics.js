@@ -76,6 +76,27 @@ function testBuildContextMetrics() {
   eq(invalid.usageWindows[0].usedPercent, null, "invalid ratio: null percent placeholder");
 }
 
+function testMergeContextMetrics() {
+  const { buildQodercnContextMetrics, mergeQodercnContextMetrics } = reload();
+  const existing = {
+    usageWindows: [
+      { key: "plan", label: "套餐剩余", usedPercent: 75, resetsAt: null },
+      { key: "addon", label: "加购剩余", usedPercent: 80, resetsAt: null },
+      { key: "ctx", label: "上下文剩余", usedPercent: 90, resetsAt: null },
+    ],
+  };
+  const contextPatch = buildQodercnContextMetrics(0.4);
+  const merged = mergeQodercnContextMetrics(existing, contextPatch);
+  eq(merged.usageWindows.length, 3, "live context update keeps account windows");
+  eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps plan balance");
+  eq(merged.usageWindows[1].usedPercent, 80, "live context update keeps add-on balance");
+  eq(merged.usageWindows[2].usedPercent, 60, "live context update replaces context only");
+  eq(merged.primaryUsedPercent, 75, "legacy primary follows merged plan window");
+  eq(mergeQodercnContextMetrics({}, contextPatch), contextPatch, "context patch without prior quota is unchanged");
+  const fullRefresh = { ...contextPatch, sources: { quota: "unavailable" } };
+  eq(mergeQodercnContextMetrics(existing, fullRefresh), fullRefresh, "full refresh replaces stale quota");
+}
+
 function testBuildQuotaWindows() {
   const { buildQodercnQuotaWindows } = reload();
   const windows = buildQodercnQuotaWindows({
@@ -163,9 +184,14 @@ async function testGetQodercnRoleCardMetrics() {
       projectsDir: tempDir,
       fetchUsageInfo: async () => { throw new Error("unavailable"); },
     });
-    eq(failed.usageWindows.length, 1, "SDK failure keeps context metric");
-    eq(failed.usageWindows[0].usedPercent, 60, "SDK failure preserves context remaining");
+    eq(failed.usageWindows.length, 3, "SDK failure keeps quota placeholders and context metric");
+    eq(failed.usageWindows[0].key, "plan", "SDK failure keeps plan visible");
+    eq(failed.usageWindows[0].usedPercent, null, "SDK failure does not invent plan balance");
+    eq(failed.usageWindows[1].key, "addon", "SDK failure keeps add-on visible");
+    eq(failed.usageWindows[1].usedPercent, null, "SDK failure does not invent add-on balance");
+    eq(failed.usageWindows[2].usedPercent, 60, "SDK failure preserves context remaining");
     eq(failed.sources.quota, "unavailable", "SDK failure is labeled");
+    eq(failed.sources.quotaError, "Error", "SDK failure exposes safe error type");
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -208,6 +234,7 @@ function testQoderCnResultEventEmitsMetrics() {
 async function main() {
   try {
     testBuildContextMetrics();
+    testMergeContextMetrics();
     testBuildQuotaWindows();
     testFindTranscriptPath();
     testReadContextUsageRatio();
