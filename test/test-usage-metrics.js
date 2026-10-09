@@ -39,13 +39,15 @@ function testNormalizeUsageWindows() {
     { key: "5h", label: "5h", usedPercent: 30.8, resetsAt: 1700000000000 },
     { key: "month", label: "month", usedPercent: 4.54, resetsAt: "2026-10-16T00:00:00Z" },
     { key: "5h", label: "dup", usedPercent: 99 },
+    { key: "unknown", label: "unknown", usedPercent: null },
     { label: "no-key", usedPercent: 50 },
     null,
   ]);
-  eq(windows.length, 2, "normalizeUsageWindows drops dup/invalid entries");
+  eq(windows.length, 3, "normalizeUsageWindows drops dup/invalid entries");
   eq(windows[0].usedPercent, 31, "normalizeUsageWindows rounds percent");
   eq(windows[1].label, "month", "normalizeUsageWindows keeps label");
   eq(windows[1].resetsAt, Date.parse("2026-10-16T00:00:00Z"), "normalizeUsageWindows parses ISO resetsAt");
+  eq(windows[2].usedPercent, null, "normalizeUsageWindows keeps unknown percent as null");
 }
 
 function testWindowsFromLegacy() {

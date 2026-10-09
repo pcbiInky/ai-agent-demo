@@ -1358,7 +1358,9 @@ function renderCharStatuses() {
       </div>
     ` : "";
 
-    const footerSection = `
+    const footerSection = member.cli === "qodercn" && contextTokens === null
+      ? ""
+      : `
       <div class="role-card-footer">
         ${renderCtxBar(contextTokens, member.contextWindow)}
       </div>
@@ -1452,7 +1454,7 @@ function formatFullBeijingTime(value) {
 }
 
 // 角色卡片额度维度由 metrics.usageWindows 驱动，支持任意窗口数量与命名：
-// codex/claude = 5h + week，kimi = 5h + month，dsh = 余额充足度。
+// codex/claude = 5h + week，kimi = 5h + month，dsh = 余额充足度，qodercn = Credits + 上下文。
 // 第一个窗口有重置时间时展示时间，否则展示维度名；其余窗口展示维度名。
 // 旧数据缺 usageWindows 时按
 // primary/secondary 兼容还原。
@@ -1510,9 +1512,11 @@ function renderMetricBar(win, index) {
   const labelClass = isPrimary && hasResetTime
     ? "metric-bar-label metric-time-label"
     : "metric-bar-label";
-  const title = win.resetsAt != null
-    ? `${labelText} · 重置 ${formatFullBeijingTime(win.resetsAt)}`
-    : labelText;
+  const title = [
+    labelText,
+    win.detail,
+    win.resetsAt != null ? `重置 ${formatFullBeijingTime(win.resetsAt)}` : null,
+  ].filter(Boolean).join(" · ");
   return `
     <div class="metric-bar metric-bar-${variant}">
       <span class="${labelClass}" title="${escapeHtml(title)}">${escapeHtml(labelText)}</span>

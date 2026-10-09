@@ -79,8 +79,10 @@ function testBuiltinProvidersRegistered() {
   assert(typeof mod.PROVIDERS.claude?.get === "function", "claude provider registered");
   assert(typeof mod.PROVIDERS.dsh?.get === "function", "dsh provider registered");
   assert(typeof mod.PROVIDERS.kimi?.get === "function", "kimi provider registered");
+  assert(typeof mod.PROVIDERS.qodercn?.get === "function", "qodercn provider registered");
   assert(mod.PROVIDERS.codex.fallback.supportsUsageWindows === true, "codex fallback keeps usage section visible");
   assert(mod.PROVIDERS.kimi.fallback.supportsUsageWindows === false, "kimi fallback hides usage section");
+  assert(mod.PROVIDERS.qodercn.fallback.supportsUsageWindows === true, "qodercn fallback keeps usage section visible");
 }
 
 async function main() {

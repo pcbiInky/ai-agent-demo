@@ -7,6 +7,7 @@ const os = require("os");
 const { buildSkillTypeInjection } = require("./skill-loader");
 const { getCodexRoleCardMetrics } = require("./lib/codex-metrics");
 const { getRoleCardMetrics } = require("./lib/role-metrics");
+const { buildQodercnContextMetrics } = require("./lib/qodercn-metrics");
 const { resolveCliInvocation } = require("./lib/cli-invocation");
 const { invokeDshAcp } = require("./lib/dsh-acp-client");
 const { invokeKimiAcp } = require("./lib/kimi-acp-client");
@@ -46,6 +47,19 @@ function parseClaudeJsonEvent(event, onText, onMeta, onRuntimeEvent) {
 function parseQoderCnJsonEvent(event, onText, onMeta, onRuntimeEvent) {
   if (event?.type === "system" && event.subtype === "init" && event.session_id) {
     onMeta?.({ sessionId: event.session_id });
+    return;
+  }
+  // result 事件携带 usage.context_usage_ratio：实时上报为角色卡「上下文剩余」指标
+  if (event?.type === "result") {
+    const ratio = Number(event?.usage?.context_usage_ratio);
+    if (Number.isFinite(ratio) && typeof onRuntimeEvent === "function") {
+      onRuntimeEvent({
+        type: "metrics",
+        sessionId: null,
+        timestamp: Date.now(),
+        data: buildQodercnContextMetrics(ratio),
+      });
+    }
     return;
   }
   if (event?.type !== "assistant") return;
@@ -849,6 +863,16 @@ function invoke(cli, prompt, sessionId, options = {}) {
           if (Object.keys(data).length > 0) {
             onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data });
           }
+        } catch { /* ignore metrics errors */ }
+      }
+
+      if (cli === "qodercn" && typeof onRuntimeEvent === "function") {
+        try {
+          const metrics = await getRoleCardMetrics(
+            { cli: "qodercn" },
+            { providerSessionId: reportedSessionId || id }
+          );
+          onRuntimeEvent({ type: "metrics", sessionId: null, timestamp: Date.now(), data: metrics });
         } catch { /* ignore metrics errors */ }
       }
 
