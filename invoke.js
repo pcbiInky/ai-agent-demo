@@ -49,7 +49,7 @@ function parseQoderCnJsonEvent(event, onText, onMeta, onRuntimeEvent) {
     onMeta?.({ sessionId: event.session_id });
     return;
   }
-  // result 事件携带 usage.context_usage_ratio：实时上报为角色卡「上下文剩余」指标
+  // result 事件携带 usage.context_usage_ratio：实时上报为角色卡「ctx 已用」指标
   if (event?.type === "result") {
     const ratio = Number(event?.usage?.context_usage_ratio);
     if (Number.isFinite(ratio) && typeof onRuntimeEvent === "function") {

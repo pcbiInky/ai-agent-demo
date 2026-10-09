@@ -1504,7 +1504,9 @@ function renderMetricBar(win, index) {
   const pct = win.usedPercent ?? null;
   const isPrimary = index === 0;
   const variant = isPrimary ? "primary" : "secondary";
-  const lowClass = pct !== null && pct < 20 ? " metric-bar-fill-low" : "";
+  const isCtx = win.key === "ctx";
+  const fillVariant = isCtx ? "ctx" : variant;
+  const lowClass = !isCtx && pct !== null && pct < 20 ? " metric-bar-fill-low" : "";
   const hasResetTime = win.resetsAt !== null && win.resetsAt !== undefined;
   const labelText = isPrimary && hasResetTime
     ? formatBeijingTime(win.resetsAt)
@@ -1521,7 +1523,7 @@ function renderMetricBar(win, index) {
     <div class="metric-bar metric-bar-${variant}">
       <span class="${labelClass}" title="${escapeHtml(title)}">${escapeHtml(labelText)}</span>
       <div class="metric-bar-track">
-        <div class="metric-bar-fill metric-bar-fill-${variant}${lowClass}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
+        <div class="metric-bar-fill metric-bar-fill-${fillVariant}${lowClass}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
       </div>
       <span class="metric-bar-value">${pct !== null ? pct + '%' : '--'}</span>
     </div>

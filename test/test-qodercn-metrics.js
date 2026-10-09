@@ -63,15 +63,17 @@ function testBuildContextMetrics() {
   eq(half.usageWindows.length, 1, "ratio 0.5: one ctx window");
   eq(half.usageWindows[0].key, "ctx", "ratio 0.5: window key");
   eq(half.usageWindows[0].label, "ctx", "ratio 0.5: compact label");
-  eq(half.usageWindows[0].usedPercent, 50, "ratio 0.5: remaining 50%");
+  eq(half.usageWindows[0].usedPercent, 50, "ratio 0.5: used 50%");
+  eq(buildQodercnContextMetrics(0.1).usageWindows[0].usedPercent, 10, "ratio 0.1: used 10%, not remaining 90%");
   eq(half.usageWindows[0].resetsAt, null, "ctx window has no reset time");
   eq(half.supportsTokenUsage, false, "no absolute token counts");
 
   const full = buildQodercnContextMetrics(0.9966);
-  eq(full.usageWindows[0].usedPercent, 0, "ratio near 1: remaining rounds to 0%");
+  eq(full.usageWindows[0].usedPercent, 100, "ratio near 1: used rounds to 100%");
 
   const over = buildQodercnContextMetrics(1.5);
-  eq(over.usageWindows[0].usedPercent, 0, "ratio above 1 is clamped to 0%");
+  eq(over.usageWindows[0].usedPercent, 100, "ratio above 1 is clamped to 100%");
+  eq(buildQodercnContextMetrics(null).usageWindows[0].usedPercent, null, "missing ratio stays unknown");
 
   const invalid = buildQodercnContextMetrics("not-a-number");
   eq(invalid.usageWindows[0].usedPercent, null, "invalid ratio: null percent placeholder");
@@ -89,7 +91,7 @@ function testMergeContextMetrics() {
   const merged = mergeQodercnContextMetrics(existing, contextPatch);
   eq(merged.usageWindows.length, 2, "live context update keeps balance and ctx");
   eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps balance");
-  eq(merged.usageWindows[1].usedPercent, 60, "live context update replaces context only");
+  eq(merged.usageWindows[1].usedPercent, 40, "live context update replaces ctx with used percent");
   eq(merged.primaryUsedPercent, 75, "legacy primary follows merged balance window");
   eq(mergeQodercnContextMetrics({}, contextPatch), contextPatch, "context patch without prior quota is unchanged");
   const fullRefresh = { ...contextPatch, sources: { quota: "unavailable" } };
@@ -171,7 +173,7 @@ async function testGetQodercnRoleCardMetrics() {
     eq(ok.usageWindows[0].usedPercent, 75, "combined balance remaining 75%");
     assert(ok.usageWindows[0].detail.includes("1580 / 总量 2100"), "balance tooltip keeps combined Credit detail");
     eq(ok.usageWindows[1].key, "ctx", "second window is ctx");
-    eq(ok.usageWindows[1].usedPercent, 60, "transcript: context remaining 60%");
+    eq(ok.usageWindows[1].usedPercent, 40, "transcript: context used 40%");
     eq(ok.sources.quota, "qodercn-agent-sdk", "account quota source tagged");
     eq(ok.sources.usage, "transcript", "transcript: source tagged");
 
@@ -191,7 +193,7 @@ async function testGetQodercnRoleCardMetrics() {
     eq(failed.usageWindows.length, 2, "SDK failure keeps balance and ctx windows");
     eq(failed.usageWindows[0].key, "balance", "SDK failure keeps balance visible");
     eq(failed.usageWindows[0].usedPercent, null, "SDK failure does not invent balance");
-    eq(failed.usageWindows[1].usedPercent, 60, "SDK failure preserves context remaining");
+    eq(failed.usageWindows[1].usedPercent, 40, "SDK failure preserves context used percent");
     eq(failed.sources.quota, "unavailable", "SDK failure is labeled");
     eq(failed.sources.quotaError, "Error", "SDK failure exposes safe error type");
   } finally {
@@ -212,7 +214,7 @@ function testQoderCnResultEventEmitsMetrics() {
   );
   eq(events.length, 1, "result event: one runtime event");
   eq(events[0].type, "metrics", "result event: metrics type");
-  eq(events[0].data.usageWindows[0].usedPercent, 80, "result event: remaining 80%");
+  eq(events[0].data.usageWindows[0].usedPercent, 20, "result event: used 20%");
 
   events.length = 0;
   __test.parseQoderCnJsonEvent(
