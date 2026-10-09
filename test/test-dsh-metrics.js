@@ -55,6 +55,11 @@ function testNormalizeDshBalance() {
   eq(half.usageWindows[0].label, "余额", "25 CNY: balance window label");
   eq(half.usageWindows[0].usedPercent, 50, "25 CNY: normalized to 50%");
   eq(half.usageWindows[0].resetsAt, null, "balance has no reset time");
+  eq(
+    half.usageWindows[0].detail,
+    "DeepSeek 余额充足度 50% · 按满额 50 CNY 折算",
+    "25 CNY: hover detail explains the sufficiency basis"
+  );
 
   const full = normalizeDshBalance(balanceBody("50.46"));
   eq(full.usageWindows[0].usedPercent, 100, "balance above 50 CNY is capped at 100%");
