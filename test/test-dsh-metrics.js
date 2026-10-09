@@ -2,7 +2,7 @@
 
 /**
  * 测试 lib/dsh-metrics.js：
- * DeepSeek 余额只在服务端归一化为 0-100 的余额充足度，不泄露真实金额。
+ * DeepSeek 余额在服务端归一化为 0-100 的余额充足度，detail 展示「余额 / 满额」金额。
  */
 
 const fs = require("fs");
@@ -57,8 +57,8 @@ function testNormalizeDshBalance() {
   eq(half.usageWindows[0].resetsAt, null, "balance has no reset time");
   eq(
     half.usageWindows[0].detail,
-    "DeepSeek 余额充足度 50% · 按满额 50 CNY 折算",
-    "25 CNY: hover detail explains the sufficiency basis"
+    "DeepSeek 余额 25.00 / 50 CNY",
+    "25 CNY: hover detail shows balance over full amount"
   );
 
   const full = normalizeDshBalance(balanceBody("50.46"));
@@ -72,10 +72,11 @@ function testNormalizeDshBalance() {
   eq(missingCurrency.usageWindows.length, 0, "missing CNY balance has no window");
 }
 
-function testNormalizeDoesNotExposeBalance() {
+function testNormalizeBalanceDetail() {
   const { normalizeDshBalance } = reload();
-  const serialized = JSON.stringify(normalizeDshBalance(balanceBody("23.47")));
-  assert(!serialized.includes("23.47"), "metrics do not expose the real balance value");
+  const metrics = normalizeDshBalance(balanceBody("23.47"));
+  const serialized = JSON.stringify(metrics);
+  assert(serialized.includes("23.47 / 50 CNY"), "detail shows real balance over full amount");
   assert(!serialized.includes("total_balance"), "metrics do not expose provider balance fields");
 }
 
@@ -117,7 +118,7 @@ async function testGetDshRoleCardMetricsSuccess() {
   eq(calledUrl, mod.DSH_BALANCE_URL, "success: calls DeepSeek balance endpoint");
   eq(result.usageWindows[0].usedPercent, 40, "success: returns normalized remaining percent");
   eq(result.sources.usage, "deepseek-balance-api", "success: source tagged");
-  assert(!JSON.stringify(result).includes('"20"'), "success: response does not expose real balance");
+  eq(result.usageWindows[0].detail, "DeepSeek 余额 20.00 / 50 CNY", "success: detail shows balance over full amount");
 }
 
 async function testGetDshRoleCardMetricsFailures() {
@@ -163,7 +164,7 @@ async function testGetDshRoleCardMetricsFailures() {
 async function main() {
   try {
     testNormalizeDshBalance();
-    testNormalizeDoesNotExposeBalance();
+    testNormalizeBalanceDetail();
     testReadDshCredentials();
     await testGetDshRoleCardMetricsSuccess();
     await testGetDshRoleCardMetricsFailures();
