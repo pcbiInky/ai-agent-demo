@@ -1454,7 +1454,7 @@ function formatFullBeijingTime(value) {
 }
 
 // 角色卡片额度维度由 metrics.usageWindows 驱动，支持任意窗口数量与命名：
-// codex/claude = 5h + week，kimi = 5h + month，dsh = 余额充足度，qodercn = Credits + 上下文。
+// codex/claude = 5h + week，kimi = 5h + month，dsh = 余额充足度，qodercn = 余额 + ctx。
 // 第一个窗口有重置时间时展示时间，否则展示维度名；其余窗口展示维度名。
 // 旧数据缺 usageWindows 时按
 // primary/secondary 兼容还原。

@@ -83,6 +83,8 @@ function testBuiltinProvidersRegistered() {
   assert(mod.PROVIDERS.codex.fallback.supportsUsageWindows === true, "codex fallback keeps usage section visible");
   assert(mod.PROVIDERS.kimi.fallback.supportsUsageWindows === false, "kimi fallback hides usage section");
   assert(mod.PROVIDERS.qodercn.fallback.supportsUsageWindows === true, "qodercn fallback keeps usage section visible");
+  eq(mod.PROVIDERS.qodercn.fallback.usageWindows.map((window) => window.key).join(","), "balance,ctx",
+    "qodercn fallback shows balance and ctx");
 }
 
 async function main() {

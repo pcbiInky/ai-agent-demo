@@ -3,7 +3,7 @@
 /**
  * 测试 lib/qodercn-metrics.js：
  * qodercn 的账号 Credits 来自官方 SDK，会话上下文来自 transcript。
- * usageWindows 展示各额度的剩余比例及「上下文剩余」，不暴露 token 绝对值。
+ * usageWindows 只展示汇总「余额」及「ctx」，不暴露 token 绝对值。
  */
 
 const fs = require("fs");
@@ -62,6 +62,7 @@ function testBuildContextMetrics() {
   eq(half.supportsUsageWindows, true, "ratio 0.5: usage window supported");
   eq(half.usageWindows.length, 1, "ratio 0.5: one ctx window");
   eq(half.usageWindows[0].key, "ctx", "ratio 0.5: window key");
+  eq(half.usageWindows[0].label, "ctx", "ratio 0.5: compact label");
   eq(half.usageWindows[0].usedPercent, 50, "ratio 0.5: remaining 50%");
   eq(half.usageWindows[0].resetsAt, null, "ctx window has no reset time");
   eq(half.supportsTokenUsage, false, "no absolute token counts");
@@ -80,37 +81,39 @@ function testMergeContextMetrics() {
   const { buildQodercnContextMetrics, mergeQodercnContextMetrics } = reload();
   const existing = {
     usageWindows: [
-      { key: "plan", label: "套餐剩余", usedPercent: 75, resetsAt: null },
-      { key: "addon", label: "加购剩余", usedPercent: 80, resetsAt: null },
-      { key: "ctx", label: "上下文剩余", usedPercent: 90, resetsAt: null },
+      { key: "balance", label: "余额", usedPercent: 75, resetsAt: null },
+      { key: "ctx", label: "ctx", usedPercent: 90, resetsAt: null },
     ],
   };
   const contextPatch = buildQodercnContextMetrics(0.4);
   const merged = mergeQodercnContextMetrics(existing, contextPatch);
-  eq(merged.usageWindows.length, 3, "live context update keeps account windows");
-  eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps plan balance");
-  eq(merged.usageWindows[1].usedPercent, 80, "live context update keeps add-on balance");
-  eq(merged.usageWindows[2].usedPercent, 60, "live context update replaces context only");
-  eq(merged.primaryUsedPercent, 75, "legacy primary follows merged plan window");
+  eq(merged.usageWindows.length, 2, "live context update keeps balance and ctx");
+  eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps balance");
+  eq(merged.usageWindows[1].usedPercent, 60, "live context update replaces context only");
+  eq(merged.primaryUsedPercent, 75, "legacy primary follows merged balance window");
   eq(mergeQodercnContextMetrics({}, contextPatch), contextPatch, "context patch without prior quota is unchanged");
   const fullRefresh = { ...contextPatch, sources: { quota: "unavailable" } };
   eq(mergeQodercnContextMetrics(existing, fullRefresh), fullRefresh, "full refresh replaces stale quota");
 }
 
-function testBuildQuotaWindows() {
-  const { buildQodercnQuotaWindows } = reload();
-  const windows = buildQodercnQuotaWindows({
-    userQuota: { total: 2000, used: 500, remaining: 1500, percentage: 25, unit: "credits" },
-    addOnQuota: { total: 283, used: 2, remaining: 281, percentage: 1, unit: "credits" },
+function testBuildBalanceWindow() {
+  const { buildQodercnBalanceWindow } = reload();
+  const balance = buildQodercnBalanceWindow({
+    userQuota: { total: 2000, used: 500, remaining: 1500, unit: "credits" },
+    addOnQuota: { total: 283, used: 2, remaining: 281, unit: "credits" },
     orgResourcePackage: { cap: 100, used: 20, remaining: 80, available: true, unit: "credits" },
   });
-  eq(windows.length, 3, "account usage: plan, add-on and organization windows");
-  eq(Math.round(windows[0].usedPercent), 75, "plan remaining comes from remaining/total");
-  eq(Math.round(windows[1].usedPercent), 99, "add-on remaining comes from remaining/total");
-  eq(Math.round(windows[2].usedPercent), 80, "organization remaining comes from remaining/cap");
-  assert(windows[0].detail.includes("1500 / 总量 2000"), "plan detail exposes raw Credits");
-  eq(buildQodercnQuotaWindows({}).length, 0, "missing account quota creates no fake window");
-  eq(buildQodercnQuotaWindows({ userQuota: { percentage: 40 } })[0].usedPercent, 60, "percentage fallback uses remaining percent");
+  eq(balance.key, "balance", "account usage is one balance window");
+  eq(balance.label, "余额", "balance uses DSH-style label");
+  eq(balance.usedPercent, 78, "balance combines all available credit pools");
+  assert(balance.detail.includes("1861 / 总量 2383"), "balance detail exposes combined Credits");
+  eq(buildQodercnBalanceWindow({}), null, "missing account quota creates no fake balance");
+  eq(buildQodercnBalanceWindow({ userQuota: { percentage: 40 } }), null, "percentage alone is insufficient to combine balances");
+  eq(buildQodercnBalanceWindow({ userQuota: { total: 100, remaining: 99 } }).usedPercent, 99,
+    "non-full balance is not rounded up to 100%");
+  eq(buildQodercnBalanceWindow({ userQuota: { total: 100, remaining: 80, unit: "credits" },
+    addOnQuota: { total: 100, remaining: 90, unit: "tokens" } }), null,
+  "different units are not combined");
 }
 
 function testFindTranscriptPath() {
@@ -163,33 +166,32 @@ async function testGetQodercnRoleCardMetrics() {
       addOnQuota: { total: 100, used: 20, remaining: 80, unit: "credits" },
     });
     const ok = await mod.getQodercnRoleCardMetrics("sess-1", { projectsDir: tempDir, fetchUsageInfo });
-    eq(ok.usageWindows.length, 3, "account quotas and context are shown together");
-    eq(ok.usageWindows[0].usedPercent, 75, "plan remaining 75%");
-    assert(ok.usageWindows[0].detail.includes("1500 / 总量 2000"), "normalized plan window keeps Credit detail");
-    eq(ok.usageWindows[1].usedPercent, 80, "add-on remaining 80%");
-    eq(ok.usageWindows[2].usedPercent, 60, "transcript: context remaining 60%");
+    eq(ok.usageWindows.length, 2, "balance and ctx are shown together");
+    eq(ok.usageWindows[0].key, "balance", "first window is balance");
+    eq(ok.usageWindows[0].usedPercent, 75, "combined balance remaining 75%");
+    assert(ok.usageWindows[0].detail.includes("1580 / 总量 2100"), "balance tooltip keeps combined Credit detail");
+    eq(ok.usageWindows[1].key, "ctx", "second window is ctx");
+    eq(ok.usageWindows[1].usedPercent, 60, "transcript: context remaining 60%");
     eq(ok.sources.quota, "qodercn-agent-sdk", "account quota source tagged");
     eq(ok.sources.usage, "transcript", "transcript: source tagged");
 
     const noSession = await mod.getQodercnRoleCardMetrics(null, { projectsDir: tempDir, fetchUsageInfo });
-    eq(noSession.usageWindows[0].usedPercent, 75, "account quota available without session");
-    eq(noSession.usageWindows[2].usedPercent, null, "no session: context placeholder");
+    eq(noSession.usageWindows[0].usedPercent, 75, "account balance available without session");
+    eq(noSession.usageWindows[1].usedPercent, null, "no session: context placeholder");
     eq(noSession.sources.usage, "no-session", "no session: source tagged");
 
     const noTranscript = await mod.getQodercnRoleCardMetrics("missing", { projectsDir: tempDir, fetchUsageInfo });
     eq(noTranscript.sources.usage, "no-transcript", "missing transcript: source tagged");
-    eq(noTranscript.usageWindows[2].usedPercent, null, "missing transcript: context placeholder");
+    eq(noTranscript.usageWindows[1].usedPercent, null, "missing transcript: context placeholder");
 
     const failed = await mod.getQodercnRoleCardMetrics("sess-1", {
       projectsDir: tempDir,
       fetchUsageInfo: async () => { throw new Error("unavailable"); },
     });
-    eq(failed.usageWindows.length, 3, "SDK failure keeps quota placeholders and context metric");
-    eq(failed.usageWindows[0].key, "plan", "SDK failure keeps plan visible");
-    eq(failed.usageWindows[0].usedPercent, null, "SDK failure does not invent plan balance");
-    eq(failed.usageWindows[1].key, "addon", "SDK failure keeps add-on visible");
-    eq(failed.usageWindows[1].usedPercent, null, "SDK failure does not invent add-on balance");
-    eq(failed.usageWindows[2].usedPercent, 60, "SDK failure preserves context remaining");
+    eq(failed.usageWindows.length, 2, "SDK failure keeps balance and ctx windows");
+    eq(failed.usageWindows[0].key, "balance", "SDK failure keeps balance visible");
+    eq(failed.usageWindows[0].usedPercent, null, "SDK failure does not invent balance");
+    eq(failed.usageWindows[1].usedPercent, 60, "SDK failure preserves context remaining");
     eq(failed.sources.quota, "unavailable", "SDK failure is labeled");
     eq(failed.sources.quotaError, "Error", "SDK failure exposes safe error type");
   } finally {
@@ -235,7 +237,7 @@ async function main() {
   try {
     testBuildContextMetrics();
     testMergeContextMetrics();
-    testBuildQuotaWindows();
+    testBuildBalanceWindow();
     testFindTranscriptPath();
     testReadContextUsageRatio();
     await testGetQodercnRoleCardMetrics();
