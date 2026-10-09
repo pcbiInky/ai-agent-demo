@@ -30,10 +30,17 @@ function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// 旧版国际站 Qoder CLI（qodercli）已下线，历史角色统一迁移到 Qoder CN（qoderclicn）。
+// 同时把旧版模型 ID 换成 Qoder CN 的模型名，避免继续下发无法解析的 modelID。
+const LEGACY_CLI_MAP = { qoder: "qodercn" };
+const LEGACY_MODEL_MAP = { qmodel_38max: "Qwen3.8-Max" };
+
 function normalizeRole(role) {
   const contextWindow = Number(role.contextWindow);
   return {
     ...role,
+    cli: LEGACY_CLI_MAP[role.cli] || role.cli,
+    model: LEGACY_MODEL_MAP[role.model] || role.model,
     contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : DEFAULT_CONTEXT_WINDOW,
     aliases: Array.isArray(role.aliases) ? [...new Set(role.aliases.filter(Boolean))] : [],
   };
@@ -93,7 +100,7 @@ function createRole({ name, cli, model = "", avatar = "", contextWindow }) {
       throw new Error(`角色名 "${name}" 已存在`);
     }
 
-    const validClis = ["claude", "trae", "codex", "qoder", "dsh", "kimi"];
+    const validClis = ["claude", "trae", "codex", "qodercn", "dsh", "kimi"];
     if (!validClis.includes(cli)) {
       throw new Error(`不支持的 CLI: ${cli}，可选: ${validClis.join(", ")}`);
     }

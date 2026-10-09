@@ -131,16 +131,16 @@ __test.parseClaudeJsonEvent(
 assert(claudeRuntime.length === 1 && claudeRuntime[0].text === "分析问题", "Claude thinking block 转换为 thinking 运行时事件");
 assert(claudeText.join("") === "最终答案", "Claude text block 仍作为最终文本");
 
-const qoderText = [];
-const qoderMeta = [];
-const qoderRuntime = [];
-__test.parseQoderJsonEvent(
-  { type: "system", subtype: "init", session_id: "qoder-session-1" },
-  (text) => qoderText.push(text),
-  (meta) => qoderMeta.push(meta),
-  (event) => qoderRuntime.push(event)
+const qoderCnText = [];
+const qoderCnMeta = [];
+const qoderCnRuntime = [];
+__test.parseQoderCnJsonEvent(
+  { type: "system", subtype: "init", session_id: "qodercn-session-1" },
+  (text) => qoderCnText.push(text),
+  (meta) => qoderCnMeta.push(meta),
+  (event) => qoderCnRuntime.push(event)
 );
-__test.parseQoderJsonEvent(
+__test.parseQoderCnJsonEvent(
   {
     type: "assistant",
     message: {
@@ -150,13 +150,13 @@ __test.parseQoderJsonEvent(
       ],
     },
   },
-  (text) => qoderText.push(text),
-  (meta) => qoderMeta.push(meta),
-  (event) => qoderRuntime.push(event)
+  (text) => qoderCnText.push(text),
+  (meta) => qoderCnMeta.push(meta),
+  (event) => qoderCnRuntime.push(event)
 );
-assert(qoderMeta[0]?.sessionId === "qoder-session-1", "Qoder system/init 提取 session_id");
-assert(qoderRuntime.length === 1 && qoderRuntime[0].text === "检查项目结构", "Qoder thinking block 转换为 thinking 运行时事件");
-assert(qoderText.join("") === "过程输出", "Qoder assistant text 保留作协议违规诊断");
+assert(qoderCnMeta[0]?.sessionId === "qodercn-session-1", "Qoder CN system/init 提取 session_id");
+assert(qoderCnRuntime.length === 1 && qoderCnRuntime[0].text === "检查项目结构", "Qoder CN thinking block 转换为 thinking 运行时事件");
+assert(qoderCnText.join("") === "过程输出", "Qoder CN assistant text 保留作协议违规诊断");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

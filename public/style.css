@@ -1644,15 +1644,15 @@ html, body {
 .message.kimi .thinking-scroll-area { background: var(--kimi-bg); }
 .hint-chip.kimi { color: var(--kimi-accent); border-color: var(--kimi-accent); }
 
-/* ── Qoder CLI 角色配色 ───────────────────── */
+/* ── Qoder CN CLI 角色配色 ─────────────────── */
 :root {
-  --qoder-bg: #eef0ff;
-  --qoder-accent: #6558d3;
-  --qoder-name: #493aa8;
+  --qodercn-bg: #eef0ff;
+  --qodercn-accent: #6558d3;
+  --qodercn-name: #493aa8;
 }
 
-.avatar.qoder { background: var(--qoder-accent); }
-.character-name.qoder { color: var(--qoder-name); }
-.message.qoder .bubble { background: var(--qoder-bg); border-bottom-left-radius: 4px; }
-.message.qoder .thinking-scroll-area { background: var(--qoder-bg); }
-.hint-chip.qoder { color: var(--qoder-accent); border-color: var(--qoder-accent); }
+.avatar.qodercn { background: var(--qodercn-accent); }
+.character-name.qodercn { color: var(--qodercn-name); }
+.message.qodercn .bubble { background: var(--qodercn-bg); border-bottom-left-radius: 4px; }
+.message.qodercn .thinking-scroll-area { background: var(--qodercn-bg); }
+.hint-chip.qodercn { color: var(--qodercn-accent); border-color: var(--qodercn-accent); }
