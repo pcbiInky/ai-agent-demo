@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // 跨设备访问令牌门禁的回归测试
-// 覆盖：回环判定、令牌来源与生成、内部令牌的路由限制、Host 允许列表，
+// 覆盖：回环判定、令牌来源与生成、令牌模式与监听地址解耦、内部令牌的路由限制、
+//       Host 允许列表、内部回报链路连接实际监听地址，
 //       以及"远端 → 本机反向代理 → 回环上游"必须仍要凭证（不得按 socket 来源放行）
 const http = require("http");
+const os = require("os");
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 
 process.env.PORT = "0";
@@ -12,6 +16,8 @@ const {
   INTERNAL_HEADER,
   INTERNAL_ROUTES,
   isLoopbackAddress,
+  isWildcardAddress,
+  resolveInternalHost,
   resolveAccessToken,
   parseAllowedHosts,
   isHostAllowed,
@@ -19,10 +25,12 @@ const {
   tokensEqual,
   createAccessGate,
 } = require("../lib/access-gate");
+const { reportToolResult } = require("../lib/tool-result-reporter");
 const server = require("../server");
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 
 function assert(condition, label) {
   if (condition) {
@@ -32,6 +40,11 @@ function assert(condition, label) {
   }
   console.error(`FAIL ${label}`);
   failed += 1;
+}
+
+function skip(label, reason) {
+  console.log(`SKIP ${label}（${reason}）`);
+  skipped += 1;
 }
 
 function listen(app) {
@@ -78,6 +91,23 @@ function listenProxy(upstreamPort) {
   });
 }
 
+// 绑定到指定地址的回声服务：验证内部回报链路必须连"实际监听的地址"
+function listenOn(host, onRequest) {
+  return new Promise((resolve, reject) => {
+    const instance = http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        if (onRequest) onRequest(req);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, path: req.url }));
+      });
+    });
+    instance.once("error", reject);
+    instance.listen(0, host, () => resolve({ instance, port: instance.address().port }));
+  });
+}
+
 async function request(port, path, options = {}) {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, options);
   const text = await res.text();
@@ -107,6 +137,29 @@ async function main() {
   assert(configured.token === "secret" && configured.internalToken === "int" && configured.generated === false, "显式 ACCESS_TOKEN / PERMISSION_INTERNAL_TOKEN 被采用并去除首尾空白");
   const blank = resolveAccessToken({ host: "::", envToken: "   " });
   assert(blank.generated === true && blank.token.length >= 32, "空白 ACCESS_TOKEN 视同未配置，仍生成随机令牌");
+
+  // ── 令牌模式与监听地址解耦（本机 TLS 反代场景） ──
+  const loopbackWithToken = resolveAccessToken({ host: "127.0.0.1", envToken: "proxy-secret" });
+  assert(loopbackWithToken.enabled === true, "只监听 127.0.0.1 但显式配置 ACCESS_TOKEN 时同样启用门禁");
+  assert(loopbackWithToken.token === "proxy-secret" && loopbackWithToken.generated === false, "回环监听下沿用显式配置的 ACCESS_TOKEN");
+  assert(loopbackWithToken.hostExposed === false, "hostExposed 标记为假，启动日志据此说明是反代场景而非跨设备监听");
+  assert(loopbackWithToken.internalToken.length >= 32, "回环 + 令牌模式同样生成内部令牌供 permission-server 使用");
+  const loopbackWithInternal = resolveAccessToken({ host: "::1", envToken: "t", envInternalToken: " given " });
+  assert(loopbackWithInternal.internalToken === "given", "回环 + 令牌模式沿用显式 PERMISSION_INTERNAL_TOKEN 并去空白");
+  const loopbackBlankToken = resolveAccessToken({ host: "127.0.0.1", envToken: "   " });
+  assert(loopbackBlankToken.enabled === false && loopbackBlankToken.token === "", "回环监听 + 空白 ACCESS_TOKEN 仍保持默认免令牌体验");
+  const exposedNoToken = resolveAccessToken({ host: "192.168.1.5" });
+  assert(exposedNoToken.enabled === true && exposedNoToken.hostExposed === true && exposedNoToken.generated === true, "绑定具体网卡地址时未配置令牌也强制启用并随机生成");
+
+  // ── 内部回报链路的目标地址解析 ──
+  for (const host of ["0.0.0.0", "::", "::0", "", undefined, "  "]) {
+    assert(resolveInternalHost(host) === "127.0.0.1", `通配监听 ${String(host)} 的内部回报地址回落为 127.0.0.1`);
+  }
+  assert(isWildcardAddress("0.0.0.0") === true && isWildcardAddress("::") === true && isWildcardAddress("") === true, "通配地址判定为真");
+  assert(isWildcardAddress("127.0.0.1") === false && isWildcardAddress("192.168.1.5") === false, "具体地址不判定为通配");
+  assert(resolveInternalHost("192.168.1.5") === "192.168.1.5", "绑定具体网卡地址时内部回报走该地址");
+  assert(resolveInternalHost("::1") === "::1", "绑定 ::1 时内部回报走 ::1 而不是 127.0.0.1");
+  assert(resolveInternalHost(" localhost ") === "localhost", "HOST=localhost 时内部回报沿用该主机名");
 
   // ── Host 允许列表（DNS 重绑定防护） ──
   assert(parseAllowedHosts("A.example.com, 192.168.1.5:3000").join(",") === "a.example.com,192.168.1.5:3000", "ALLOWED_HOSTS 解析为小写列表");
@@ -199,10 +252,84 @@ async function main() {
   assert(disabledInternal.status === 200, "回环监听模式下内部路由无需内部令牌");
   await new Promise((resolve) => disabled.instance.close(resolve));
 
+  // ── P1 回归：HOST=127.0.0.1 + ACCESS_TOKEN + 对外 TLS 反代 ──
+  // 常见部署是"公网 TLS 代理 → 本机 127.0.0.1:3000"，上游监听地址仍是回环，
+  // 门禁必须由 ACCESS_TOKEN 启用，否则远端无令牌即可读取会话历史
+  const loopbackAccess = resolveAccessToken({ host: "127.0.0.1", envToken: "proxy-secret" });
+  const loopbackUpstream = await listenUpstream(loopbackAccess);
+  const loopbackProxy = await listenProxy(loopbackUpstream.port);
+  for (const route of ["/api/history?sessionId=x", "/api/sessions", "/api/events", "/index.html", "/api/tool-result"]) {
+    const denied = await request(loopbackProxy.port, route, route === "/api/tool-result" ? { method: "POST" } : {});
+    assert(denied.status === 401, `回环上游 + 公网代理：无令牌访问 ${route} 被拒（${denied.status}）`);
+  }
+  const loopbackProxiedOk = await request(loopbackProxy.port, "/api/history?sessionId=x", { headers: { "x-access-token": "proxy-secret" } });
+  assert(loopbackProxiedOk.status === 200, `回环上游 + 公网代理：携带 ACCESS_TOKEN 放行（${loopbackProxiedOk.status}）`);
+  const loopbackInternalOnHistory = await request(loopbackProxy.port, "/api/history?sessionId=x", { headers: { [INTERNAL_HEADER]: loopbackAccess.internalToken } });
+  assert(loopbackInternalOnHistory.status === 401, "回环上游 + 公网代理：内部令牌读不到会话历史");
+  const loopbackInternalOk = await request(loopbackProxy.port, "/api/tool-result", { method: "POST", headers: { [INTERNAL_HEADER]: loopbackAccess.internalToken } });
+  assert(loopbackInternalOk.status === 200, "回环上游 + 公网代理：内部令牌只放行回报路由");
+  const loopbackDirectNoToken = await request(loopbackUpstream.port, "/api/sessions");
+  assert(loopbackDirectNoToken.status === 401, "回环上游 + 显式令牌：本机直接访问同样需要令牌");
+  await new Promise((resolve) => loopbackProxy.instance.close(resolve));
+  await new Promise((resolve) => loopbackUpstream.instance.close(resolve));
+
+  // ── P2 回归：内部回报必须连实际监听地址 ──
+  const savedReportHost = process.env.PERMISSION_SERVER_HOST;
+  try {
+    // ::1 绑定：127.0.0.1 连不上，PERMISSION_SERVER_HOST=::1 时可达
+    const seen = [];
+    let v6Server = null;
+    try {
+      v6Server = await listenOn("::1", (req) => seen.push(req.url));
+    } catch (err) {
+      skip("::1 绑定回归", `本机不可用 IPv6 回环：${err.code || err.message}`);
+    }
+    if (v6Server) {
+      process.env.PERMISSION_SERVER_HOST = "::1";
+      const okStatus = await reportToolResult({ toolName: "Bash", ok: true }, { port: v6Server.port });
+      assert(okStatus === 200, `绑定 ::1 时按 PERMISSION_SERVER_HOST 回报成功（status=${okStatus}）`);
+      assert(seen.length === 1 && seen[0] === "/api/tool-result", `回报命中实际监听地址的 /api/tool-result（${JSON.stringify(seen)}）`);
+      delete process.env.PERMISSION_SERVER_HOST;
+      const fallbackStatus = await reportToolResult({ toolName: "Bash", ok: true }, { port: v6Server.port });
+      assert(fallbackStatus === 0 && seen.length === 1, `仍写死 127.0.0.1 时绑定 ::1 的服务回报失败（status=${fallbackStatus}），说明该环境变量是必需的`);
+      await new Promise((resolve) => v6Server.instance.close(resolve));
+    }
+
+    // 具体网卡地址绑定：同样只能经该地址回报
+    const nicAddress = Object.values(os.networkInterfaces())
+      .flat()
+      .find((info) => info && info.family === "IPv4" && !info.internal)?.address;
+    if (!nicAddress) {
+      skip("具体网卡地址绑定回归", "本机没有可用的非回环 IPv4 地址");
+    } else {
+      const seenNic = [];
+      const nicServer = await listenOn(nicAddress, (req) => seenNic.push(req.url));
+      process.env.PERMISSION_SERVER_HOST = resolveInternalHost(nicAddress);
+      const nicStatus = await reportToolResult({ toolName: "Edit", ok: true }, { port: nicServer.port });
+      assert(nicStatus === 200 && seenNic.length === 1, `绑定具体网卡地址 ${nicAddress} 时按解析出的地址回报成功（status=${nicStatus}）`);
+      delete process.env.PERMISSION_SERVER_HOST;
+      const nicFallback = await reportToolResult({ toolName: "Edit", ok: true }, { port: nicServer.port });
+      assert(nicFallback === 0 && seenNic.length === 1, `绑定具体网卡地址时写死 127.0.0.1 回报失败（status=${nicFallback}）`);
+      await new Promise((resolve) => nicServer.instance.close(resolve));
+    }
+  } finally {
+    if (savedReportHost === undefined) delete process.env.PERMISSION_SERVER_HOST;
+    else process.env.PERMISSION_SERVER_HOST = savedReportHost;
+  }
+
+  // 内部客户端不得再写死回环地址
+  const permissionServerSource = fs.readFileSync(path.join(__dirname, "..", "permission-server.js"), "utf-8");
+  const serverHostUses = (permissionServerSource.match(/hostname: SERVER_HOST/g) || []).length;
+  assert(serverHostUses === 2, `permission-server.js 的两处回报都使用 SERVER_HOST（实际 ${serverHostUses}）`);
+  assert(!/hostname: "127\.0\.0\.1"/.test(permissionServerSource), "permission-server.js 不再写死 hostname 127.0.0.1");
+  const reporterSource = fs.readFileSync(path.join(__dirname, "..", "lib", "tool-result-reporter.js"), "utf-8");
+  assert(/hostname: process\.env\.PERMISSION_SERVER_HOST \|\| "127\.0\.0\.1"/.test(reporterSource), "tool-result-reporter 按 PERMISSION_SERVER_HOST 回报，仅在未注入时回落回环");
+  assert(process.env.PERMISSION_SERVER_HOST === resolveInternalHost(process.env.HOST ?? "127.0.0.1"), "server.js 启动时把实际监听地址写入 PERMISSION_SERVER_HOST 供子进程继承");
+
   // ── server.js 默认配置 ──
   assert(server.accessConfig?.enabled === false, "server.js 默认（HOST=127.0.0.1）不启用门禁");
 
-  console.log(`\nResult: ${passed} passed, ${failed} failed`);
+  console.log(`\nResult: ${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
   try {
     server.__test.closeServer();
   } catch {

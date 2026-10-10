@@ -309,8 +309,10 @@ function buildPermissionEnv(permissionServerPort, browserSessionId, character = 
     PERMISSION_BROWSER_SESSION: browserSessionId,
     PERMISSION_CHARACTER: character,
     PERMISSION_WORKING_DIRECTORY: workingDirectory,
-    // 对外模式下的内部令牌（server.js 启动时写入 process.env），仅用于审批与回报路由
+    // 门禁启用时的内部令牌（server.js 启动时写入 process.env），仅用于审批与回报路由
     PERMISSION_INTERNAL_TOKEN: process.env.PERMISSION_INTERNAL_TOKEN || "",
+    // 服务实际监听的地址（绑定具体网卡或 ::1 时不是 127.0.0.1）
+    PERMISSION_SERVER_HOST: process.env.PERMISSION_SERVER_HOST || "",
   };
 }
 
@@ -358,6 +360,7 @@ function buildPerInvokePermissionOverrides(permissionConfig) {
     "-c", `mcp_servers.permission.env.PERMISSION_CHARACTER=${toTomlString(permissionConfig.env.PERMISSION_CHARACTER)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_WORKING_DIRECTORY=${toTomlString(permissionConfig.env.PERMISSION_WORKING_DIRECTORY)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_INTERNAL_TOKEN=${toTomlString(permissionConfig.env.PERMISSION_INTERNAL_TOKEN || "")}`,
+    "-c", `mcp_servers.permission.env.PERMISSION_SERVER_HOST=${toTomlString(permissionConfig.env.PERMISSION_SERVER_HOST || "")}`,
   ];
 }
 

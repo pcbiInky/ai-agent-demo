@@ -17,13 +17,14 @@ const {
   buildSkillTypeInjection,
 } = require("./skill-loader");
 const { resolveRequestSkills } = require("./skill-router");
-const { createAccessGate, resolveAccessToken } = require("./lib/access-gate");
+const { createAccessGate, resolveAccessToken, resolveInternalHost } = require("./lib/access-gate");
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
-// 默认只监听回环；显式设置非回环 HOST 即开启跨设备访问，
-// 此时 /api/sessions、/api/history、/api/events 与 chat-logs 中的完整文件快照
-// 都会对同网段可见，因此统一由 ACCESS_TOKEN 门禁保护（回环请求放行）
+// 默认只监听回环；显式设置非回环 HOST 即对外暴露，此时 /api/sessions、/api/history、
+// /api/events 与 chat-logs 中的完整文件快照都会对同网段可见，因此统一由 ACCESS_TOKEN
+// 门禁保护。门禁不看请求来源地址：绑定回环 + 本机 TLS 反代对外发布同样需要令牌，
+// 显式配置 ACCESS_TOKEN 即启用（即使 HOST 仍是 127.0.0.1）
 const HOST = process.env.HOST ?? "127.0.0.1";
 const access = resolveAccessToken({
   host: HOST,
@@ -31,12 +32,14 @@ const access = resolveAccessToken({
   envInternalToken: process.env.PERMISSION_INTERNAL_TOKEN,
   allowedHosts: process.env.ALLOWED_HOSTS,
 });
-// 对外模式下本机 permission-server / MCP 回报也要凭证：把内部令牌交给子进程，
+// 门禁启用时本机 permission-server / MCP 回报也要凭证：把内部令牌交给子进程，
 // 它只在 /api/permission-request、/api/permission-response、/api/tool-result、
 // /api/mcp-send-message 四条内部路由上有效，读不到会话历史与文件快照
 if (access.enabled && access.internalToken) {
   process.env.PERMISSION_INTERNAL_TOKEN = access.internalToken;
 }
+// 子进程回报时要连实际监听的地址：绑定具体网卡或 ::1 时 127.0.0.1 连不上
+process.env.PERMISSION_SERVER_HOST = process.env.PERMISSION_SERVER_HOST || resolveInternalHost(HOST);
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
@@ -1971,9 +1974,11 @@ const serverInstance = app.listen(PORT, HOST, () => {
   console.log(`AI Chat Arena 已启动: http://${bound}:${actualPort}`);
   if (access.enabled) {
     const remoteHost = bound === "0.0.0.0" || bound === "::" ? "<本机IP>" : bound;
-    console.log(`[访问控制] 跨设备模式已开启，令牌${access.generated ? "为本次启动随机生成（重启后变化）" : "取自 ACCESS_TOKEN 环境变量"}`);
+    const mode = access.hostExposed ? "跨设备模式已开启" : "已开启令牌门禁（仍只监听回环地址，适用于本机 TLS 反向代理对外发布）";
+    console.log(`[访问控制] ${mode}，令牌${access.generated ? "为本次启动随机生成（重启后变化）" : "取自 ACCESS_TOKEN 环境变量"}`);
     console.log(`[访问控制] 访问地址: http://${remoteHost}:${actualPort}/?token=${access.token}`);
-    console.log("[访问控制] 对外模式下一律凭令牌访问（含本机浏览器与经反向代理的请求）；permission-server 走内部令牌，仅限审批与回报路由");
+    console.log(`[访问控制] 内部回报地址: http://${process.env.PERMISSION_SERVER_HOST}:${actualPort}（permission-server / 工具结果回报，走内部令牌）`);
+    console.log("[访问控制] 门禁启用后一律凭令牌访问（含本机浏览器与经反向代理的请求）；内部令牌仅限审批与回报路由");
     console.log("[访问控制] 令牌可读取全部会话历史与 chat-logs 中的完整文件快照，请勿外泄；如需防 DNS 重绑定可设置 ALLOWED_HOSTS");
   }
 });

@@ -6,6 +6,7 @@
  *
  * 环境变量：
  *   PERMISSION_SERVER_PORT    — Express 服务端口（默认 3000）
+ *   PERMISSION_SERVER_HOST    — Express 服务监听地址（默认 127.0.0.1；绑定具体网卡或 ::1 时由主服务注入）
  *   PERMISSION_BROWSER_SESSION — 浏览器会话 ID（用于关联 SSE 推送）
  *   PERMISSION_CHARACTER      — 角色名（用于前端显示）
  */
@@ -20,6 +21,8 @@ const path = require("path");
 const { globSync } = require("fs").promises ? { globSync: null } : {};
 
 const PORT = process.env.PERMISSION_SERVER_PORT || "3000";
+// 主服务可能绑定具体网卡地址或 ::1，此时回报必须连它实际监听的地址
+const SERVER_HOST = process.env.PERMISSION_SERVER_HOST || "127.0.0.1";
 const TIMEOUT_MS = 120_000;
 
 function getContext() {
@@ -32,7 +35,7 @@ function getContext() {
 
 const log = (msg) => process.stderr.write(`[permission-server] ${msg}\n`);
 
-// 服务处于对外模式时，内部路由也要凭证；默认本机模式下该变量为空，不发送头部
+// 门禁启用时，内部路由也要凭证；默认本机模式下该变量为空，不发送头部
 function internalAuthHeaders() {
   const token = process.env.PERMISSION_INTERNAL_TOKEN || "";
   return token ? { "x-internal-token": token } : {};
@@ -59,7 +62,7 @@ function requestPermission(toolName, input) {
 
     const req = http.request(
       {
-        hostname: "127.0.0.1",
+        hostname: SERVER_HOST,
         port: parseInt(PORT, 10),
         path: "/api/permission-request",
         method: "POST",
@@ -444,7 +447,7 @@ server.tool(
 
       return new Promise((resolve, reject) => {
         const req = http.request({
-          hostname: "127.0.0.1",
+          hostname: SERVER_HOST,
           port: parseInt(PORT, 10),
           path: "/api/mcp-send-message",
           method: "POST",

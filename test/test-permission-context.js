@@ -75,6 +75,10 @@ function testTraeUsesPerInvokePermissionConfig() {
       permissionEnv.PERMISSION_WORKING_DIRECTORY === "/tmp/worktree-trae",
     "trae invoke builds permission env for parent-process inheritance"
   );
+  assert(
+    permissionEnv.PERMISSION_SERVER_HOST === (process.env.PERMISSION_SERVER_HOST || ""),
+    "trae invoke 的 permission env 带上实际监听地址（PERMISSION_SERVER_HOST）"
+  );
 
   const registration = __test.buildTraePermissionRegistrationConfig();
   assert(
@@ -214,6 +218,30 @@ function testCodexUsesPerInvokePermissionConfig() {
     prepared.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_BROWSER_SESSION") && value.includes("session-codex")),
     "codex invoke includes per-invoke session env override"
   );
+
+  const savedHost = process.env.PERMISSION_SERVER_HOST;
+  const savedToken = process.env.PERMISSION_INTERNAL_TOKEN;
+  try {
+    process.env.PERMISSION_SERVER_HOST = "10.1.2.3";
+    process.env.PERMISSION_INTERNAL_TOKEN = "internal-token-x";
+    const preparedWithHost = __test.preparePermissionTransport("codex", {
+      browserSessionId: "session-codex-host",
+      character: "奇迹哥",
+      workingDirectory: "/tmp/worktree-codex-host",
+      permissionServerPort: "4999",
+    });
+    assert(
+      preparedWithHost.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_SERVER_HOST") && value.includes("10.1.2.3")),
+      "codex invoke 透传实际监听地址，绑定具体网卡时回报不会连错地址"
+    );
+    assert(
+      preparedWithHost.args.some((value) => value.includes("mcp_servers.permission.env.PERMISSION_INTERNAL_TOKEN") && value.includes("internal-token-x")),
+      "codex invoke 透传内部令牌"
+    );
+  } finally {
+    if (savedHost === undefined) delete process.env.PERMISSION_SERVER_HOST; else process.env.PERMISSION_SERVER_HOST = savedHost;
+    if (savedToken === undefined) delete process.env.PERMISSION_INTERNAL_TOKEN; else process.env.PERMISSION_INTERNAL_TOKEN = savedToken;
+  }
 }
 
 function testDshDeclaresPermissionServerOverAcp() {
