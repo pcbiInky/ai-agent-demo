@@ -1508,10 +1508,14 @@ function renderMetricBar(win, index) {
   const fillVariant = isCtx ? "ctx" : variant;
   const lowClass = !isCtx && pct !== null && pct < 20 ? " metric-bar-fill-low" : "";
   const hasResetTime = win.resetsAt !== null && win.resetsAt !== undefined;
-  const labelText = isPrimary && hasResetTime
+  // 只有 5h 短周期窗口把时间显示在标签位做倒计时（codex key=5h；
+  // claude key=primary、label=5h，所以必须判 label 而非 key）；
+  // month 等长周期窗口即使居首位且有 resetsAt 也显示维度名，重置时间留在 tooltip。
+  const showResetAsLabel = isPrimary && hasResetTime && win.label === "5h";
+  const labelText = showResetAsLabel
     ? formatBeijingTime(win.resetsAt)
     : (win.label || win.key || "");
-  const labelClass = isPrimary && hasResetTime
+  const labelClass = showResetAsLabel
     ? "metric-bar-label metric-time-label"
     : "metric-bar-label";
   const title = [

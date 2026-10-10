@@ -83,14 +83,15 @@ function testMergeContextMetrics() {
   const { buildQodercnContextMetrics, mergeQodercnContextMetrics } = reload();
   const existing = {
     usageWindows: [
-      { key: "balance", label: "余额", usedPercent: 75, resetsAt: null },
+      { key: "balance", label: "month", usedPercent: 75, resetsAt: 1794240000000 },
       { key: "ctx", label: "ctx", usedPercent: 90, resetsAt: null },
     ],
   };
   const contextPatch = buildQodercnContextMetrics(0.4);
   const merged = mergeQodercnContextMetrics(existing, contextPatch);
   eq(merged.usageWindows.length, 2, "live context update keeps balance and ctx");
-  eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps balance");
+  eq(merged.usageWindows[0].usedPercent, 75, "live context update keeps balance first");
+  eq(merged.usageWindows[0].resetsAt, 1794240000000, "live context update keeps balance reset time");
   eq(merged.usageWindows[1].usedPercent, 40, "live context update replaces ctx with used percent");
   eq(merged.primaryUsedPercent, 75, "legacy primary follows merged balance window");
   eq(mergeQodercnContextMetrics({}, contextPatch), contextPatch, "context patch without prior quota is unchanged");
@@ -107,7 +108,7 @@ function testBuildBalanceWindow() {
     orgResourcePackage: { cap: 100, used: 20, remaining: 80, available: true, unit: "credits" },
   });
   eq(balance.key, "balance", "account usage is one balance window");
-  eq(balance.label, "余额", "balance uses DSH-style label");
+  eq(balance.label, "month", "balance uses kimi-style month label");
   eq(balance.usedPercent, 78, "balance combines all available credit pools");
   assert(balance.detail.includes("1861 / 总量 2383"), "balance detail exposes combined Credits");
   eq(balance.resetsAt, 1794240000000, "balance carries the billing-cycle expiry as resetsAt");
@@ -177,6 +178,7 @@ async function testGetQodercnRoleCardMetrics() {
     const ok = await mod.getQodercnRoleCardMetrics("sess-1", { projectsDir: tempDir, fetchUsageInfo });
     eq(ok.usageWindows.length, 2, "balance and ctx are shown together");
     eq(ok.usageWindows[0].key, "balance", "first window is balance");
+    eq(ok.usageWindows[0].label, "month", "balance displays month label like kimi");
     eq(ok.usageWindows[0].usedPercent, 75, "combined balance remaining 75%");
     eq(ok.usageWindows[0].resetsAt, 1794240000000, "balance resetsAt survives metrics assembly");
     assert(ok.usageWindows[0].detail.includes("1580 / 总量 2100"), "balance tooltip keeps combined Credit detail");
