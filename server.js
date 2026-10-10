@@ -20,6 +20,9 @@ const { resolveRequestSkills } = require("./skill-router");
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
+// 默认只监听回环：/api/sessions、/api/history、/api/events 均无鉴权，
+// 且 chat-logs 里的 execution 含完整文件快照，对外监听等于公开读取
+const HOST = process.env.HOST ?? "127.0.0.1";
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
@@ -238,6 +241,26 @@ function storeApproval(requestId, browserSessionId, character, toolName, replyTo
   });
   // 自动清理过期记录
   setTimeout(() => approvedRequests.delete(requestId), APPROVAL_TTL_MS);
+}
+
+// ── 编辑类工具执行结果关联（/api/tool-result 用，独立于短 TTL 的 approvedRequests）──
+const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+const toolResultCorrelations = new Map();
+const TOOL_RESULT_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
+// 执行完成顺序的服务端单调序号（初值取时钟，进程重启后仍单调），
+// 前端按它排序再做快照连续性校验，避免并发编辑时实时与历史净 Diff 不一致
+let executionSeqCounter = Date.now();
+
+function nextExecutionSeq() {
+  executionSeqCounter += 1;
+  return executionSeqCounter;
+}
+
+function registerToolResultCorrelation(requestId, { browserSessionId, character, toolName, messageId }) {
+  if (!FILE_EDIT_TOOLS.has(toolName)) return;
+  toolResultCorrelations.set(requestId, { browserSessionId, character, toolName, messageId, createdAt: Date.now() });
+  const timer = setTimeout(() => toolResultCorrelations.delete(requestId), TOOL_RESULT_CORRELATION_TTL_MS);
+  timer.unref?.();
 }
 
 function buildPermissionLogEntry({
@@ -680,6 +703,7 @@ app.post("/api/permission-request", async (req, res) => {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
     // 存储审批记录（供 /api/mcp-send-message 校验身份）
     storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId);
+    registerToolResultCorrelation(requestId, { browserSessionId, character, toolName, messageId: thinkingMessageId });
     appendPermissionToLog(browserSessionId, {
       requestId,
       character,
@@ -793,6 +817,12 @@ app.post("/api/permission-response", (req, res) => {
   if (behavior === "allow" && pending.toolName) {
     const thinkingMsgId = activeThinking.get(getActiveThinkingKey(pending.browserSessionId, pending.character)) || null;
     storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName, thinkingMsgId);
+    registerToolResultCorrelation(requestId, {
+      browserSessionId: pending.browserSessionId,
+      character: pending.character,
+      toolName: pending.toolName,
+      messageId: thinkingMsgId,
+    });
   }
 
   // 返回给 MCP server
@@ -802,6 +832,54 @@ app.post("/api/permission-response", (req, res) => {
     requestId,
   });
 
+  res.json({ ok: true });
+});
+
+// ── API: 编辑类工具执行结果回报（MCP permission-server 调用）──
+// 关联只在审批通过时注册：被拒绝/超时的请求回报一律 404，不会写入成功记录
+app.post("/api/tool-result", (req, res) => {
+  const { requestId, toolName, ok, error, filePath, before, after, oversized, snapshotError, changed, finishedAt } = req.body;
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: "requestId 不能为空" });
+  }
+
+  const corr = toolResultCorrelations.get(requestId);
+  if (!corr) {
+    return res.status(404).json({ ok: false, error: "requestId 无关联记录、已回报或已过期" });
+  }
+  if (!toolName || corr.toolName !== toolName) {
+    return res.status(400).json({ ok: false, error: "工具名缺失或与关联记录不匹配" });
+  }
+  if (typeof ok !== "boolean") {
+    return res.status(400).json({ ok: false, error: "ok 必须为布尔值" });
+  }
+  if (typeof filePath !== "string" || !filePath) {
+    return res.status(400).json({ ok: false, error: "filePath 不能为空" });
+  }
+  const noContent = Boolean(oversized) || Boolean(snapshotError);
+  // after 必须是字符串：null 意味着读取失败，应由上报方标记 snapshotError 而非伪装成空文件
+  const snapshotValid = (before === null || typeof before === "string") && typeof after === "string";
+  if (ok && !noContent && !snapshotValid) {
+    return res.status(400).json({ ok: false, error: "快照字段缺失或类型错误" });
+  }
+  // 一次性消费：重复回报直接 404
+  toolResultCorrelations.delete(requestId);
+
+  const execution = {
+    status: ok ? "success" : "error",
+    ...(error ? { error } : {}),
+    filePath,
+    ...(ok && !noContent ? { before: before ?? null, after } : {}),
+    ...(oversized ? { oversized: true } : {}),
+    ...(snapshotError ? { snapshotError: true } : {}),
+    ...(typeof changed === "boolean" ? { changed } : {}),
+    diffAvailable: Boolean(ok && !noContent),
+    seq: nextExecutionSeq(),
+    finishedAt: finishedAt || Date.now(),
+  };
+
+  updateMessageInLog(corr.browserSessionId, requestId, { execution });
+  emitSSE(corr.browserSessionId, "permission-executed", { requestId, execution });
   res.json({ ok: true });
 });
 
@@ -1844,10 +1922,16 @@ initMcpRegistrations(String(PORT));
 process.on("SIGINT", () => { closeServer(); process.exit(0); });
 process.on("SIGTERM", () => { closeServer(); process.exit(0); });
 
-const serverInstance = app.listen(PORT, () => {
+const serverInstance = app.listen(PORT, HOST, () => {
   const address = serverInstance.address();
   const actualPort = typeof address === "object" && address ? address.port : PORT;
-  console.log(`AI Chat Arena 已启动: http://localhost:${actualPort}`);
+  const bound = typeof address === "object" && address ? address.address : HOST;
+  console.log(`AI Chat Arena 已启动: http://${bound}:${actualPort}`);
+  const loopback = bound === "127.0.0.1" || bound === "::1" || bound === "localhost";
+  if (!loopback) {
+    console.warn(`[安全] 服务正在监听 ${bound}，同网段设备可无鉴权访问 /api/sessions、/api/history、/api/events，`
+      + "并读取 chat-logs 中的完整文件快照（execution.before/after）。仅本机使用请取消 HOST 环境变量。");
+  }
 });
 
 module.exports = {

@@ -32,6 +32,7 @@ const IDS = [
   "settings-save-btn", "settings-cancel-btn", "settings-title", "settings-subtitle",
   "settings-skills-panel", "thread-panel", "thread-messages", "thread-close-btn",
   "skill-trace-list", "skill-list",
+  "diff-panel", "diff-panel-title", "diff-panel-sub", "diff-panel-content", "diff-close-btn",
 ];
 
 const sessions = {

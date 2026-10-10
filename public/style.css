@@ -1656,3 +1656,171 @@ html, body {
 .message.qodercn .bubble { background: var(--qodercn-bg); border-bottom-left-radius: 4px; }
 .message.qodercn .thinking-scroll-area { background: var(--qodercn-bg); }
 .hint-chip.qodercn { color: var(--qodercn-accent); border-color: var(--qodercn-accent); }
+
+/* ── 消息内文件修改 Diff 目录 ─────────────────────────── */
+.file-diff-dir {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+}
+.file-diff-dir-title {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+  border-bottom: 1px solid var(--border);
+}
+.file-diff-list {
+  display: flex;
+  flex-direction: column;
+}
+.file-diff-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+.file-diff-item:last-child { border-bottom: none; }
+.file-diff-item:hover { background: rgba(74, 108, 247, 0.08); }
+.file-diff-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-diff-stat {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.file-diff-add { color: #1a7f37; }
+.file-diff-del { color: #cf222e; }
+.file-diff-unknown { color: var(--text-light); }
+.file-diff-times { color: var(--text-light); }
+
+/* ── Diff 侧边面板 ─────────────────────────────────────── */
+.diff-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 560px;
+  max-width: 100vw;
+  height: 100vh;
+  background: white;
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.1);
+  z-index: 41;
+  display: none;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+}
+.diff-panel.open { display: flex; }
+.diff-panel.visible { transform: translateX(0); }
+.diff-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 8px;
+  background: var(--chat-bg);
+}
+.diff-panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-panel-sub {
+  padding: 0 16px 10px;
+  font-size: 11.5px;
+  color: var(--text-light);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-bottom: 1px solid var(--border);
+  background: var(--chat-bg);
+  word-break: break-all;
+}
+.diff-panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.diff-seg-label {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+.diff-seg-label:first-child { margin-top: 0; }
+.diff-code {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 420px;
+  background: #0d1117;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.diff-line {
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #c9d1d9;
+}
+.diff-line.add { background: rgba(46, 160, 67, 0.22); color: #aff5b4; }
+.diff-line.del { background: rgba(248, 81, 73, 0.18); color: #ffc1bc; }
+.diff-line.ctx { color: #8b949e; }
+.diff-line.meta { color: #d29922; font-style: italic; }
+.diff-note {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-light);
+}
+.diff-change-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.diff-change-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  background: var(--chat-bg);
+  font-size: 12px;
+  color: var(--text-light);
+}
+.diff-tool-badge {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(74, 108, 247, 0.12);
+  color: var(--defualt-button);
+  font-weight: 600;
+  font-size: 11px;
+}
+.diff-change-index { font-weight: 600; color: var(--text); }
+.diff-change-time { margin-left: auto; }
+.diff-change-block .diff-code {
+  border: none;
+  border-radius: 0;
+  max-height: 320px;
+}

@@ -24,6 +24,12 @@ const state = {
   activeThreadId: null,
   // 消息 ID -> DOM 元素映射
   messageElements: {},
+  // 文件修改记录: "character|messageId" -> { filePath -> changes[] }（仅执行成功的编辑类工具）
+  fileChanges: {},
+  // 权限请求索引: requestId -> SSE permission 事件数据（等待 permission-executed 归档）
+  permRequestIndex: {},
+  // "character|messageId" -> replyId，用于执行结果晚于回复到达时补挂目录
+  replyByThinking: {},
   skills: [],
   skillConfig: null,
   skillTraces: [],
@@ -62,6 +68,11 @@ const $settingsSkillsPanel = $("#settings-skills-panel");
 const $threadPanel = $("#thread-panel");
 const $threadMessages = $("#thread-messages");
 const $threadCloseBtn = $("#thread-close-btn");
+const $diffPanel = $("#diff-panel");
+const $diffPanelTitle = $("#diff-panel-title");
+const $diffPanelSub = $("#diff-panel-sub");
+const $diffPanelContent = $("#diff-panel-content");
+const $diffCloseBtn = $("#diff-close-btn");
 const $skillTraceList = $("#skill-trace-list");
 const $skillList = $("#skill-list");
 
@@ -104,6 +115,7 @@ async function init() {
   setupSettings();
     setupSessionMetaEditor();
   setupThreadPanel();
+  setupDiffPanel();
 
   $newSessionBtn.addEventListener("click", () => showNewSessionModal());
 }
@@ -423,6 +435,11 @@ function connectSSE() {
       attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
     }
 
+    if (data.messageId) {
+      state.replyByThinking[`${data.character}|${data.messageId}`] = data.replyId;
+      renderFileDiffDirectory(data.character, data.messageId, state.messageElements[data.replyId]);
+    }
+
     if (data.source !== "mcp-tool") {
       setCharStatus(data.character, "online");
     }
@@ -491,14 +508,30 @@ function connectSSE() {
   // ── 权限请求事件 ──
   es.addEventListener("permission", (e) => {
     const data = JSON.parse(e.data);
+    state.permRequestIndex[data.requestId] = data;
     showPermissionCard(data);
     loadSessionList();
   });
 
   es.addEventListener("permission-resolved", (e) => {
     const data = JSON.parse(e.data);
+    const req = state.permRequestIndex[data.requestId];
+    if (req && data.behavior === "allow") req.approved = true;
     resolvePermissionCard(data.requestId, data.behavior, data.message);
     loadSessionList();
+  });
+
+  es.addEventListener("permission-executed", (e) => {
+    const data = JSON.parse(e.data);
+    const req = state.permRequestIndex[data.requestId];
+    if (!req) return;
+    req.execution = data.execution;
+    if (req.approved) {
+      recordFileChange(req);
+      // 回复可能先于执行结果渲染，支持补挂/刷新目录
+      refreshFileDiffDirectory(req.character, req.messageId);
+    }
+    delete state.permRequestIndex[data.requestId];
   });
 }
 
@@ -1325,6 +1358,422 @@ function markPermResolved(requestId, behavior, message) {
   }
 }
 
+// ── 文件修改 Diff（聚合编辑类工具的成功执行结果）────────────
+const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+
+function changeFilePath(rec) {
+  return rec.execution?.filePath
+    || (rec.toolName === "NotebookEdit" ? rec.input?.notebook_path : rec.input?.file_path)
+    || null;
+}
+
+// 仅计入获批且执行成功的记录；before===after 的无变化操作不进入目录
+function recordFileChange(rec) {
+  if (!rec || !rec.character || !rec.messageId) return;
+  if (!FILE_EDIT_TOOLS.has(rec.toolName)) return;
+  const exec = rec.execution;
+  if (!exec || exec.status !== "success") return;
+  const filePath = changeFilePath(rec);
+  if (!filePath) return;
+  // 工具侧 hash 判定的无变化操作（含 oversized 大文件）不计入
+  if (exec.changed === false) return;
+  if (exec.diffAvailable && exec.before === exec.after) return;
+  const key = `${rec.character}|${rec.messageId}`;
+  if (!state.fileChanges[key]) state.fileChanges[key] = {};
+  const files = state.fileChanges[key];
+  if (!files[filePath]) files[filePath] = [];
+  files[filePath].push({
+    requestId: rec.requestId || rec.id,
+    toolName: rec.toolName,
+    input: rec.input,
+    timestamp: rec.timestamp,
+    execution: exec,
+  });
+  // 基线顺序（完成时间 → 回报序号）：真实先后由 orderFileChanges 按快照连续性重建，
+  // 这里只保证实时（事件到达序）与历史（日志请求序）拿到同一份稳定输入
+  files[filePath].sort((a, b) => (a.execution?.finishedAt ?? 0) - (b.execution?.finishedAt ?? 0)
+    || (a.execution?.seq ?? 0) - (b.execution?.seq ?? 0));
+}
+
+// 行拆分：末尾换行不算独立行；空文件/缺失文件为零行
+// eol: true=以换行结尾 / false=末尾无换行 / null=文件不存在
+function splitDiffLines(text) {
+  if (text == null) return { lines: [], eol: null };
+  if (text === "") return { lines: [], eol: true };
+  const eol = text.endsWith("\n");
+  return { lines: (eol ? text.slice(0, -1) : text).split("\n"), eol };
+}
+
+// LCS 行级 diff；超过 250000 单元格降级（不提供虚假 +/- 统计）
+// 末尾换行状态变化用 meta 行表示（不计入 +/-）
+function computeLineDiff(oldText, newText) {
+  const a = splitDiffLines(oldText);
+  const b = splitDiffLines(newText);
+  if ((a.lines.length + 1) * (b.lines.length + 1) > 250000) {
+    return { lines: null, degraded: true };
+  }
+  const n = a.lines.length;
+  const m = b.lines.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a.lines[i] === b.lines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const lines = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a.lines[i] === b.lines[j]) { lines.push({ type: "ctx", text: a.lines[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { lines.push({ type: "del", text: a.lines[i] }); i++; }
+    else { lines.push({ type: "add", text: b.lines[j] }); j++; }
+  }
+  while (i < n) { lines.push({ type: "del", text: a.lines[i] }); i++; }
+  while (j < m) { lines.push({ type: "add", text: b.lines[j] }); j++; }
+  if (n > 0 && a.eol === false && b.eol !== false) {
+    lines.push({ type: "meta", text: "\\ 修改前文件末尾无换行" });
+  }
+  if (m > 0 && b.eol === false && a.eol !== false) {
+    lines.push({ type: "meta", text: "\\ 修改后文件末尾无换行" });
+  }
+  return { lines, degraded: false };
+}
+
+function diffStatLines(diff) {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.lines || []) {
+    if (line.type === "add") added++;
+    else if (line.type === "del") removed++;
+  }
+  return { added, removed };
+}
+
+// 同文件修改顺序不能依赖 seq（那是"回报到达序"，并发工具的回报可能倒序）。
+// 以快照连续性重建唯一链：每个 before/after 状态只出现一次时链可确定；
+// 出现重复状态或成环则顺序不可判定，标为 orderUnknown —— 宁可不出净 Diff，也不给虚假合计。
+function orderFileChanges(changes) {
+  const cmpBaseline = (a, b) => {
+    const ta = a.execution?.finishedAt ?? 0;
+    const tb = b.execution?.finishedAt ?? 0;
+    return ta - tb || (a.execution?.seq ?? 0) - (b.execution?.seq ?? 0);
+  };
+  const snapped = changes.filter((c) => c.execution?.diffAvailable);
+  if (snapped.length <= 1) return { ordered: changes, orderUnknown: false };
+
+  const byBefore = new Map();
+  const byAfter = new Map();
+  for (const c of snapped) {
+    if (byBefore.has(c.execution.before) || byAfter.has(c.execution.after)) {
+      return { ordered: changes, orderUnknown: true };
+    }
+    byBefore.set(c.execution.before, c);
+    byAfter.set(c.execution.after, c);
+  }
+
+  const chains = [];
+  const chained = new Set();
+  for (const c of snapped) {
+    if (byAfter.has(c.execution.before)) continue; // 有前驱，不是链首
+    const chain = [];
+    let cur = c;
+    while (cur && !chained.has(cur)) {
+      chain.push(cur);
+      chained.add(cur);
+      cur = byBefore.get(cur.execution.after);
+    }
+    chains.push(chain);
+  }
+  if (chained.size !== snapped.length) return { ordered: changes, orderUnknown: true }; // 成环
+
+  // 链之间内容不连续（存在范围外修改），彼此先后只影响展示顺序，用完成时间做提示性排序
+  chains.sort((x, y) => cmpBaseline(x[0], y[0]));
+  const queue = chains.flat();
+  const ordered = [];
+  for (const c of [...changes].sort(cmpBaseline)) {
+    ordered.push(c.execution?.diffAvailable ? queue.shift() : c);
+  }
+  return { ordered, orderUnknown: false };
+}
+
+// 逐对校验快照连续性（prev.after === next.before），不连续拆段；
+// 无快照（oversized 等）的操作是断点，计入 uncovered
+function buildFileDiffSegments(changes) {
+  const segments = [];
+  let current = null;
+  let uncovered = 0;
+  for (let idx = 0; idx < changes.length; idx++) {
+    const exec = changes[idx].execution;
+    if (!exec || !exec.diffAvailable) {
+      uncovered++;
+      if (current) { segments.push(current); current = null; }
+      continue;
+    }
+    if (current && current.lastAfter === exec.before) {
+      current.changes.push(idx);
+      current.after = exec.after;
+      current.lastAfter = exec.after;
+    } else {
+      if (current) segments.push(current);
+      current = { before: exec.before, after: exec.after, lastAfter: exec.after, changes: [idx] };
+    }
+  }
+  if (current) segments.push(current);
+  return { segments, complete: segments.length === 1 && uncovered === 0, uncovered };
+}
+
+function summarizeFileChanges(changes) {
+  const { ordered, orderUnknown } = orderFileChanges(changes);
+  const uncoveredCount = ordered.filter((c) => !c.execution?.diffAvailable).length;
+  if (orderUnknown) {
+    return { ordered, orderUnknown, segments: [], complete: false, uncovered: uncoveredCount, added: 0, removed: 0, statsKnown: false, count: changes.length };
+  }
+  const { segments, complete, uncovered } = buildFileDiffSegments(ordered);
+  let added = 0;
+  let removed = 0;
+  const segDiffs = segments.map((seg) => {
+    const diff = computeLineDiff(seg.before, seg.after);
+    if (!diff.degraded) {
+      const s = diffStatLines(diff);
+      added += s.added;
+      removed += s.removed;
+    }
+    return { seg, diff };
+  });
+  const statsKnown = segDiffs.length > 0 && uncovered === 0 && segDiffs.every((s) => !s.diff.degraded);
+  return { ordered, orderUnknown, segments: segDiffs, complete, uncovered, added, removed, statsKnown, count: changes.length };
+}
+
+function shortenFilePath(filePath) {
+  const wd = state.sessionMeta?.workingDirectory;
+  if (wd && filePath.startsWith(wd + "/")) return filePath.slice(wd.length + 1);
+  return filePath;
+}
+
+// 目录渲染（幂等 upsert）：插入 bubble-wrapper 末尾（.msg-model 之后）
+function renderFileDiffDirectory(character, messageId, replyEl) {
+  if (!replyEl || !character || !messageId) return;
+  const wrapper = replyEl.querySelector(".bubble-wrapper");
+  if (!wrapper) return;
+  wrapper.querySelector(".file-diff-dir")?.remove();
+  const files = state.fileChanges[`${character}|${messageId}`];
+  if (!files || Object.keys(files).length === 0) return;
+
+  const dir = document.createElement("div");
+  dir.className = "file-diff-dir";
+  const title = document.createElement("div");
+  title.className = "file-diff-dir-title";
+  title.textContent = `已记录的文件修改（Edit/Write/NotebookEdit） · ${Object.keys(files).length} 个`;
+  dir.appendChild(title);
+
+  const list = document.createElement("div");
+  list.className = "file-diff-list";
+  for (const filePath of Object.keys(files)) {
+    const changes = files[filePath];
+    const summary = summarizeFileChanges(changes);
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "file-diff-item";
+    item.title = filePath;
+    const statHtml = summary.orderUnknown
+      ? `<span class="file-diff-unknown">顺序未知</span>`
+      : summary.statsKnown
+      ? `<span class="file-diff-add">+${summary.added}</span> <span class="file-diff-del">-${summary.removed}</span>`
+      : `<span class="file-diff-unknown">增删未知</span>`;
+    // 有无快照记录时，分段只是基线排序的推断（其位置不可证），不能当结论展示
+    const segLabel = summary.uncovered === 0 && summary.segments.length > 1 ? " · 分段" : "";
+    item.innerHTML = `
+      <span class="file-diff-path">${escapeHtml(shortenFilePath(filePath))}</span>
+      <span class="file-diff-stat">${statHtml}<span class="file-diff-times">${changes.length} 次${segLabel}</span></span>
+    `;
+    item.addEventListener("click", () => openDiffPanel(character, messageId, filePath));
+    list.appendChild(item);
+  }
+  dir.appendChild(list);
+  wrapper.appendChild(dir);
+}
+
+// 执行结果晚于回复到达时补挂/刷新目录
+function refreshFileDiffDirectory(character, messageId) {
+  if (!character || !messageId) return;
+  const replyId = state.replyByThinking[`${character}|${messageId}`];
+  if (!replyId) return;
+  renderFileDiffDirectory(character, messageId, state.messageElements[replyId]);
+}
+
+function setupDiffPanel() {
+  $diffCloseBtn.addEventListener("click", closeDiffPanel);
+}
+
+let _closeDiffTimer = null;
+
+// 单个 diff 块的渲染行数预算：LCS 单元格上限拦不住"窄而长"的内容
+// （如 4 万个空行只产生 1×40001 矩阵），不限量会同步创建数万节点卡住面板
+const MAX_DIFF_RENDER_LINES = 1500;
+// 面板级总预算：单块上限拦不住"多段"场景（60 段 × 1500 行 = 9 万节点），
+// 片段区与明细区各持一份，明细区按需展开才消耗，因此同屏上限为两份之和
+const MAX_PANEL_RENDER_LINES = 6000;
+
+function buildDiffCodeBlock(diff, budget) {
+  const body = document.createElement("div");
+  body.className = "diff-code";
+  if (diff.degraded || !diff.lines) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = "未计算行级 Diff（内容过大）";
+    body.appendChild(note);
+    return body;
+  }
+  if (diff.lines.length === 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = "(无内容变化)";
+    body.appendChild(note);
+    return body;
+  }
+  const cap = budget ? Math.min(MAX_DIFF_RENDER_LINES, budget.left) : MAX_DIFF_RENDER_LINES;
+  const shown = Math.max(0, Math.min(diff.lines.length, cap));
+  for (let i = 0; i < shown; i++) {
+    const line = diff.lines[i];
+    const el = document.createElement("div");
+    el.className = `diff-line ${line.type}`;
+    if (line.type === "meta") {
+      el.textContent = line.text;
+    } else {
+      const sign = line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
+      el.textContent = `${sign} ${line.text}`;
+    }
+    body.appendChild(el);
+  }
+  if (budget) budget.left -= shown;
+  body.renderedLines = shown;
+  if (diff.lines.length > shown) {
+    // 单块上限截掉的尾部在明细里同样看不到，面板预算耗尽则可以——两种原因必须分开说
+    const blockOnly = Math.min(diff.lines.length, MAX_DIFF_RENDER_LINES);
+    const byPanel = budget && shown < blockOnly;
+    body.truncatedBy = byPanel ? "panel" : "block";
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    if (byPanel) {
+      note.textContent = shown === 0
+        ? `未渲染该块（共 ${diff.lines.length} 行）：已达到面板渲染总行数上限 ${MAX_PANEL_RENDER_LINES}`
+        : `仅渲染前 ${shown} 行（共 ${diff.lines.length} 行）：面板渲染总行数上限 ${MAX_PANEL_RENDER_LINES} 已用尽`;
+    } else {
+      note.textContent = `仅渲染前 ${shown} 行（共 ${diff.lines.length} 行）：单个 diff 块最多渲染 ${MAX_DIFF_RENDER_LINES} 行，其余未显示以避免界面卡顿`;
+    }
+    body.appendChild(note);
+  }
+  return body;
+}
+
+function openDiffPanel(character, messageId, filePath) {
+  const changes = state.fileChanges[`${character}|${messageId}`]?.[filePath] || [];
+  if (_closeDiffTimer) {
+    clearTimeout(_closeDiffTimer);
+    _closeDiffTimer = null;
+  }
+  $diffPanelTitle.textContent = filePath.split("/").pop();
+  $diffPanelSub.textContent = filePath;
+  $diffPanelContent.innerHTML = "";
+
+  const summary = summarizeFileChanges(changes);
+
+  if (summary.orderUnknown) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = "同文件多次修改的先后顺序无法确定（快照状态重复或成环），未计算净 Diff 与合计";
+    $diffPanelContent.appendChild(note);
+  }
+  // 只有"单段 + 全部操作都有快照"才配称文件本轮的净变化；
+  // 存在无快照记录时其相对写入位置不可证，片段只能标为局部快照，不得暗示最终净变化
+  const isNetDiff = summary.segments.length === 1 && summary.uncovered === 0;
+  const segBudget = { left: MAX_PANEL_RENDER_LINES };
+  let panelTruncated = 0;
+  let blockTruncated = 0;
+  summary.segments.forEach(({ diff }, idx) => {
+    const label = document.createElement("div");
+    label.className = "diff-seg-label";
+    label.textContent = isNetDiff
+      ? "净 Diff"
+      : summary.uncovered > 0
+      ? `局部快照片段 · 段 ${idx + 1}/${summary.segments.length}（该文件另有 ${summary.uncovered} 次修改无可用快照，相对位置不可证，不代表文件最终净变化）`
+      : `净 Diff · 段 ${idx + 1}/${summary.segments.length}（段间存在范围外修改，未计入本轮工具变更）`;
+    $diffPanelContent.appendChild(label);
+    const block = buildDiffCodeBlock(diff, segBudget);
+    if (block.truncatedBy === "panel") panelTruncated += 1;
+    else if (block.truncatedBy === "block") blockTruncated += 1;
+    $diffPanelContent.appendChild(block);
+  });
+  if (panelTruncated > 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = `片段区已达到面板渲染总行数上限 ${MAX_PANEL_RENDER_LINES}：${panelTruncated}/${summary.segments.length} 个片段未完整显示，逐次操作明细另有独立预算，可按需展开`;
+    $diffPanelContent.appendChild(note);
+  }
+  if (blockTruncated > 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = `${blockTruncated}/${summary.segments.length} 个片段由单块渲染上限 ${MAX_DIFF_RENDER_LINES} 行截断，被截去的尾部在逐次操作明细中同样不会显示`;
+    $diffPanelContent.appendChild(note);
+  }
+  if (summary.uncovered > 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = `${summary.uncovered} 次修改无可用快照（超过 before+after 合计 80KB 预算、文件不可读或执行后已不存在），未计算行级 Diff；这些记录相对快照链的先后无法证明，下方明细顺序仅为提示`;
+    $diffPanelContent.appendChild(note);
+  }
+  if (!summary.orderUnknown && summary.segments.length === 0 && summary.uncovered === 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = "(无可用快照内容)";
+    $diffPanelContent.appendChild(note);
+  }
+
+  const detailTitle = document.createElement("div");
+  detailTitle.className = "diff-seg-label";
+  detailTitle.textContent = `逐次操作明细 · ${summary.ordered.length} 条`;
+  $diffPanelContent.appendChild(detailTitle);
+
+  const detailBudget = { left: MAX_PANEL_RENDER_LINES };
+  summary.ordered.forEach((change, idx) => {
+    const block = document.createElement("details");
+    block.className = "diff-change-block";
+    const head = document.createElement("summary");
+    head.className = "diff-change-head";
+    head.innerHTML = `<span class="diff-tool-badge">${escapeHtml(change.toolName)}</span><span class="diff-change-index">修改 ${idx + 1}/${summary.ordered.length}</span><span class="diff-change-time">${escapeHtml(change.timestamp ? formatTimeShort(change.timestamp) : "")}</span>`;
+    block.appendChild(head);
+    if (change.execution?.diffAvailable) {
+      // 明细默认折叠，展开时才算 diff 并建行节点：同面板重复渲染数万节点会卡住界面
+      let built = false;
+      block.addEventListener("toggle", () => {
+        if (built || !block.open) return;
+        built = true;
+        block.appendChild(buildDiffCodeBlock(computeLineDiff(change.execution.before, change.execution.after), detailBudget));
+      });
+    } else {
+      const note = document.createElement("div");
+      note.className = "diff-note";
+      note.textContent = change.execution?.snapshotError
+        ? "未计算行级 Diff（快照不可用：文件不可读或执行后已不存在，变更状态未知）"
+        : "未计算行级 Diff（超过 before+after 合计 80KB 快照预算）";
+      block.appendChild(note);
+    }
+    $diffPanelContent.appendChild(block);
+  });
+
+  $diffPanel.classList.add("open");
+  requestAnimationFrame(() => $diffPanel.classList.add("visible"));
+}
+
+function closeDiffPanel() {
+  $diffPanel.classList.remove("visible");
+  if (_closeDiffTimer) clearTimeout(_closeDiffTimer);
+  _closeDiffTimer = setTimeout(() => {
+    $diffPanel.classList.remove("open");
+    _closeDiffTimer = null;
+  }, 250);
+}
+
 function truncate(str, max) {
   if (!str) return "";
   if (str.length <= max) return str;
@@ -1682,6 +2131,10 @@ async function switchSession(id) {
   state.stats = { total: 0, byRole: {} };
   state.threads = {};
   state.messageElements = {};
+  state.fileChanges = {};
+  state.permRequestIndex = {};
+  state.replyByThinking = {};
+  closeDiffPanel();
 
     await loadSessionMeta();
   await loadSessionMembers();
@@ -1761,6 +2214,10 @@ async function loadHistory(forSessionId = state.sessionId) {
     state.stats = { total: 0, byRole: {} };
     state.threads = {};
     state.messageElements = {};
+    state.fileChanges = {};
+    state.permRequestIndex = {};
+    state.replyByThinking = {};
+    closeDiffPanel();
 
     // 第一遍：重建 thread 数据结构
     for (const msg of log.messages) {
@@ -1839,6 +2296,10 @@ async function loadHistory(forSessionId = state.sessionId) {
           // 嵌入回复内部（回复内容上方），不再另起一行
           attachThinkingToReply(msg.character, msg.replyTo, state.messageElements[msg.id]);
         }
+        if (msg.replyTo) {
+          state.replyByThinking[permKey(msg.character, msg.replyTo)] = msg.id;
+          renderFileDiffDirectory(msg.character, msg.replyTo, state.messageElements[msg.id]);
+        }
         // 快照仍 active 但回复已落盘（主线与 thread 深层回复都覆盖）：
         // 不再额外新建空 thinking，角色状态仍保持为 thinking
         const key = permKey(msg.character, msg.replyTo);
@@ -1853,6 +2314,13 @@ async function loadHistory(forSessionId = state.sessionId) {
         // 执行记录嵌入错误气泡内部（replyTo 即对应 thinking 的 messageId）
         if (msg.replyTo) attachThinkingToReply(msg.character, msg.replyTo, errorEl);
       } else if (msg.role === "permission") {
+        // 仅聚合获批且执行成功的编辑记录；存量无 execution 的历史记录本期不展示
+        if (msg.status === "allow" && msg.execution?.status === "success") recordFileChange(msg);
+        else if (!msg.execution && msg.requestId && msg.status !== "deny") {
+          // 审批已入历史快照但执行结果尚未回报：重建索引，
+          // 否则晚到的 permission-executed 会因找不到请求而被丢弃（SSE 重连不重放历史事件）
+          state.permRequestIndex[msg.requestId] = { ...msg, approved: msg.status === "allow" };
+        }
         const key = permKey(msg.character, msg.messageId);
         if (replyKeys.has(key)) {
           // 有绑定回复：暂存，等渲染到该回复时再建容器

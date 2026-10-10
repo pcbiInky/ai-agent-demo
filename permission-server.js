@@ -105,6 +105,76 @@ async function withPermission(toolName, input, executeFn) {
   }
 }
 
+// ── 编辑类工具的执行结果回报（before/after 快照）────────────
+const {
+  SNAPSHOT_TOTAL_MAX_BYTES,
+  fileSizeOrNull,
+  hashFile,
+  classifySnapshot,
+  reportToolResult,
+} = require("./lib/tool-result-reporter");
+
+function readFileOrNull(filePath) {
+  try {
+    return fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function report(payload) {
+  return reportToolResult(payload, { port: parseInt(PORT, 10), log });
+}
+
+// 快照执行封装：批准 → 读 before → 执行 → 读 after → 分类回报（有效快照 / oversized / snapshotError）
+// 内容不可得（hash 失败、读取失败、执行后文件已不存在）一律 snapshotError 且 changed 未知，
+// 绝不把缺失或读取失败当成"空文件"或"无变化"
+function withFileSnapshot(toolName, getFilePath, input, executeFn) {
+  return withPermission(toolName, input, async (decision) => {
+    const filePath = getFilePath(input);
+    const beforeSize = fileSizeOrNull(filePath);
+    const beforeSnap = await hashFile(filePath);
+    const beforeContent = beforeSnap.status === "ok" && beforeSize !== null && beforeSize <= SNAPSHOT_TOTAL_MAX_BYTES
+      ? readFileOrNull(filePath)
+      : null;
+
+    let resultText;
+    try {
+      resultText = await executeFn(decision);
+    } catch (err) {
+      await report({
+        requestId: decision.requestId,
+        toolName,
+        ok: false,
+        error: err.message,
+        filePath,
+        changed: false,
+        finishedAt: Date.now(),
+      });
+      throw err;
+    }
+
+    const afterSize = fileSizeOrNull(filePath);
+    const afterSnap = await hashFile(filePath);
+    const totalSize = (beforeSize || 0) + (afterSize || 0);
+    const afterContent = afterSnap.status === "missing" || totalSize > SNAPSHOT_TOTAL_MAX_BYTES
+      ? null
+      : readFileOrNull(filePath);
+    const { changed, ...snapshot } = classifySnapshot({ beforeSnap, afterSnap, beforeContent, afterContent, totalSize });
+
+    await report({
+      requestId: decision.requestId,
+      toolName,
+      ok: true,
+      filePath,
+      ...(changed !== undefined ? { changed } : {}),
+      ...snapshot,
+      finishedAt: Date.now(),
+    });
+    return resultText;
+  });
+}
+
 // ── 工具注册 ────────────────────────────────────────────────
 
 // 1. Bash
@@ -172,7 +242,7 @@ server.tool(
     replace_all: z.boolean().optional().describe("是否替换所有匹配"),
   },
   async ({ file_path, old_string, new_string, replace_all }) => {
-    return withPermission("Edit", { file_path, old_string, new_string }, () => {
+    return withFileSnapshot("Edit", (i) => i.file_path, { file_path, old_string, new_string, ...(replace_all ? { replace_all: true } : {}) }, () => {
       const content = fs.readFileSync(file_path, "utf-8");
       let updated;
       if (replace_all) {
@@ -199,7 +269,7 @@ server.tool(
     content: z.string().describe("要写入的内容"),
   },
   async ({ file_path, content }) => {
-    return withPermission("Write", { file_path, content: content.slice(0, 500) + (content.length > 500 ? "..." : "") }, () => {
+    return withFileSnapshot("Write", (i) => i.file_path, { file_path, content: content.slice(0, 500) + (content.length > 500 ? "..." : "") }, () => {
       const dir = path.dirname(file_path);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file_path, content);
@@ -316,7 +386,7 @@ server.tool(
     edit_mode: z.string().optional().describe("编辑模式: replace/insert/delete"),
   },
   async ({ notebook_path, cell_number, new_source, cell_type, edit_mode }) => {
-    return withPermission("NotebookEdit", { notebook_path, cell_number, edit_mode }, () => {
+    return withFileSnapshot("NotebookEdit", (i) => i.notebook_path, { notebook_path, cell_number, edit_mode }, () => {
       const content = JSON.parse(fs.readFileSync(notebook_path, "utf-8"));
       const mode = edit_mode || "replace";
       const idx = cell_number || 0;
