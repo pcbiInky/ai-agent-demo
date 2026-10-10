@@ -4,7 +4,14 @@
 //       部分重放保序、journal 溢出 resync、临界衔接
 process.env.PORT = "0"; // 系统分配的临时端口，避免并行 CI/本机占用冲突
 const server = require("../server.js");
-const PORT = server.serverInstance.address().port;
+// 绑定显式 HOST 时 Node 会先解析地址，listening 之前 address() 为 null，因此等一次事件
+let PORT = server.serverInstance.address()?.port ?? 0;
+const serverReady = PORT
+  ? Promise.resolve()
+  : new Promise((resolve) => server.serverInstance.once("listening", () => {
+    PORT = server.serverInstance.address().port;
+    resolve();
+  }));
 
 let passed = 0;
 let failed = 0;
@@ -38,6 +45,7 @@ function getRaw(path, headers = {}, ms = 400) {
 }
 
 (async () => {
+  await serverReady;
   try {
     // 快照字段
     const hist0 = await getJSON("/api/history?sessionId=sse-seq-test");

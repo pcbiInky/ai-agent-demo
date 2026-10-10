@@ -309,6 +309,8 @@ function buildPermissionEnv(permissionServerPort, browserSessionId, character = 
     PERMISSION_BROWSER_SESSION: browserSessionId,
     PERMISSION_CHARACTER: character,
     PERMISSION_WORKING_DIRECTORY: workingDirectory,
+    // 对外模式下的内部令牌（server.js 启动时写入 process.env），仅用于审批与回报路由
+    PERMISSION_INTERNAL_TOKEN: process.env.PERMISSION_INTERNAL_TOKEN || "",
   };
 }
 
@@ -355,6 +357,7 @@ function buildPerInvokePermissionOverrides(permissionConfig) {
     "-c", `mcp_servers.permission.env.PERMISSION_BROWSER_SESSION=${toTomlString(permissionConfig.env.PERMISSION_BROWSER_SESSION)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_CHARACTER=${toTomlString(permissionConfig.env.PERMISSION_CHARACTER)}`,
     "-c", `mcp_servers.permission.env.PERMISSION_WORKING_DIRECTORY=${toTomlString(permissionConfig.env.PERMISSION_WORKING_DIRECTORY)}`,
+    "-c", `mcp_servers.permission.env.PERMISSION_INTERNAL_TOKEN=${toTomlString(permissionConfig.env.PERMISSION_INTERNAL_TOKEN || "")}`,
   ];
 }
 

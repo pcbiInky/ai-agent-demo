@@ -658,6 +658,7 @@ function appendAssistantMessage(character, text, replyId, threadId, aiMentions, 
         originChar: character,
         originText: text,
         replies: [],
+        rootConfirmed: tid === msgId,
       };
     }
   }
@@ -679,7 +680,8 @@ function appendThreadReply(data) {
   const msgId = replyId || crypto.randomUUID();
 
   // 更新 thread 数据（避免 loadHistory 时重复 push）
-  if (threadId && state.threads[threadId]) {
+  // 空文本记录不算有效回复，与历史重建保持同一口径
+  if (threadId && state.threads[threadId] && String(text || "").trim()) {
     const existing = state.threads[threadId].replies.find(r => r.id === msgId);
     if (!existing) {
       state.threads[threadId].replies.push({
@@ -2220,19 +2222,28 @@ async function loadHistory(forSessionId = state.sessionId) {
     closeDiffPanel();
 
     // 第一遍：重建 thread 数据结构
+    // 线程根以 id === threadId 为准（服务端以自身 id 开线程）；旧日志缺这条时退化为
+    // 该线程第一条召唤消息。同 threadId 的后续消息不得改写 originId，
+    // 否则历史里的旧回复会被整体算到最新一条消息头上（计数条与面板都会错配）
     for (const msg of log.messages) {
-      if (msg.threadId && msg.aiMentions && msg.aiMentions.length > 0 && !msg.depth) {
-        // 这是 thread 发起消息
-        state.threads[msg.threadId] = {
-          originId: msg.id,
-          originChar: msg.character,
-          originText: msg.text,
-          replies: [],
-        };
-      }
+      if (!msg.threadId || msg.depth > 0) continue;
+      const isSelfRoot = msg.id === msg.threadId;
+      const hasMentions = Array.isArray(msg.aiMentions) && msg.aiMentions.length > 0;
+      if (!isSelfRoot && !hasMentions) continue;
+      const existing = state.threads[msg.threadId];
+      if (existing && (existing.rootConfirmed || !isSelfRoot)) continue;
+      state.threads[msg.threadId] = {
+        originId: msg.id,
+        originChar: msg.character,
+        originText: msg.text,
+        replies: existing ? existing.replies : [],
+        rootConfirmed: isSelfRoot,
+      };
     }
     for (const msg of log.messages) {
       if (msg.threadId && msg.depth > 0 && state.threads[msg.threadId]) {
+        // 空文本记录（如协议违规产生的 error）不构成有效回复，不进计数与面板
+        if (!String(msg.text || "").trim()) continue;
         state.threads[msg.threadId].replies.push({
           id: msg.id,
           character: msg.character,

@@ -32,6 +32,12 @@ function getContext() {
 
 const log = (msg) => process.stderr.write(`[permission-server] ${msg}\n`);
 
+// 服务处于对外模式时，内部路由也要凭证；默认本机模式下该变量为空，不发送头部
+function internalAuthHeaders() {
+  const token = process.env.PERMISSION_INTERNAL_TOKEN || "";
+  return token ? { "x-internal-token": token } : {};
+}
+
 const server = new McpServer({
   name: "permission",
   version: "1.0.0",
@@ -60,6 +66,7 @@ function requestPermission(toolName, input) {
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
+          ...internalAuthHeaders(),
         },
         timeout: TIMEOUT_MS + 10_000,
       },
@@ -444,6 +451,7 @@ server.tool(
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(body),
+            ...internalAuthHeaders(),
           },
           timeout: 10_000,
         }, (res) => {

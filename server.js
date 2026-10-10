@@ -25,7 +25,18 @@ const PORT = process.env.PORT ?? 3000;
 // 此时 /api/sessions、/api/history、/api/events 与 chat-logs 中的完整文件快照
 // 都会对同网段可见，因此统一由 ACCESS_TOKEN 门禁保护（回环请求放行）
 const HOST = process.env.HOST ?? "127.0.0.1";
-const access = resolveAccessToken({ host: HOST, envToken: process.env.ACCESS_TOKEN });
+const access = resolveAccessToken({
+  host: HOST,
+  envToken: process.env.ACCESS_TOKEN,
+  envInternalToken: process.env.PERMISSION_INTERNAL_TOKEN,
+  allowedHosts: process.env.ALLOWED_HOSTS,
+});
+// 对外模式下本机 permission-server / MCP 回报也要凭证：把内部令牌交给子进程，
+// 它只在 /api/permission-request、/api/permission-response、/api/tool-result、
+// /api/mcp-send-message 四条内部路由上有效，读不到会话历史与文件快照
+if (access.enabled && access.internalToken) {
+  process.env.PERMISSION_INTERNAL_TOKEN = access.internalToken;
+}
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
@@ -1433,6 +1444,26 @@ function withDisplayTitle(sessionId, session, log = readChatLog(sessionId)) {
   };
 }
 
+function readLogMessages(sessionId) {
+  try {
+    const log = JSON.parse(fs.readFileSync(path.join(LOG_DIR, `${sessionId}.json`), "utf-8"));
+    return Array.isArray(log.messages) ? log.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+// 客户端传来的 threadId 可能是上一轮遗留的旧线程：只有能用 replyTo 证实父子关系才沿用，
+// 否则新一轮召唤以自身 id 开线程，避免历史回复被算到最新一条消息头上
+function isThreadContinuation(messages, threadId, replyToMessageId) {
+  if (!threadId || !replyToMessageId) return false;
+  if (threadId === replyToMessageId) {
+    return messages.some((m) => m.id === threadId);
+  }
+  const parent = messages.find((m) => m.id === replyToMessageId);
+  return Boolean(parent && parent.threadId === threadId);
+}
+
 function appendToLog(sessionId, message) {
   ensureLogDir();
   const filePath = path.join(LOG_DIR, `${sessionId}.json`);
@@ -1770,7 +1801,13 @@ app.post("/api/mcp-send-message", (req, res) => {
     const chainContext = invokeChainCallers.get(`${browserSessionId}:${character}`) || null;
     const currentDepth = chainContext?.depth || 0;
     const currentLineage = Array.isArray(chainContext?.lineage) ? chainContext.lineage : [character];
-    const contextThreadId = threadId || chainContext?.threadId || null;
+    const providedThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+    // 服务端链上下文优先；客户端传入的 threadId 必须能用 replyTo 证实父子关系才沿用，
+    // 否则视为新一轮召唤（下方以自身 id 开新线程），不再复用旧线程
+    const contextThreadId = chainContext?.threadId
+      || (providedThreadId && isThreadContinuation(readLogMessages(browserSessionId), providedThreadId, replyToMessageId)
+        ? providedThreadId
+        : null);
     // 去重：避免同一角色被重复召唤导致重复 invoke（同 key 回复还会互相搬运执行记录）
     const explicitTargets = Array.isArray(atTargets) ? [...new Set(atTargets)] : [];
     const parentFrame = getParentFrame({
@@ -1935,8 +1972,9 @@ const serverInstance = app.listen(PORT, HOST, () => {
   if (access.enabled) {
     const remoteHost = bound === "0.0.0.0" || bound === "::" ? "<本机IP>" : bound;
     console.log(`[访问控制] 跨设备模式已开启，令牌${access.generated ? "为本次启动随机生成（重启后变化）" : "取自 ACCESS_TOKEN 环境变量"}`);
-    console.log(`[访问控制] 远程访问地址: http://${remoteHost}:${actualPort}/?token=${access.token}`);
-    console.log("[访问控制] 本机回环访问无需令牌；令牌可读取全部会话历史与 chat-logs 中的完整文件快照，请勿外泄");
+    console.log(`[访问控制] 访问地址: http://${remoteHost}:${actualPort}/?token=${access.token}`);
+    console.log("[访问控制] 对外模式下一律凭令牌访问（含本机浏览器与经反向代理的请求）；permission-server 走内部令牌，仅限审批与回报路由");
+    console.log("[访问控制] 令牌可读取全部会话历史与 chat-logs 中的完整文件快照，请勿外泄；如需防 DNS 重绑定可设置 ALLOWED_HOSTS");
   }
 });
 
@@ -1954,6 +1992,8 @@ module.exports = {
     getSkillBindings,
     getSkillTraces,
     isMentionAllowedInSession,
+    isThreadContinuation,
+    readLogMessages,
     appendToLog,
     appendThinkingToLog,
     flushThinkingToLog,
