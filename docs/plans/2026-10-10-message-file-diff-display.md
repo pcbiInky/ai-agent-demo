@@ -232,7 +232,7 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 8. 同文件快照状态重复或成环（如改回原内容）时顺序不可判定：标「顺序未知」，不出净 Diff 与合计，只保留逐次明细。
 9. 同文件混有无快照记录时，其相对写入位置不可证：片段只标「局部快照片段」，不称「净 Diff」，也不归因为「范围外修改」。
 10. 单个 diff 块最多渲染 1500 行（`MAX_DIFF_RENDER_LINES`），且同一面板的片段区与明细区各受 6000 行总预算约束（`MAX_PANEL_RENDER_LINES`），超出部分只显示提示与省略数量，不显示内容；统计与行级 diff 计算仍基于完整内容。两种截断原因分别归因提示：单块上限截去的尾部在明细中同样看不到，只有面板预算耗尽时明细（独立预算）才可能补上。逐次明细展开时才渲染（懒渲染），因此折叠状态下 DOM 中无 diff 行。
-11. 服务默认只监听 `127.0.0.1`（默认模式已缓解）；跨设备访问需显式设置 `HOST`，此时 `/api/sessions`、`/api/history`、`/api/events` 仍无鉴权，启动日志只告警不阻止读取日志中的完整文件快照——跨设备模式风险待铲屎官决定，三接口统一鉴权未实施。
+11. 服务默认只监听 `127.0.0.1`（本机模式无需令牌）；跨设备访问需显式设置 `HOST`，此时 `/api/sessions`、`/api/history`、`/api/events`、静态资源与 SSE 统一由 `ACCESS_TOKEN` 门禁保护（回环请求免令牌），方案见 `docs/plans/2026-10-10-cross-device-access-token.md`。剩余风险：明文 HTTP 传输、单令牌无权限分级、无速率限制与吊销。
 
 ## 6. 验收用例
 
@@ -261,7 +261,7 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 23. 无快照记录恰好把快照链切成两段：目录不得标「分段」（仅 `uncovered === 0 && segments.length > 1` 才标），面板仍按多个「局部快照片段」展示。
 24. 纯换行大文件（`""→"\n"×40000`）：`computeLineDiff` 不降级但产生 40000 行；单个 diff 块只渲染前 1500 行并提示「仅渲染前 1500 行（共 40000 行）」；面板初始 `.diff-line` 节点数有界。
 25. 逐次明细懒渲染：折叠状态的 `.diff-change-block` 内无 `.diff-line`，展开（toggle）后才渲染且同样受 1500 行预算约束。
-26. 默认监听回环：`server.serverInstance.address().address === "127.0.0.1"`，启动日志打印真实绑定地址；显式设置非回环 `HOST` 时输出无鉴权接口与文件快照暴露的安全告警（告警不等于访问控制，跨设备模式风险仍在）。
+26. 默认监听回环：`server.serverInstance.address().address === "127.0.0.1"`，启动日志打印真实绑定地址；跨设备模式（显式非回环 `HOST`）由 `ACCESS_TOKEN` 门禁保护页面、接口与 SSE，详见 `docs/plans/2026-10-10-cross-device-access-token.md` 的 12 条用例。
 27. 多段面板总预算：同文件 60 段互不连续快照链（合计 12000 条 diff 行）→ 面板初始 `.diff-line` 恰为 6000、60 个片段标签全部保留、提示含「片段区已达到面板渲染总行数上限 6000」与「30/60 个片段未完整显示」、被跳过的块含「未渲染该块」；明细折叠时 0 行，展开一条后总节点 6200（≤ 片段区 + 明细区两份预算）。
 28. 截断原因归因：单块 2000 行且面板总预算未耗尽 → `renderedLines=1500`、`budget.left=4500`、`truncatedBy="block"`，提示为「单个 diff 块最多渲染 1500 行」且不出现「面板渲染总行数上限」；面板汇总归因为单块上限并明示「被截去的尾部在逐次操作明细中同样不会显示」。
 29. 混合截断原因：5 段（首段 2000 行、后四段各 1500 行）→ `truncatedBy` 依次 `block, null, null, null, panel`，面板 6000 行；两条汇总并存且不矛盾（单块汇总为中性表述，不出现「面板总预算未用尽」）。

@@ -17,12 +17,15 @@ const {
   buildSkillTypeInjection,
 } = require("./skill-loader");
 const { resolveRequestSkills } = require("./skill-router");
+const { createAccessGate, resolveAccessToken } = require("./lib/access-gate");
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
-// 默认只监听回环：/api/sessions、/api/history、/api/events 均无鉴权，
-// 且 chat-logs 里的 execution 含完整文件快照，对外监听等于公开读取
+// 默认只监听回环；显式设置非回环 HOST 即开启跨设备访问，
+// 此时 /api/sessions、/api/history、/api/events 与 chat-logs 中的完整文件快照
+// 都会对同网段可见，因此统一由 ACCESS_TOKEN 门禁保护（回环请求放行）
 const HOST = process.env.HOST ?? "127.0.0.1";
+const access = resolveAccessToken({ host: HOST, envToken: process.env.ACCESS_TOKEN });
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
@@ -403,6 +406,8 @@ function consumeApproval(requestId, requiredToolName) {
 }
 
 // ── 中间件 ────────────────────────────────────────────────
+// 门禁必须早于静态资源与路由：跨设备模式下页面、接口、SSE 一并受保护
+app.use(createAccessGate(access));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -1927,10 +1932,11 @@ const serverInstance = app.listen(PORT, HOST, () => {
   const actualPort = typeof address === "object" && address ? address.port : PORT;
   const bound = typeof address === "object" && address ? address.address : HOST;
   console.log(`AI Chat Arena 已启动: http://${bound}:${actualPort}`);
-  const loopback = bound === "127.0.0.1" || bound === "::1" || bound === "localhost";
-  if (!loopback) {
-    console.warn(`[安全] 服务正在监听 ${bound}，同网段设备可无鉴权访问 /api/sessions、/api/history、/api/events，`
-      + "并读取 chat-logs 中的完整文件快照（execution.before/after）。仅本机使用请取消 HOST 环境变量。");
+  if (access.enabled) {
+    const remoteHost = bound === "0.0.0.0" || bound === "::" ? "<本机IP>" : bound;
+    console.log(`[访问控制] 跨设备模式已开启，令牌${access.generated ? "为本次启动随机生成（重启后变化）" : "取自 ACCESS_TOKEN 环境变量"}`);
+    console.log(`[访问控制] 远程访问地址: http://${remoteHost}:${actualPort}/?token=${access.token}`);
+    console.log("[访问控制] 本机回环访问无需令牌；令牌可读取全部会话历史与 chat-logs 中的完整文件快照，请勿外泄");
   }
 });
 
@@ -1938,6 +1944,7 @@ module.exports = {
   app,
   closeServer,
   serverInstance,
+  accessConfig: access,
   __test: {
     roleStore,
     getRoleConfig,
