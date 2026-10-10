@@ -101,6 +101,7 @@ function testMergeContextMetrics() {
 function testBuildBalanceWindow() {
   const { buildQodercnBalanceWindow } = reload();
   const balance = buildQodercnBalanceWindow({
+    expiresAt: 1794240000000,
     userQuota: { total: 2000, used: 500, remaining: 1500, unit: "credits" },
     addOnQuota: { total: 283, used: 2, remaining: 281, unit: "credits" },
     orgResourcePackage: { cap: 100, used: 20, remaining: 80, available: true, unit: "credits" },
@@ -109,6 +110,11 @@ function testBuildBalanceWindow() {
   eq(balance.label, "余额", "balance uses DSH-style label");
   eq(balance.usedPercent, 78, "balance combines all available credit pools");
   assert(balance.detail.includes("1861 / 总量 2383"), "balance detail exposes combined Credits");
+  eq(balance.resetsAt, 1794240000000, "balance carries the billing-cycle expiry as resetsAt");
+  eq(buildQodercnBalanceWindow({ userQuota: { total: 100, remaining: 50 } }).resetsAt, null,
+    "missing expiresAt keeps resetsAt null");
+  eq(buildQodercnBalanceWindow({ expiresAt: 0, userQuota: { total: 100, remaining: 50 } }).resetsAt, null,
+    "zero expiresAt is treated as unknown");
   eq(buildQodercnBalanceWindow({}), null, "missing account quota creates no fake balance");
   eq(buildQodercnBalanceWindow({ userQuota: { percentage: 40 } }), null, "percentage alone is insufficient to combine balances");
   eq(buildQodercnBalanceWindow({ userQuota: { total: 100, remaining: 99 } }).usedPercent, 99,
@@ -164,6 +170,7 @@ async function testGetQodercnRoleCardMetrics() {
     writeTranscript(tempDir, "p", "sess-1", [assistantEvent(0.4), resultEvent(0.4)]);
 
     const fetchUsageInfo = async () => ({
+      expiresAt: 1794240000000,
       userQuota: { total: 2000, used: 500, remaining: 1500, unit: "credits" },
       addOnQuota: { total: 100, used: 20, remaining: 80, unit: "credits" },
     });
@@ -171,6 +178,7 @@ async function testGetQodercnRoleCardMetrics() {
     eq(ok.usageWindows.length, 2, "balance and ctx are shown together");
     eq(ok.usageWindows[0].key, "balance", "first window is balance");
     eq(ok.usageWindows[0].usedPercent, 75, "combined balance remaining 75%");
+    eq(ok.usageWindows[0].resetsAt, 1794240000000, "balance resetsAt survives metrics assembly");
     assert(ok.usageWindows[0].detail.includes("1580 / 总量 2100"), "balance tooltip keeps combined Credit detail");
     eq(ok.usageWindows[1].key, "ctx", "second window is ctx");
     eq(ok.usageWindows[1].usedPercent, 40, "transcript: context used 40%");
