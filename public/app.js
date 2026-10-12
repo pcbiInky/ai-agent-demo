@@ -2281,7 +2281,7 @@ function renderCharStatuses() {
       <div class="role-card-header">
         <div class="status-dot ${dotClass}"></div>
         <span class="role-card-title" style="color: var(--${charClass}-accent)">${escapeHtml(name)}</span>
-        <span class="role-card-meta">${cliLabel}</span>
+        <span class="role-card-meta" title="${escapeAttribute(cliLabel)}">${escapeHtml(cliLabel)}</span>
         <span class="role-card-status">${label}</span>
         <button class="btn-remove-member" title="移出会话" data-role-id="${member.id}" data-name="${escapeHtml(name)}">×</button>
       </div>
