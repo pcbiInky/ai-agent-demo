@@ -1739,6 +1739,8 @@ html, body {
   background: var(--chat-bg);
 }
 .diff-panel-header h3 {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
@@ -1827,31 +1829,30 @@ html, body {
   border-bottom: 1px solid rgba(74, 108, 247, 0.65);
   pointer-events: none;
 }
+/* 上一处/下一处放在标题行右侧并右对齐，符号按钮比文字按钮省宽度 */
 .diff-nav {
-  position: sticky;
-  top: 0;
-  z-index: 3;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--chat-bg);
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+  margin-right: 8px;
 }
+.diff-nav[hidden] { display: none; }
 .diff-nav-btn {
-  padding: 2px 10px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: white;
   font-size: 12px;
-  color: var(--text);
+  line-height: 1;
   cursor: pointer;
 }
-.diff-nav-btn:hover { border-color: #4a6cf7; color: #4a6cf7; }
+.diff-nav-btn:hover { border-color: #4a6cf7; background: rgba(74, 108, 247, 0.08); }
 .diff-nav-count {
-  min-width: 56px;
+  min-width: 44px;
   text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;

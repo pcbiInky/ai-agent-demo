@@ -73,6 +73,10 @@ const $diffPanelTitle = $("#diff-panel-title");
 const $diffPanelSub = $("#diff-panel-sub");
 const $diffPanelContent = $("#diff-panel-content");
 const $diffCloseBtn = $("#diff-close-btn");
+const $diffNav = $("#diff-nav");
+const $diffNavPrev = $("#diff-nav-prev");
+const $diffNavCount = $("#diff-nav-count");
+const $diffNavNext = $("#diff-nav-next");
 const $skillTraceList = $("#skill-trace-list");
 const $skillList = $("#skill-list");
 
@@ -1608,6 +1612,8 @@ let _railResizeFrame = null;
 
 function setupDiffPanel() {
   $diffCloseBtn.addEventListener("click", closeDiffPanel);
+  $diffNavPrev.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) - 1));
+  $diffNavNext.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) + 1));
   $diffRail = document.createElement("div");
   $diffRail.className = "diff-rail";
   $diffRail.hidden = true;
@@ -1623,6 +1629,9 @@ function setupDiffPanel() {
 }
 
 let _closeDiffTimer = null;
+// 打开面板的构建回调排队在 rAF 里，同一帧内连续打开/关闭必须只让最后一次生效
+let _diffNavFrame = null;
+let _diffOpenGen = 0;
 
 // 单个 diff 块的渲染行数预算：LCS 单元格上限拦不住"窄而长"的内容
 // （如 4 万个空行只产生 1×40001 矩阵），不限量会同步创建数万节点卡住面板
@@ -1745,7 +1754,7 @@ function clearDiffNav() {
   _diffNav = null;
   if (!nav) return;
   nav.container.removeEventListener("scroll", nav.onScroll);
-  nav.toolbar.remove();
+  nav.toolbar.hidden = true;
   if (nav.active) for (const line of nav.active.lines) line.classList.remove("diff-current");
   nav.rail.innerHTML = "";
   nav.rail.hidden = true;
@@ -1798,23 +1807,9 @@ function buildDiffNav(restoreScrollTop = null) {
   const container = $diffPanelContent;
   const rail = $diffRail;
   const hunks = collectDiffHunks(container);
-  if (hunks.length === 0) { rail.hidden = true; return null; }
-
-  const toolbar = document.createElement("div");
-  toolbar.className = "diff-nav";
-  const prevBtn = document.createElement("button");
-  prevBtn.type = "button";
-  prevBtn.className = "diff-nav-btn";
-  prevBtn.textContent = "上一处";
-  const counter = document.createElement("span");
-  counter.className = "diff-nav-count";
-  const nextBtn = document.createElement("button");
-  nextBtn.type = "button";
-  nextBtn.className = "diff-nav-btn";
-  nextBtn.textContent = "下一处";
-  toolbar.append(prevBtn, counter, nextBtn);
-  // 工具条会改变下方内容的偏移，必须先插入再度量
-  container.prepend(toolbar);
+  if (hunks.length === 0) { rail.hidden = true; $diffNav.hidden = true; return null; }
+  // 上一处/下一处在面板标题行里（index.html），不占内容高度，度量前后都不影响偏移
+  $diffNav.hidden = false;
 
   const scrollH = container.scrollHeight || 0;
   const viewH = container.clientHeight || 0;
@@ -1852,9 +1847,11 @@ function buildDiffNav(restoreScrollTop = null) {
   };
   container.addEventListener("scroll", onScroll, { passive: true });
 
-  _diffNav = { container, rail, toolbar, prevBtn, nextBtn, counter, viewport, hunks, groups, ticks, tops, scale, onScroll, index: -1, active: null };
-  prevBtn.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) - 1));
-  nextBtn.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) + 1));
+  _diffNav = {
+    container, rail, viewport, hunks, groups, ticks, tops, scale, onScroll,
+    toolbar: $diffNav, prevBtn: $diffNavPrev, nextBtn: $diffNavNext, counter: $diffNavCount,
+    index: -1, active: null,
+  };
 
   if (restoreScrollTop != null) {
     container.scrollTop = restoreScrollTop;
@@ -1942,7 +1939,11 @@ function openDiffPanel(character, messageId, filePath) {
   }
 
   $diffPanel.classList.add("open");
-  requestAnimationFrame(() => {
+  if (_diffNavFrame) cancelAnimationFrame(_diffNavFrame);
+  const gen = ++_diffOpenGen;
+  _diffNavFrame = requestAnimationFrame(() => {
+    _diffNavFrame = null;
+    if (gen !== _diffOpenGen) return;
     // 刻度按布局比例定位，必须等面板 display:flex 之后才有 scrollHeight/clientHeight
     buildDiffNav();
     $diffPanel.classList.add("visible");
@@ -1950,6 +1951,12 @@ function openDiffPanel(character, messageId, filePath) {
 }
 
 function closeDiffPanel() {
+  // 排队中的构建回调若继续执行，会把刚关掉的面板重新推成 visible
+  if (_diffNavFrame) {
+    cancelAnimationFrame(_diffNavFrame);
+    _diffNavFrame = null;
+  }
+  _diffOpenGen += 1;
   $diffPanel.classList.remove("visible");
   if (_closeDiffTimer) clearTimeout(_closeDiffTimer);
   _closeDiffTimer = setTimeout(() => {

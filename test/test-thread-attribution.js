@@ -236,6 +236,7 @@ async function runFrontendChecks(roleA, roleB) {
     "settings-skills-panel", "thread-panel", "thread-messages", "thread-close-btn",
     "skill-trace-list", "skill-list",
     "diff-panel", "diff-panel-title", "diff-panel-sub", "diff-panel-content", "diff-close-btn",
+    "diff-nav", "diff-nav-prev", "diff-nav-count", "diff-nav-next",
   ];
 
   const historyPayload = buildHistoryFixture(roleA, roleB);

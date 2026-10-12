@@ -32,6 +32,7 @@ const IDS = [
   "settings-skills-panel", "thread-panel", "thread-messages", "thread-close-btn",
   "skill-trace-list", "skill-list",
   "diff-panel", "diff-panel-title", "diff-panel-sub", "diff-panel-content", "diff-close-btn",
+  "diff-nav", "diff-nav-prev", "diff-nav-count", "diff-nav-next",
 ];
 
 let historyPayload = {
@@ -75,6 +76,7 @@ const dom = new JSDOM(
       window.fetch = stubFetch;
       window.EventSource = MockEventSource;
       window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
       window.sessionStorage.setItem("sessionId", "sess-diff");
       if (!window.crypto || !window.crypto.randomUUID) {
         window.crypto = { randomUUID: () => "uuid-" + Math.random().toString(36).slice(2) };
@@ -82,6 +84,18 @@ const dom = new JSDOM(
     },
   }
 );
+
+// 测试 DOM 把每个 id 建成扁平容器，这里按 index.html 的层级把导航控件装进标题行容器
+{
+  const navFixture = dom.window.document.getElementById("diff-nav");
+  navFixture.className = "diff-nav";
+  for (const [id, cls, text] of [["diff-nav-prev", "diff-nav-btn", "⬆️"], ["diff-nav-count", "diff-nav-count", "0/0"], ["diff-nav-next", "diff-nav-btn", "⬇️"]]) {
+    const el = dom.window.document.getElementById(id);
+    el.className = cls;
+    el.textContent = text;
+    navFixture.appendChild(el);
+  }
+}
 
 dom.window.eval(appJs);
 const { document } = dom.window;
@@ -364,9 +378,11 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(ticks[0].title.includes("第 1/4 处修改"), `刻度给出序号提示：「${ticks[0].title}」`);
     assert(!!rail.querySelector(".diff-rail-viewport"), "刻度轨内含当前视口指示器");
 
-    const toolbar = navBox.querySelector(".diff-nav");
-    assert(!!toolbar && navBox.firstElementChild === toolbar, "上一处/下一处工具条插在面板内容最前面（吸顶）");
-    assert([...toolbar.querySelectorAll(".diff-nav-btn")].map((b) => b.textContent).join("/") === "上一处/下一处", "工具条给出上一处/下一处按钮");
+    const toolbar = document.getElementById("diff-nav");
+    const toolbarBtns = [...toolbar.querySelectorAll(".diff-nav-btn")].map((b) => b.textContent);
+    assert(toolbar.hidden === false, "有修改处时显示标题行右侧的上一处/下一处控件");
+    assert(toolbarBtns.join("/") === "⬆️/⬇️", `两个按钮是上下箭头符号（${toolbarBtns.join("/")}）`);
+    assert(toolbar.querySelector(".diff-nav-count") === nav.counter, "序号夹在两个箭头按钮之间");
     assert(nav.counter.textContent === "1/4", `打开即定位第一处并显示序号（${nav.counter.textContent}）`);
     assert(navBox.scrollTop === 100, `第一处修改居中（scrollTop ${navBox.scrollTop}，期望 240-(300-20)/2=100）`);
     const currentLines = [...navBox.querySelectorAll(".diff-line.diff-current")];
@@ -405,10 +421,10 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(ticks2.length === 4 && ticks2[0].style.top === "120px", `resize 后按新比例重算刻度（top ${ticks2[0]?.style.top}，期望 240×0.5=120px）`);
     assert(rail.style.height === "600px", "刻度轨高度跟随面板视口");
     assert(navBox.scrollTop === 700, `重算刻度不把用户甩回顶部（scrollTop ${navBox.scrollTop}）`);
-    assert(navBox.querySelectorAll(".diff-nav").length === 1 && navBox.querySelector(".diff-nav-count").textContent === "4/4", `重建后不残留多余工具条，并按当前滚动位置恢复序号（${navBox.querySelector(".diff-nav-count")?.textContent}）`);
+    assert(document.querySelectorAll(".diff-nav").length === 1 && toolbar.querySelector(".diff-nav-count").textContent === "4/4", `重建后仍只有一份控件，并按当前滚动位置恢复序号（${toolbar.querySelector(".diff-nav-count")?.textContent}）`);
 
     dom.window.clearDiffNav();
-    assert(navBox.querySelector(".diff-nav") === null, "清理后移除工具条");
+    assert(toolbar.hidden === true, "清理后隐藏上一处/下一处控件");
     assert(rail.hidden === true && rail.children.length === 0, "清理后刻度轨清空并隐藏");
     assert(navBox.querySelectorAll(".diff-line.diff-current").length === 0, "清理后撤掉当前处高亮");
     navBox.scrollTop = 10;
@@ -429,11 +445,37 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(/\.diff-rail \{[^}]*position: absolute;/.test(styleCss) && /\.diff-rail\[hidden\] \{ display: none; \}/.test(styleCss), "刻度轨绝对定位在面板右侧，未构建时不占位");
     assert(/\.diff-rail-tick\.add \{ background: #2ea043; \}/.test(styleCss) && /\.diff-rail-tick\.del \{ background: #f85149; \}/.test(styleCss) && /\.diff-rail-tick\.mixed \{ background: linear-gradient/.test(styleCss), "刻度按新增绿/删除红/混合双色着色");
     assert(/\.diff-rail-viewport \{[^}]*pointer-events: none;/.test(styleCss), "视口指示器不拦截刻度点击");
-    assert(/\.diff-nav \{[^}]*position: sticky;/.test(styleCss), "上一处/下一处工具条吸顶，长文档里始终可点");
+    assert(/\.diff-nav \{[^}]*margin-left: auto;/.test(styleCss) && /\.diff-nav\[hidden\] \{ display: none; \}/.test(styleCss), "上一处/下一处控件右对齐，无修改处时不占位");
+    assert(/\.diff-panel-header h3 \{[^}]*flex: 1 1 auto;/.test(styleCss), "文件名占满剩余宽度，把控件挤到右边");
+    const headerHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    assert(/<h3 id="diff-panel-title">[\s\S]*?<div id="diff-nav" class="diff-nav" hidden>[\s\S]*?<button id="diff-close-btn"/.test(headerHtml), "控件在标题行里、位于文件名右侧与关闭按钮之间");
+    assert(/id="diff-nav-prev"[^>]*>⬆️<\/button>/.test(headerHtml) && /id="diff-nav-next"[^>]*>⬇️<\/button>/.test(headerHtml), "按钮符号是 ⬆️ / ⬇️");
     assert(/\.diff-line\.diff-current \{ box-shadow: inset 3px 0 0 #4a6cf7; \}/.test(styleCss), "当前修改处有左侧高亮条");
     assert(/\.diff-panel-content::-webkit-scrollbar \{ width: 12px; \}/.test(styleCss), "面板滚动条常显（macOS 悬浮滚动条看不出进度）");
     delete navBox.clientHeight;
     delete navBox.scrollHeight;
+
+    // ── v20.1（YYF P1）：同一帧内连续打开/关闭，排队的构建回调不得重复生效 ──
+    itemByPath("a.js").click();
+    itemByPath("seg.js").click();
+    await sleep(40);
+    const panelEl = document.getElementById("diff-panel");
+    assert(panelEl.classList.contains("visible") && document.getElementById("diff-panel-title").textContent === "seg.js", "同一帧打开 A 再打开 B，以最后一次为准");
+    assert(toolbar.hidden === false && document.querySelectorAll(".diff-nav").length === 1, "连续打开只有一份控件且保持显示");
+    assert(navBox.querySelectorAll(".diff-code").length === 2 && navBox.querySelectorAll(".diff-code-wrap").length === 0, "代码块没有被重复包裹，内容仍在面板里");
+    assert(rail.querySelectorAll(".diff-rail-tick").length === 2, `刻度轨按最后一次内容重建（${rail.querySelectorAll(".diff-rail-tick").length} 个刻度，seg.js 两段各一处）`);
+    assert(rail.hidden === true, "无布局时（jsdom scrollHeight=0）刻度轨不外显，避免画出比例失真的刻度");
+    assert(panelEl.querySelectorAll(".diff-rail").length === 1, "面板内只有一条刻度轨");
+
+    itemByPath("a.js").click();
+    document.getElementById("diff-close-btn").click();
+    await sleep(320);
+    assert(!panelEl.classList.contains("visible") && !panelEl.classList.contains("open"), "构建回调还没执行就关闭时，面板不会自己弹回来");
+    assert(rail.hidden === true && toolbar.hidden === true, "关闭后刻度轨与上一处/下一处控件都隐藏");
+
+    itemByPath("a.js").click();
+    await waitFor(() => panelEl.classList.contains("visible"));
+    assert(toolbar.hidden === false && rail.querySelectorAll(".diff-rail-tick").length === 1, `重开后导航正常（控件 hidden=${toolbar.hidden}，刻度 ${rail.querySelectorAll(".diff-rail-tick").length}）`);
 
     // 拆段文件：两段净 Diff + 范围外修改标注
     document.getElementById("diff-close-btn").click();
