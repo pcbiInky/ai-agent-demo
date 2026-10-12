@@ -445,10 +445,11 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(/\.diff-rail \{[^}]*position: absolute;/.test(styleCss) && /\.diff-rail\[hidden\] \{ display: none; \}/.test(styleCss), "刻度轨绝对定位在面板右侧，未构建时不占位");
     assert(/\.diff-rail-tick\.add \{ background: #2ea043; \}/.test(styleCss) && /\.diff-rail-tick\.del \{ background: #f85149; \}/.test(styleCss) && /\.diff-rail-tick\.mixed \{ background: linear-gradient/.test(styleCss), "刻度按新增绿/删除红/混合双色着色");
     assert(/\.diff-rail-viewport \{[^}]*pointer-events: none;/.test(styleCss), "视口指示器不拦截刻度点击");
-    assert(/\.diff-nav \{[^}]*justify-content: flex-end;/.test(styleCss) && /\.diff-nav\[hidden\] \{ display: none; \}/.test(styleCss), "上一处/下一处独占一行并右对齐，无修改处时不占位");
-    assert(!/\.diff-panel-header h3 \{[^}]*flex:/.test(styleCss), "控件已移出标题行，标题行不需要为它让位");
+    assert(/\.diff-panel-subrow \{[^}]*display: flex;/.test(styleCss) && /\.diff-panel-sub \{[^}]*flex: 1 1 auto;/.test(styleCss), "文件路径与导航同一行：路径吃掉剩余宽度，把 ↑/↓ 推到右边");
+    assert(/\.diff-nav\[hidden\] \{ display: none; \}/.test(styleCss) && !/\.diff-nav \{[^}]*padding:/.test(styleCss), "无修改处时控件不占位；行内边距与底色统一由所在行给");
+    assert(!/\.diff-panel-header h3 \{[^}]*flex:/.test(styleCss), "控件不在标题行，标题行不需要为它让位");
     const headerHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-    assert(/<button id="diff-close-btn"[\s\S]*?<\/div>\s*<div id="diff-nav" class="diff-nav" hidden>[\s\S]*?<\/div>\s*<div id="diff-panel-sub"/.test(headerHtml), "控件是标题行下面独立的一行，位于路径行之上");
+    assert(/<div class="diff-panel-subrow">\s*<div id="diff-panel-sub"[\s\S]*?<div id="diff-nav" class="diff-nav" hidden>[\s\S]*?<\/div>\s*<\/div>/.test(headerHtml), "↑/↓ 与 #diff-panel-sub（文件路径）同处一个 .diff-panel-subrow 行");
     assert(/id="diff-nav-prev"[^>]*>↑<\/button>/.test(headerHtml) && /id="diff-nav-next"[^>]*>↓<\/button>/.test(headerHtml), "按钮符号是 ↑ / ↓（文本箭头，不用 emoji）");
     assert(/\.diff-line\.diff-current \{ box-shadow: inset 3px 0 0 #4a6cf7; \}/.test(styleCss), "当前修改处有左侧高亮条");
     assert(/\.diff-panel-content::-webkit-scrollbar \{ width: 12px; \}/.test(styleCss), "面板滚动条常显（macOS 悬浮滚动条看不出进度）");

@@ -1747,13 +1747,22 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.diff-panel-sub {
+/* 文件路径与 ↑/↓ 导航同一行：路径吃掉剩余宽度，导航靠右 */
+.diff-panel-subrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
   padding: 0 16px 10px;
+  background: var(--chat-bg);
+  border-bottom: 1px solid var(--border);
+}
+.diff-panel-sub {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--text-light);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  border-bottom: 1px solid var(--border);
-  background: var(--chat-bg);
   word-break: break-all;
 }
 .diff-panel-content {
@@ -1827,15 +1836,12 @@ html, body {
   border-bottom: 1px solid rgba(74, 108, 247, 0.65);
   pointer-events: none;
 }
-/* 上一处/下一处独占标题下面一行，右对齐；↑/↓ 用文本箭头，避免 emoji 各平台渲染不一 */
+/* 上一处/下一处与文件路径同一行并靠右；↑/↓ 用文本箭头，避免 emoji 各平台渲染不一 */
 .diff-nav {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 4px;
   flex-shrink: 0;
-  padding: 0 16px 8px;
-  background: var(--chat-bg);
 }
 .diff-nav[hidden] { display: none; }
 .diff-nav-btn {
