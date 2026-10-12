@@ -48,6 +48,7 @@ const $input = $("#message-input");
 const $sendBtn = $("#send-btn");
 const $chatContainer = $("#chat-container");
 const $jumpToLatestBtn = $("#jump-to-latest-btn");
+const $permFloatLayer = $("#perm-float-layer");
 const $sessionDisplay = $("#session-id-display");
 const $newSessionBtn = $("#new-session-btn");
 const $sessionList = $("#session-list");
@@ -121,6 +122,7 @@ async function init() {
     setupSessionMetaEditor();
   setupThreadPanel();
   setupDiffPanel();
+  setupPermFloatLayer();
 
   $newSessionBtn.addEventListener("click", () => showNewSessionModal());
 }
@@ -403,6 +405,11 @@ function connectSSE() {
   const es = new EventSource(`/api/events?sessionId=${state.sessionId}&afterSeq=${state.lastEventSeq}`);
   state.eventSource = es;
 
+  // 建连/断线重连成功后，以服务端快照校准浮层（journal 补发之外的兜底）
+  es.addEventListener("open", () => {
+    syncFloatPermsFromServer();
+  });
+
   // 缺失区间超出服务端 journal 容量时：关闭当前连接 → 加载一致快照 → 按新序号重连。
   // 重载窗口内的事件由服务端 journal 保留，重连后补发，不会丢。
   es.addEventListener("resync", () => {
@@ -515,6 +522,7 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     state.permRequestIndex[data.requestId] = data;
     showPermissionCard(data);
+    addFloatPerm(data);
     loadSessionList();
   });
 
@@ -1262,31 +1270,51 @@ function togglePermDetail(requestId) {
 }
 
 async function respondPermission(requestId, behavior) {
-  const actionsEl = document.getElementById(`perm-actions-${requestId}`);
-  // 先进入处理中状态：临时禁用按钮，请求成功后才标记已处理并折叠
-  if (actionsEl) {
-    for (const btn of actionsEl.querySelectorAll(".perm-btn")) btn.disabled = true;
-    actionsEl.querySelector(".perm-send-fail")?.remove();
+  // 双入口共享同一 requestId：提交期间两处按钮同时禁用
+  const actionsEls = [`perm-actions-${requestId}`, `perm-float-actions-${requestId}`]
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  floatPermState.submitting.add(requestId);
+  for (const el of actionsEls) {
+    for (const btn of el.querySelectorAll(".perm-btn")) btn.disabled = true;
+    el.querySelector(".perm-send-fail")?.remove();
   }
-  let permOk = false;
 
+  let res = null;
   try {
-    const res = await fetch("/api/permission-response", {
+    res = await fetch("/api/permission-response", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ requestId, behavior }),
     });
-    permOk = res.ok;
   } catch {
-    permOk = false;
+    res = null;
   }
 
-  if (permOk) {
+  if (res?.ok) {
+    floatPermState.submitting.delete(requestId);
     markPermResolved(requestId, behavior);
-  } else if (actionsEl) {
-    // 失败：恢复按钮可点并提示重试，卡片保持待审批状态不折叠
-    for (const btn of actionsEl.querySelectorAll(".perm-btn")) btn.disabled = false;
-    actionsEl.insertAdjacentHTML("beforeend", '<span class="perm-send-fail" style="color:var(--error-text);font-size:11px;align-self:center">发送失败，请重试</span>');
+    return;
+  }
+
+  if (res?.status === 404) {
+    // 另一入口/其他设备已处理或请求已失效：以服务端结果收敛，不作为可重试的待审批
+    const data = await res.json().catch(() => null);
+    floatPermState.submitting.delete(requestId);
+    if (data?.resolved) {
+      markPermResolved(requestId, data.resolved.behavior, data.resolved.message);
+    } else {
+      markPermResolved(requestId, "expired", "请求已失效");
+      syncFloatPermsFromServer();
+    }
+    return;
+  }
+
+  // 网络失败：恢复按钮可点并提示重试，卡片保持待审批状态不折叠
+  floatPermState.submitting.delete(requestId);
+  for (const el of actionsEls) {
+    for (const btn of el.querySelectorAll(".perm-btn")) btn.disabled = false;
+    el.insertAdjacentHTML("beforeend", '<span class="perm-send-fail" style="color:var(--error-text);font-size:11px;align-self:center">发送失败，请重试</span>');
   }
 }
 
@@ -1332,6 +1360,8 @@ function foldResolvedPermCard(card) {
 }
 
 function markPermResolved(requestId, behavior, message) {
+  // 浮层只保留待审批项；执行记录保留"已允许/已拒绝"结果
+  removeFloatPerm(requestId);
   const card = document.getElementById(`perm-card-${requestId}`);
   const actionsEl = document.getElementById(`perm-actions-${requestId}`);
   const isAuto = message && message.includes("默认授权");
@@ -1345,8 +1375,8 @@ function markPermResolved(requestId, behavior, message) {
   }
 
   if (actionsEl) {
-    const cls = behavior === "allow" ? "allowed" : "denied";
-    const label = behavior === "allow" ? "已允许" : "已拒绝";
+    const cls = behavior === "allow" ? "allowed" : behavior === "deny" ? "denied" : "expired";
+    const label = behavior === "allow" ? "已允许" : behavior === "deny" ? "已拒绝" : "已处理";
     actionsEl.innerHTML = `<span class="perm-resolved-label ${cls}">${label}</span>`;
   }
 
@@ -1363,6 +1393,217 @@ function markPermResolved(requestId, behavior, message) {
       if (header) header.style.display = "none";
     }
   }
+}
+
+// ── 审批浮层（输入框上方的第二审批入口，与执行记录卡片共享同一 requestId 状态）──
+const FLOAT_PERM_MAX = 5;
+const floatPermState = {
+  items: new Map(),      // requestId -> 待审批数据（含 receivedAt 时钟值，用于快照合并守卫）
+  elements: new Map(),   // requestId -> 浮层卡片元素（增量渲染，避免动画重放）
+  submitting: new Set(), // 提交中的 requestId，两个入口的按钮同时禁用
+  resolutions: new Map(),// requestId -> 已决时的时钟值（旧快照晚到不得放回已决项）
+  clock: 0,              // 本地单调递增序号；Date.now() 同毫秒相等，不能作为事件顺序
+  lastAppliedSyncSeq: 0, // 已应用的最新快照序号；更早发起的快照响应乱序晚到时丢弃
+  pageOffset: 0,         // 0 = 最新一批；按 FLOAT_PERM_MAX 分批向较早翻页
+};
+
+function addFloatPerm(data) {
+  // 只有手动待审批进浮层；自动通过/已决的记录仍只留在执行记录里
+  if (!data?.requestId || (data.status && data.status !== "pending")) return;
+  if (floatPermState.items.has(data.requestId)) return;
+  floatPermState.items.set(data.requestId, { ...data, receivedAt: ++floatPermState.clock });
+  renderFloatLayer();
+}
+
+function removeFloatPerm(requestId) {
+  // 先记已决时钟再删卡片：即使项尚未进浮层，晚到的旧快照也不能把它放回来
+  floatPermState.resolutions.set(requestId, ++floatPermState.clock);
+  if (floatPermState.resolutions.size > 200) {
+    floatPermState.resolutions.delete(floatPermState.resolutions.keys().next().value);
+  }
+  if (!floatPermState.items.has(requestId)) return;
+  floatPermState.items.delete(requestId);
+  floatPermState.submitting.delete(requestId);
+  const el = floatPermState.elements.get(requestId);
+  if (el) { el.remove(); floatPermState.elements.delete(requestId); }
+  renderFloatLayer();
+}
+
+function clearFloatPerms() {
+  floatPermState.items.clear();
+  floatPermState.submitting.clear();
+  floatPermState.pageOffset = 0;
+  for (const el of floatPermState.elements.values()) el.remove();
+  floatPermState.elements.clear();
+  renderFloatLayer();
+}
+
+// 以服务端 pendingPermissions 快照为权威合并：移除已不存在的，补上遗漏的。
+// syncSeq 是快照请求发起时的时钟值：之后收到的 SSE 新项不参与移除判定，
+// 之后到达终态（removeFloatPerm 记录）的项不参与补入判定，避免旧快照回灌。
+function syncFloatPerms(pendingList, syncSeq = ++floatPermState.clock) {
+  // 并发快照乱序返回：已有更新的快照应用过时，更早发起的响应整体丢弃
+  if (syncSeq < floatPermState.lastAppliedSyncSeq) return;
+  floatPermState.lastAppliedSyncSeq = syncSeq;
+  const server = new Map((pendingList || []).map((p) => [p.requestId, p]));
+  for (const [id, item] of floatPermState.items) {
+    if (!server.has(id) && (item.receivedAt || 0) < syncSeq) {
+      floatPermState.items.delete(id);
+      floatPermState.elements.get(id)?.remove();
+      floatPermState.elements.delete(id);
+    }
+  }
+  for (const [id, p] of server) {
+    if (floatPermState.items.has(id)) continue;
+    const resolvedSeq = floatPermState.resolutions.get(id);
+    if (resolvedSeq !== undefined && resolvedSeq > syncSeq) continue;
+    floatPermState.items.set(id, { ...p, receivedAt: ++floatPermState.clock });
+  }
+  renderFloatLayer();
+}
+
+async function syncFloatPermsFromServer() {
+  const forSessionId = state.sessionId;
+  if (!forSessionId) return;
+  const syncSeq = ++floatPermState.clock;
+  try {
+    const res = await fetch(`/api/pending-permissions?sessionId=${encodeURIComponent(forSessionId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (state.sessionId !== forSessionId) return;
+    syncFloatPerms(data.pending, syncSeq);
+  } catch {
+    // 快照失败时保留现有浮层，等待 SSE 事件继续驱动
+  }
+}
+
+function buildFloatPermCard(item) {
+  const { requestId, character, toolName, input, timestamp } = item;
+  const charClass = getCharClass(character);
+  const avatar = getAvatar(character);
+  const displayName = getDisplayName(character);
+  const brief = getPermBrief(toolName, input);
+  const intent = getPermIntent(toolName, input);
+  const detail = buildPermDetail(toolName, input);
+  const el = document.createElement("div");
+  el.className = "perm-float-card";
+  el.id = `perm-float-${requestId}`;
+  el.dataset.requestId = requestId;
+  el.innerHTML = `
+    <div class="perm-float-main">
+      <div class="perm-float-head" onclick="toggleFloatPermDetail('${requestId}')" title="展开详情">
+        <span class="perm-float-avatar ${charClass}">${escapeHtml(avatar)}</span>
+        <span class="perm-float-char">${escapeHtml(displayName)}</span>
+        <span class="perm-summary-tool">${escapeHtml(toolName)}</span>
+        <span class="perm-summary-brief">${escapeHtml(truncate(brief, 60))}</span>
+        <span class="perm-float-wait" data-since="${timestamp || Date.now()}"></span>
+        <svg class="perm-expand-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      </div>
+      <div class="perm-summary-actions perm-float-actions" id="perm-float-actions-${requestId}">
+        <button class="perm-btn perm-deny" onclick="event.stopPropagation(); respondPermission('${requestId}', 'deny')">拒绝</button>
+        <button class="perm-btn perm-allow" onclick="event.stopPropagation(); respondPermission('${requestId}', 'allow')">允许</button>
+      </div>
+    </div>
+    <div class="perm-float-detail">
+      <div class="perm-intent">${escapeHtml(intent)}</div>
+      ${detail}
+    </div>
+  `;
+  if (floatPermState.submitting.has(requestId)) {
+    for (const btn of el.querySelectorAll(".perm-btn")) btn.disabled = true;
+  }
+  return el;
+}
+
+function toggleFloatPermDetail(requestId) {
+  floatPermState.elements.get(requestId)?.classList.toggle("expanded");
+}
+
+function renderFloatLayer() {
+  if (!$permFloatLayer) return;
+  const items = [...floatPermState.items.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  const total = items.length;
+  // 同屏最多 5 张：默认显示最新一批，溢出的按每批 5 张向较早翻页
+  const maxPage = Math.max(0, Math.ceil(total / FLOAT_PERM_MAX) - 1);
+  if (floatPermState.pageOffset > maxPage) floatPermState.pageOffset = maxPage;
+  const pageOffset = floatPermState.pageOffset;
+  const end = total - FLOAT_PERM_MAX * pageOffset;
+  const start = Math.max(0, end - FLOAT_PERM_MAX);
+  const visible = items.slice(start, end);
+  const olderCount = start;
+  const newerCount = total - end;
+
+  $permFloatLayer.classList.toggle("hidden", total === 0);
+
+  let chipRow = $permFloatLayer.querySelector(".perm-float-chips");
+  if (olderCount > 0 || pageOffset > 0) {
+    if (!chipRow) {
+      chipRow = document.createElement("div");
+      chipRow.className = "perm-float-chips";
+      chipRow.innerHTML = `
+        <button type="button" class="perm-float-overflow perm-float-older" hidden></button>
+        <button type="button" class="perm-float-overflow perm-float-newer" hidden></button>
+      `;
+      chipRow.querySelector(".perm-float-older").addEventListener("click", () => {
+        floatPermState.pageOffset += 1;
+        renderFloatLayer();
+      });
+      chipRow.querySelector(".perm-float-newer").addEventListener("click", () => {
+        floatPermState.pageOffset = 0;
+        renderFloatLayer();
+      });
+      $permFloatLayer.prepend(chipRow);
+    }
+    const olderBtn = chipRow.querySelector(".perm-float-older");
+    const newerBtn = chipRow.querySelector(".perm-float-newer");
+    olderBtn.hidden = olderCount === 0;
+    olderBtn.textContent = `另有 ${olderCount} 项待审批，点击查看较早`;
+    newerBtn.hidden = pageOffset === 0;
+    newerBtn.textContent = `返回最新 ${Math.min(FLOAT_PERM_MAX, total)} 项`;
+  } else if (chipRow) {
+    chipRow.remove();
+  }
+
+  const visibleIds = new Set(visible.map((i) => i.requestId));
+  for (const [id, el] of floatPermState.elements) {
+    if (!visibleIds.has(id)) { el.remove(); floatPermState.elements.delete(id); }
+  }
+  for (const item of visible) {
+    let el = floatPermState.elements.get(item.requestId);
+    if (!el) {
+      el = buildFloatPermCard(item);
+      floatPermState.elements.set(item.requestId, el);
+    }
+    // 按时间序 append：已存在的节点仅移动位置，不会重放入场动画
+    $permFloatLayer.appendChild(el);
+  }
+  updateFloatWaitTimes();
+}
+
+function formatWaitDuration(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}秒`;
+  return `${Math.floor(s / 60)}分${String(s % 60).padStart(2, "0")}秒`;
+}
+
+function updateFloatWaitTimes() {
+  if (!$permFloatLayer || floatPermState.items.size === 0) return;
+  const now = Date.now();
+  for (const el of $permFloatLayer.querySelectorAll(".perm-float-wait")) {
+    const since = Number(el.dataset.since) || now;
+    el.textContent = `等待 ${formatWaitDuration(now - since)}`;
+  }
+}
+
+function setupPermFloatLayer() {
+  if (!$permFloatLayer) return;
+  const inputArea = document.getElementById("input-area");
+  const place = () => {
+    $permFloatLayer.style.bottom = `${inputArea.offsetHeight + 10}px`;
+  };
+  place();
+  new ResizeObserver(place).observe(inputArea);
+  setInterval(updateFloatWaitTimes, 1000);
 }
 
 // ── 文件修改 Diff（聚合编辑类工具的成功执行结果）────────────
@@ -2352,6 +2593,7 @@ async function switchSession(id) {
   state.fileChanges = {};
   state.permRequestIndex = {};
   state.replyByThinking = {};
+  clearFloatPerms();
   closeDiffPanel();
 
     await loadSessionMeta();
@@ -2421,6 +2663,9 @@ async function loadHistory(forSessionId = state.sessionId) {
     // 快照返回时若目标会话已切换，丢弃旧快照，避免覆盖新会话已渲染的 DOM
     if (state.sessionId !== forSessionId) return;
     state.lastEventSeq = log.lastSeq || 0;
+    // 浮层以服务端内存快照为权威：历史日志中的 pending 不代表仍可审批
+    //（服务重启后内存请求已不存在），不能单凭日志重建浮层
+    syncFloatPerms(log.pendingApprovals || []);
     if (!log.messages || log.messages.length === 0) return;
 
     // 与历史同一份快照的"执行中"状态（刷新/切换会话后恢复"处理中"）

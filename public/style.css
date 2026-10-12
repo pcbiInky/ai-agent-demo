@@ -995,6 +995,126 @@ html, body {
 .perm-auto-msg { padding: 1px 20px 1px 64px; }
 .perm-auto-msg .bubble-wrapper { max-width: 100%; }
 
+/* ── 审批浮层（输入框上方的第二审批入口）────────────── */
+#perm-float-layer {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  /* bottom 由 JS 按输入区实际高度定位，保证不遮住输入框 */
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 55%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+#perm-float-layer.hidden { display: none; }
+
+.perm-float-chips {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.perm-float-chips button[hidden] { display: none; }
+
+.perm-float-overflow {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #6d4c00;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.perm-float-overflow:hover { background: #fff3cd; }
+
+.perm-float-card {
+  flex-shrink: 0;
+  background: #fffdf5;
+  border: 1px solid #ffe082;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.14);
+  overflow: hidden;
+  animation: perm-float-in 0.25s ease-out;
+}
+@keyframes perm-float-in {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.perm-float-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.perm-float-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.perm-float-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: white;
+  font-weight: 600;
+  background: #9e9e9e;
+  flex-shrink: 0;
+}
+.perm-float-avatar.faker { background: var(--faker-accent); }
+.perm-float-avatar.qijige { background: var(--qijige-accent); }
+.perm-float-avatar.yyf { background: var(--yyf-accent); }
+
+.perm-float-char {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+  max-width: 90px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.perm-float-wait {
+  font-size: 11px;
+  color: var(--text-light);
+  flex-shrink: 0;
+}
+
+.perm-float-actions { flex-shrink: 0; }
+
+.perm-float-detail {
+  display: none;
+  padding: 0 12px 10px;
+  border-top: 1px solid #f0e8d0;
+}
+.perm-float-card.expanded .perm-float-detail { display: block; }
+.perm-float-card.expanded .perm-expand-arrow { transform: rotate(90deg); }
+
+.perm-resolved-label.expired { background: #eeeeee; color: #616161; }
+
+@media (max-width: 900px) {
+  #perm-float-layer { left: 8px; right: 8px; max-height: 50%; }
+  .perm-float-char { max-width: 60px; }
+}
+
 /* ── Thread 引用条（气泡内部顶部的引用块） ── */
 .thread-quote {
   display: flex;

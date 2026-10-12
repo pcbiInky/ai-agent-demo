@@ -149,6 +149,28 @@ const invokeQueues = new Map();
 const sseClients = new Map();
 // requestId -> { resolve, timer, data }（等待用户审批的权限请求）
 const pendingPermissions = new Map();
+// requestId -> { behavior, message, ts }（近期已决审批，供重复提交时返回权威结果）
+const recentlyResolvedPermissions = new Map();
+const RESOLVED_PERMISSION_RETENTION_MS = 10 * 60_000;
+
+function rememberResolvedPermission(requestId, behavior, message) {
+  const now = Date.now();
+  for (const [id, rec] of recentlyResolvedPermissions) {
+    if (now - rec.ts > RESOLVED_PERMISSION_RETENTION_MS) recentlyResolvedPermissions.delete(id);
+  }
+  recentlyResolvedPermissions.set(requestId, { behavior, message, ts: now });
+}
+
+// 读取时同样校验过期：无新决策触发清理时，超期记录不得再作为权威结果返回
+function getResolvedPermission(requestId) {
+  const rec = recentlyResolvedPermissions.get(requestId);
+  if (!rec) return null;
+  if (Date.now() - rec.ts > RESOLVED_PERMISSION_RETENTION_MS) {
+    recentlyResolvedPermissions.delete(requestId);
+    return null;
+  }
+  return rec;
+}
 // browserSessionId:character -> messageId（当前正在思考的消息 ID，用于关联权限卡片）
 const activeThinking = new Map();
 // sessionId:thinkingRecordId -> 累积中的 thinking 日志；SSE 即时推送，磁盘按窗口节流写入
@@ -764,18 +786,7 @@ app.post("/api/permission-request", async (req, res) => {
     messageId: thinkingMessageId,
   });
 
-  // 通过 SSE 通知前端
-  emitSSE(browserSessionId, "permission", {
-    requestId,
-    character: character || "unknown",
-    toolName,
-    input,
-    timestamp: timestamp || Date.now(),
-    messageId: thinkingMessageId,
-    status: "pending",
-  });
-
-  // 创建一个 Promise，等待前端用户响应
+  // 先登记 pending 再推送 SSE：避免用户刚看到卡片就点击审批时偶发 404
   const permissionPromise = new Promise((resolve) => {
     const timer = setTimeout(() => {
       // 超时自动拒绝
@@ -785,6 +796,7 @@ app.post("/api/permission-request", async (req, res) => {
         status: "deny",
         resolutionMessage: "用户未在时限内响应，自动拒绝",
       });
+      rememberResolvedPermission(requestId, "deny", "用户未在时限内响应，自动拒绝");
       emitSSE(browserSessionId, "permission-resolved", {
         requestId,
         behavior: "deny",
@@ -793,7 +805,27 @@ app.post("/api/permission-request", async (req, res) => {
       resolve({ behavior: "deny", message: "权限请求超时，自动拒绝" });
     }, PERMISSION_TIMEOUT_MS);
 
-    pendingPermissions.set(requestId, { resolve, timer, browserSessionId, character, toolName });
+    pendingPermissions.set(requestId, {
+      resolve,
+      timer,
+      browserSessionId,
+      character,
+      toolName,
+      input,
+      timestamp: timestamp || Date.now(),
+      messageId: thinkingMessageId,
+    });
+  });
+
+  // 通过 SSE 通知前端
+  emitSSE(browserSessionId, "permission", {
+    requestId,
+    character: character || "unknown",
+    toolName,
+    input,
+    timestamp: timestamp || Date.now(),
+    messageId: thinkingMessageId,
+    status: "pending",
   });
 
   // 等待用户决定后返回给 MCP server
@@ -809,10 +841,18 @@ app.post("/api/permission-response", (req, res) => {
   if (!requestId || !behavior) {
     return res.status(400).json({ error: "requestId 和 behavior 不能为空" });
   }
+  if (behavior !== "allow" && behavior !== "deny") {
+    return res.status(400).json({ error: "behavior 仅支持 allow/deny" });
+  }
 
   const pending = pendingPermissions.get(requestId);
   if (!pending) {
-    return res.status(404).json({ error: "权限请求不存在或已过期" });
+    // 双入口/多设备竞争时第二次提交会走到这里：返回首次决策，让前端收敛到服务端状态
+    const resolved = getResolvedPermission(requestId);
+    return res.status(404).json({
+      error: "权限请求不存在或已过期",
+      ...(resolved && { resolved: { behavior: resolved.behavior, message: resolved.message } }),
+    });
   }
 
   // 清除超时定时器
@@ -822,6 +862,7 @@ app.post("/api/permission-response", (req, res) => {
   console.log(`[权限响应] ${requestId} → ${behavior}`);
 
   const resolutionMessage = message || (behavior === "allow" ? "已允许" : "已拒绝");
+  rememberResolvedPermission(requestId, behavior, resolutionMessage);
   updatePermissionInLog(pending.browserSessionId, requestId, {
     status: behavior,
     resolutionMessage,
@@ -999,6 +1040,7 @@ app.get("/api/history", (req, res) => {
       ...log,
       lastSeq: sseStreams.get(sessionId)?.seq || 0,
       activeThinking: listActiveThinking(sessionId),
+      pendingApprovals: listPendingPermissions(sessionId),
     });
   } catch {
     res.json({
@@ -1007,6 +1049,7 @@ app.get("/api/history", (req, res) => {
       messages: [],
       lastSeq: sseStreams.get(sessionId)?.seq || 0,
       activeThinking: listActiveThinking(sessionId),
+      pendingApprovals: listPendingPermissions(sessionId),
     });
   }
 });
@@ -1030,6 +1073,31 @@ function countPendingApprovals(sessionId) {
   }
   return count;
 }
+
+// 当前会话待审批快照（浮层恢复的权威数据源；内存中的请求才是"仍可审批"的依据）
+function listPendingPermissions(sessionId) {
+  const list = [];
+  for (const [requestId, pending] of pendingPermissions) {
+    if (pending.browserSessionId !== sessionId) continue;
+    list.push({
+      requestId,
+      character: pending.character || "unknown",
+      toolName: pending.toolName,
+      input: pending.input,
+      timestamp: pending.timestamp,
+      messageId: pending.messageId,
+      status: "pending",
+    });
+  }
+  list.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  return list;
+}
+
+app.get("/api/pending-permissions", (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: "sessionId 不能为空" });
+  res.json({ pending: listPendingPermissions(sessionId) });
+});
 
 // 会话参与角色：元数据成员 ∪ 聊天记录推导（发言过的角色 + 被 @ 的角色），
 // 按首次出现排序；链式 @ 唤醒但未登记进 members 的角色也能显示
@@ -1898,6 +1966,7 @@ app.post("/api/abort-invoke", (req, res) => {
       status: "deny",
       resolutionMessage: "任务已被终止",
     });
+    rememberResolvedPermission(requestId, "deny", "任务已被终止");
     emitSSE(browserSessionId, "permission-resolved", {
       requestId,
       behavior: "deny",
