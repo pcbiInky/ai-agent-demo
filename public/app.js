@@ -2675,6 +2675,7 @@ function createSessionGroupHeader(group, collapsed) {
     }
   });
   const addBtn = header.querySelector(".session-group-add");
+  addBtn.dataset.groupKey = group.key;
   const createInGroup = (e) => {
     e.stopPropagation();
     createSessionInGroup(group);
@@ -2690,23 +2691,37 @@ function createSessionGroupHeader(group, collapsed) {
 }
 
 async function createSessionInGroup(group) {
-  const memberIds = Object.entries(state.characters)
-    .filter(([, cfg]) => !cfg.archived)
-    .map(([, cfg]) => cfg.id);
-  const sessionId = crypto.randomUUID();
-  await fetch("/api/sessions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, memberIds }),
-  });
-  if (group.dir) {
-    await fetch(`/api/sessions/${sessionId}`, {
-      method: "PATCH",
+  try {
+    const memberIds = Object.entries(state.characters)
+      .filter(([, cfg]) => !cfg.archived)
+      .map(([, cfg]) => cfg.id);
+    const sessionId = crypto.randomUUID();
+    const createRes = await fetch("/api/sessions", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workingDirectory: group.dir }),
+      body: JSON.stringify({ sessionId, memberIds }),
     });
+    if (!createRes.ok) {
+      const err = await createRes.json().catch(() => ({}));
+      appendErrorMessage("系统", err.error || "新建会话失败");
+      return;
+    }
+    if (group.dir) {
+      const patchRes = await fetch(`/api/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workingDirectory: group.dir }),
+      });
+      if (!patchRes.ok) {
+        const err = await patchRes.json().catch(() => ({}));
+        appendErrorMessage("系统", err.error || "设置工作目录失败");
+        return;
+      }
+    }
+    switchSession(sessionId);
+  } catch {
+    appendErrorMessage("系统", "网络错误，新建会话失败");
   }
-  switchSession(sessionId);
 }
 
 function createShowMoreButton(group) {
@@ -2745,6 +2760,9 @@ function captureSessionListFocus() {
   if (active.classList.contains("session-group-header")) {
     return { type: "header", key: active.dataset.groupKey };
   }
+  if (active.classList.contains("session-group-add")) {
+    return { type: "add", key: active.dataset.groupKey };
+  }
   if (active.classList.contains("session-group-more")) {
     return { type: "more", key: active.dataset.groupKey };
   }
@@ -2761,7 +2779,13 @@ function restoreSessionListFocus(focus) {
   let target = null;
   if (focus.type === "header") target = match(".session-group-header", "groupKey");
   else if (focus.type === "item") target = match(".session-item", "sessionId");
-  else target = match(".session-group-more", "groupKey") || match(".session-group-header", "groupKey");
+  else if (focus.type === "add") {
+    const header = match(".session-group-header", "groupKey");
+    target = (header && header.querySelector(".session-group-add")) || header;
+  } else if (focus.key === GROUP_LIST_MORE_KEY) {
+    const headers = [...$sessionList.querySelectorAll(".session-group-header")];
+    target = headers[SESSION_GROUP_LIST_VISIBLE_COUNT] || headers[headers.length - 1] || null;
+  } else target = match(".session-group-more", "groupKey") || match(".session-group-header", "groupKey");
   if (target) target.focus();
 }
 
