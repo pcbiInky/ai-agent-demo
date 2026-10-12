@@ -1,8 +1,8 @@
-# 消息内文件修改 Diff 展示方案（v17，面板只保留净 Diff）
+# 消息内文件修改 Diff 展示方案（v18，行号 + 打开即定位第一处修改）
 
 日期：2026-10-10
 作者：马哥（qodercn）
-状态：v17 已实施
+状态：v18 已实施（浏览器实测待铲屎官确认）
 变更记录：
 - v1 纯前端聚合方案；
 - v2 增加执行结果回报链路（YYF 认可方向，提出 5 点修订）；
@@ -22,6 +22,19 @@
 - v16 按铲屎官要求暂时移除 80KB 快照预算，观察大文件 Diff 的实际响应；仅 `/api/tool-result` 的传输请求体上限改为 100MB，LCS 计算上限从 25 万放宽到 1000 万单元格，单块渲染上限从 1500 行提高到 5000 行，面板每区 6000 行总预算保留。
 - v17 按铲屎官要求删除面板中的「逐次操作明细」区，并放大净 Diff 窗口（面板宽 560→920px、代码区高度 420px→`calc(100vh - 200px)`）；因同屏只剩片段区一份预算，单块渲染上限 5000→12000 行、面板总预算 6000→20000 行；
 - v17.1 修复 YYF 复审指出的 P2 占位问题（`min-height` 只作用于有 diff 行的块，预算耗尽的空块不再各占 240px）。
+- v18 按铲屎官要求：打开面板自动把第一处增删行滚到代码区垂直中心，并为每行显示「修改前 / 修改后」行号（CSS 计数器实现，不增加 DOM 节点）。
+
+## v18 变更：行号与打开即定位第一处修改
+
+**需求（铲屎官）**：打开文件 diff 时滚轮自动移动到第一处修改处并显示到窗口中心，同时显示行号。
+
+- **自动定位**：新增 `centerFirstDiffChange(container)`（`public/app.js`），取容器内第一个 `.diff-line.add, .diff-line.del`，在其所属 `.diff-code` 上按 `scrollTop = offsetTop - (clientHeight - offsetHeight) / 2` 居中；若该代码块在面板内容视口外，再把 `.diff-panel-content` 滚到块顶上方 12px。`openDiffPanel` 在 `open` 之后的 `requestAnimationFrame` 里调用（此时才有布局），随后才加 `visible`。只有 meta 行（末尾换行变化）或无增删行时返回 `null`，不滚动。
+- **参照系**：`.diff-code` 与 `.diff-panel-content` 补 `position: relative`，否则 `offsetTop` 会以更外层的定位祖先为基准，居中计算失真。
+- **行号**：用 CSS 计数器而非 DOM 节点——`.diff-code { counter-reset: diff-old diff-new }`，`.diff-line.ctx` 同时推进两个计数器、`.del` 只推进 `diff-old`、`.add` 只推进 `diff-new`，行号由 `.diff-line::before` 输出为「修改前 / 修改后」（缺侧用 `-`，meta 行为空）。`.diff-line` 改 `display: flex` + `gap: 10px`，`::before` 是 `width: 12ch`、`text-align: right`、`user-select: none` 的定宽列，正文换行落在自己的 flex 项内、不会挤到行号下方。因为 diff 覆盖整份文件内容，计数器值即真实文件行号；被预算截断的块只渲染前 N 行，编号仍从 1 连续。
+- **为何不用 span 装行号**：面板预算是 12000/20000 行，每行再加 1–2 个节点会把同屏节点数放大 2–3 倍，正是 v12 起一直在防的卡顿面；CSS 计数器零额外节点，且 jsdom 下可用源码级断言覆盖。
+- **图例**：面板有片段时在顶部加一条 `.diff-note.diff-legend`「行号：修改前 / 修改后（- 表示该行在对应文件中不存在）」，避免两侧行号含义靠猜；`.diff-legend + .diff-seg-label { margin-top: 0 }` 保持原有紧凑间距。
+- **未验证项**：真实浏览器里的居中效果、行号列宽（12ch 容纳到 5 位数 + 分隔符）与打开耗时仍未实测，需铲屎官在浏览器确认。
+- 回归用例：a.js 面板第一处修改为删除行；stub `clientHeight=400 / offsetTop=1000 / offsetHeight=20` 后 `centerFirstDiffChange` → `scrollTop=810`；只有 meta 行的块与空容器均返回 `null`；面板含行号图例；`.diff-line` 无子元素（行号不建节点）；样式源码断言覆盖 `counter-reset`、三类 `counter-increment`、三条 `::before content`、`display: flex` + `width: 12ch`、两处 `position: relative`。
 
 ## v17 变更：面板只保留净 Diff
 
@@ -287,6 +300,8 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 28. 截断原因归因：单块 15000 行且面板总预算未耗尽 → `renderedLines=12000`、`budget.left=8000`、`truncatedBy="block"`，提示为「单个 diff 块最多渲染 12000 行」且不出现「面板渲染总行数上限」；面板汇总为「1/1 个片段由单块渲染上限 12000 行截断」，不再引导去看逐次明细。
 29. 混合截断原因：5 段（首段 13000 行、后四段各 3000 行）→ `truncatedBy` 依次 `block, null, null, panel, panel`，面板 20000 行；两条汇总并存且不矛盾（「2/5 个片段未完整显示」与「1/5 个片段由单块渲染上限 12000 行截断」，不出现「面板总预算未用尽」）。
 30. 空块占位样式（v17.1）：60 段场景里 35 个预算耗尽的空块不带 `has-lines`（不撑 240px 最小高度），25 个有行的块都带；通用 `.diff-code` 规则不含 `min-height`；`buildDiffCodeBlock(diff, { left: 0 })` → `renderedLines=0` 且无 `has-lines`。
+31. 打开即定位（v18）：面板第一个 `.diff-line.add/.del` 在其 `.diff-code` 内居中——`clientHeight=400`、`offsetTop=1000`、`offsetHeight=20` 时 `scrollTop=810`；只有 meta 行或无增删行时不滚动（返回 `null`）；代码块在面板视口外时 `.diff-panel-content` 也被滚到块顶上方 12px。
+32. 行号（v18）：`.diff-code` 重置 `diff-old`/`diff-new` 计数器，ctx 双推进、del 只推进旧号、add 只推进新号，行号由 `::before` 以「旧 / 新」输出（缺侧 `-`、meta 行空）；`.diff-line` 内无子元素（不新增节点），面板顶部有「行号：修改前 / 修改后」图例。
 
 ## 7. 实施进度
 
@@ -295,6 +310,6 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 - [x] `permission-server.js`：Edit input 补 `replace_all`；三个编辑工具快照执行（v16 起不限快照大小 + sha256 changed 判定，形态判定委托 `classifySnapshot`）+ 回报。
 - [x] `lib/tool-result-reporter.js`：回报模块（状态码检查、413 降级 oversized 重试、流式 hashFile 区分 missing/error、`classifySnapshot` 纯函数：hash 失败/执行后文件缺失（无论执行前是否存在）/读取失败 → snapshotError 且 changed 未知，超预算 → oversized，否则有效快照）。
 - [x] `server.js`：`toolResultCorrelations`（仅审批通过时注册，2h TTL、一次性消费）；`POST /api/tool-result`（toolName/ok/filePath/快照字段强校验，`after` 必须为字符串，snapshotError/oversized 免快照）；`execution`（含 changed、服务端单调 seq）写回日志；SSE `permission-executed`；v12 默认绑定 `HOST ?? "127.0.0.1"`、启动日志打印真实地址、非回环时输出访问边界告警。
-- [x] `public/app.js`：聚合（仅 allow+success 且 changed≠false，基线序 finishedAt→seq）、`orderFileChanges`（按快照连续性重建顺序，重复状态/成环 → orderUnknown）、LCS diff（`splitDiffLines` 行语义 + 末尾换行 meta 行 + 降级标注）、净 Diff 链校验拆段、目录 upsert 渲染（.msg-model 之后，含「顺序未知」态；「分段」仅在 uncovered===0 且多段时标注）、侧栏面板（区分无快照/snapshotError/顺序未知 文案，无快照记录参与时片段降级为「局部快照片段」，v17 起只渲染净 Diff 片段区、不再有逐次明细与懒渲染，单块渲染上限 `MAX_DIFF_RENDER_LINES=12000`、面板级总预算 `MAX_PANEL_RENDER_LINES=20000`（同屏仅此一份），截断原因经 `truncatedBy` 区分并分别提示单块上限／面板预算耗尽）、SSE 钩子、loadHistory 钩子（含从历史审批重建 permRequestIndex）、补挂机制。
-- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
-- [x] 测试：`test-file-diff-display.js` 96 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。
+- [x] `public/app.js`：聚合（仅 allow+success 且 changed≠false，基线序 finishedAt→seq）、`orderFileChanges`（按快照连续性重建顺序，重复状态/成环 → orderUnknown）、LCS diff（`splitDiffLines` 行语义 + 末尾换行 meta 行 + 降级标注）、净 Diff 链校验拆段、目录 upsert 渲染（.msg-model 之后，含「顺序未知」态；「分段」仅在 uncovered===0 且多段时标注）、侧栏面板（区分无快照/snapshotError/顺序未知 文案，无快照记录参与时片段降级为「局部快照片段」，v17 起只渲染净 Diff 片段区、不再有逐次明细与懒渲染，单块渲染上限 `MAX_DIFF_RENDER_LINES=12000`、面板级总预算 `MAX_PANEL_RENDER_LINES=20000`（同屏仅此一份），截断原因经 `truncatedBy` 区分并分别提示单块上限／面板预算耗尽；v18 新增 `centerFirstDiffChange` 在 `openDiffPanel` 的 rAF 内把第一处增删行滚到代码区中心，并在有片段时插入行号图例）、SSE 钩子、loadHistory 钩子（含从历史审批重建 permRequestIndex）、补挂机制。
+- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；v18：`.diff-code`/`.diff-panel-content` 补 `position: relative`，行号用 `counter-reset` + 三类 `counter-increment` + `.diff-line::before`（12ch 定宽 flex 列），`.diff-legend` 图例；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
+- [x] 测试：`test-file-diff-display.js` 109 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾、v18 打开即居中定位第一处修改与行号计数器/图例/零额外节点）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。

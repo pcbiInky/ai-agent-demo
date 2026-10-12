@@ -268,6 +268,34 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(panel.textContent.includes("净 Diff"), "面板含净 Diff 标签");
     assert(!panel.textContent.includes("逐次操作明细"), "面板只展示净 Diff，不再有逐次操作明细");
 
+    // ── 打开面板自动把第一处修改滚到代码区中心 ──
+    const focusCode = panel.querySelector(".diff-code");
+    const firstChange = panel.querySelector(".diff-line.add, .diff-line.del");
+    assert(!!firstChange && firstChange.classList.contains("del"), `a.js 面板第一处修改是删除行（实际 ${firstChange?.className}）`);
+    Object.defineProperty(focusCode, "clientHeight", { value: 400, configurable: true });
+    Object.defineProperty(firstChange, "offsetHeight", { value: 20, configurable: true });
+    Object.defineProperty(firstChange, "offsetTop", { value: 1000, configurable: true });
+    const focusRes = dom.window.centerFirstDiffChange(panel);
+    assert(!!focusRes && focusRes.target === firstChange && focusRes.code === focusCode, "定位命中第一处增删行所在的代码块");
+    assert(focusCode.scrollTop === 810, `第一处修改位于代码区垂直中心（scrollTop ${focusCode.scrollTop}，期望 1000-(400-20)/2=810）`);
+    const metaOnlyBox = document.createElement("div");
+    metaOnlyBox.appendChild(dom.window.buildDiffCodeBlock(dom.window.computeLineDiff("a", "a\n")));
+    assert(dom.window.centerFirstDiffChange(metaOnlyBox) === null, "只有 meta 行（末尾换行变化）时不滚动");
+    assert(dom.window.centerFirstDiffChange(document.createElement("div")) === null, "无增删行时不滚动");
+
+    // ── 行号：由 CSS 计数器生成，不增加行节点 ──
+    assert(panel.textContent.includes("行号：修改前 / 修改后"), "面板给出行号列图例");
+    assert(firstChange.children.length === 0, "行号走 ::before，行内不新增节点（避免放大 DOM 预算）");
+    assert(/\.diff-code \{[^}]*counter-reset: diff-old diff-new;/.test(styleCss), "每个代码块独立重置行号计数器");
+    assert(/\.diff-line\.ctx \{ counter-increment: diff-old diff-new; \}/.test(styleCss)
+      && /\.diff-line\.del \{ counter-increment: diff-old; \}/.test(styleCss)
+      && /\.diff-line\.add \{ counter-increment: diff-new; \}/.test(styleCss), "行号计数器按 ctx/del/add 分别推进");
+    assert(/\.diff-line\.ctx::before \{ content: counter\(diff-old\) " \/ " counter\(diff-new\); \}/.test(styleCss), "上下文行显示修改前/后两个行号");
+    assert(/\.diff-line\.del::before \{ content: counter\(diff-old\) " \/ -"; \}/.test(styleCss)
+      && /\.diff-line\.add::before \{ content: "- \/ " counter\(diff-new\); \}/.test(styleCss), "增/删行只在自己所属一侧显示行号");
+    assert(/\.diff-line \{[^}]*display: flex;/.test(styleCss) && /\.diff-line::before \{[^}]*width: 12ch;/.test(styleCss), "行号是定宽 flex 列，正文换行不会挤到行号下方");
+    assert(/\.diff-code \{[^}]*position: relative;/.test(styleCss) && /\.diff-panel-content \{[^}]*position: relative;/.test(styleCss), "offsetTop 以代码块/面板内容为基准，居中计算才有确定参照");
+
     // 拆段文件：两段净 Diff + 范围外修改标注
     document.getElementById("diff-close-btn").click();
     await sleep(300);

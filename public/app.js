@@ -1669,6 +1669,23 @@ function buildDiffCodeBlock(diff, budget) {
   return body;
 }
 
+// 打开面板即把第一处增删行滚到代码区垂直中心：净 Diff 通常以大量上下文开头，
+// 不定位就得手动滚动才看得到改动
+function centerFirstDiffChange(container) {
+  const target = container?.querySelector(".diff-line.add, .diff-line.del");
+  if (!target) return null;
+  const code = target.closest(".diff-code");
+  if (!code) return null;
+  const offset = Math.max(0, ((code.clientHeight || 0) - (target.offsetHeight || 0)) / 2);
+  code.scrollTop = Math.max(0, (target.offsetTop || 0) - offset);
+  const viewH = container.clientHeight || 0;
+  const blockTop = code.offsetTop || 0;
+  if (viewH > 0 && (blockTop < container.scrollTop || blockTop > container.scrollTop + viewH)) {
+    container.scrollTop = Math.max(0, blockTop - 12);
+  }
+  return { code, target };
+}
+
 function openDiffPanel(character, messageId, filePath) {
   const changes = state.fileChanges[`${character}|${messageId}`]?.[filePath] || [];
   if (_closeDiffTimer) {
@@ -1693,6 +1710,12 @@ function openDiffPanel(character, messageId, filePath) {
   const segBudget = { left: MAX_PANEL_RENDER_LINES };
   let panelTruncated = 0;
   let blockTruncated = 0;
+  if (summary.segments.length > 0) {
+    const legend = document.createElement("div");
+    legend.className = "diff-note diff-legend";
+    legend.textContent = "行号：修改前 / 修改后（- 表示该行在对应文件中不存在）";
+    $diffPanelContent.appendChild(legend);
+  }
   summary.segments.forEach(({ diff }, idx) => {
     const label = document.createElement("div");
     label.className = "diff-seg-label";
@@ -1733,7 +1756,10 @@ function openDiffPanel(character, messageId, filePath) {
   }
 
   $diffPanel.classList.add("open");
-  requestAnimationFrame(() => $diffPanel.classList.add("visible"));
+  requestAnimationFrame(() => {
+    centerFirstDiffChange($diffPanelContent);
+    $diffPanel.classList.add("visible");
+  });
 }
 
 function closeDiffPanel() {
