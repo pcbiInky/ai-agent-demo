@@ -47,20 +47,21 @@ function skip(label, reason) {
   skipped += 1;
 }
 
-function listen(app) {
-  return new Promise((resolve) => {
+function listen(app, host = "127.0.0.1") {
+  return new Promise((resolve, reject) => {
     const instance = http.createServer(app);
-    instance.listen(0, "127.0.0.1", () => resolve({ instance, port: instance.address().port }));
+    instance.once("error", reject);
+    instance.listen(0, host, () => resolve({ instance, port: instance.address().port, host: instance.address().address }));
   });
 }
 
 // 上游服务：门禁 + 回显路由（真实部署里就是 server.js 本身）
-function listenUpstream(access) {
+function listenUpstream(access, host) {
   const app = express();
   app.use(createAccessGate(access));
   app.use(express.json());
   app.use((req, res) => res.json({ ok: true, path: req.path }));
-  return listen(app);
+  return listen(app, host);
 }
 
 // 本机反向代理：把远端请求原样转发到回环上游，
@@ -108,10 +109,32 @@ function listenOn(host, onRequest) {
   });
 }
 
-async function request(port, path, options = {}) {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, options);
+function formatHostForUrl(host) {
+  return String(host).includes(":") ? `[${host}]` : host;
+}
+
+// fetch 会丢弃 host 覆盖（Fetch 规范里的 forbidden header），
+// 需要伪造 Host 头时必须用 http.request，否则断言会因为默认 Host 而"碰巧"通过
+async function requestTo(targetHost, port, path, { method = "GET", headers = {} } = {}) {
+  const res = await fetch(`http://${formatHostForUrl(targetHost)}:${port}${path}`, { method, headers });
   const text = await res.text();
   return { status: res.status, text, setCookie: res.headers.getSetCookie?.() ?? [res.headers.get("set-cookie")] };
+}
+
+function requestRaw(connectHost, port, path, { method = "GET", headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: connectHost, port, path, method, headers }, (res) => {
+      let text = "";
+      res.on("data", (c) => { text += c; });
+      res.on("end", () => resolve({ status: res.statusCode, text, setCookie: [res.headers["set-cookie"]].flat().filter(Boolean) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function request(port, path, options = {}) {
+  return requestTo("127.0.0.1", port, path, options);
 }
 
 function mockReq(overrides) {
@@ -217,10 +240,14 @@ async function main() {
   const accessOnInternal = await request(direct.port, "/api/tool-result", { method: "POST", headers: { "x-access-token": token } });
   assert(accessOnInternal.status === 200, "访问令牌同样可用于内部路由（便于人工排查）");
 
-  // Host 允许列表
+  // Host 允许列表（用 http.request 才能真正改写 Host，fetch 会丢弃该头）
   const strict = await listenUpstream({ ...enabled, allowedHosts: ["arena.local"] });
-  const badHost = await request(strict.port, "/api/sessions", { headers: { "x-access-token": token, host: "evil.example" } });
+  const badHost = await requestRaw("127.0.0.1", strict.port, "/api/sessions", { headers: { "x-access-token": token, host: "evil.example" } });
   assert(badHost.status === 403, `Host 不在允许列表时 403（${badHost.status}）`);
+  const goodHost = await requestRaw("127.0.0.1", strict.port, "/api/sessions", { headers: { "x-access-token": token, host: "ARENA.local:3000" } });
+  assert(goodHost.status === 200, `Host 在允许列表内（忽略大小写与端口）且令牌正确时放行（${goodHost.status}）`);
+  const goodHostNoToken = await requestRaw("127.0.0.1", strict.port, "/api/sessions", { headers: { host: "arena.local" } });
+  assert(goodHostNoToken.status === 401, `Host 合法但无令牌仍 401（${goodHostNoToken.status}）`);
   await new Promise((resolve) => strict.instance.close(resolve));
   await new Promise((resolve) => direct.instance.close(resolve));
 
@@ -272,6 +299,67 @@ async function main() {
   assert(loopbackDirectNoToken.status === 401, "回环上游 + 显式令牌：本机直接访问同样需要令牌");
   await new Promise((resolve) => loopbackProxy.instance.close(resolve));
   await new Promise((resolve) => loopbackUpstream.instance.close(resolve));
+
+  // ── P1 回归：ALLOWED_HOSTS 不得挡死内部回报链路 ──
+  // 文档推荐反代部署配 ALLOWED_HOSTS=arena.example.com，但 permission-server 发往
+  // 127.0.0.1:PORT（或具体网卡地址）的请求 Host 就是那个地址，不在白名单里；
+  // 若 Host 校验排在内部令牌之前，审批、SendMessage 与执行结果回报会全部 403
+  const allowAccess = resolveAccessToken({
+    host: "127.0.0.1",
+    envToken: "public-token",
+    envInternalToken: "internal-token",
+    allowedHosts: "arena.example.com",
+  });
+  assert(allowAccess.enabled === true && allowAccess.allowedHosts.join(",") === "arena.example.com", "回环 + 令牌 + ALLOWED_HOSTS 组合被正确解析");
+
+  const allowUpstream = await listenUpstream(allowAccess);
+  const allowProxy = await listenProxy(allowUpstream.port);
+  const INTERNAL_ROUTE_LIST = ["/api/permission-request", "/api/permission-response", "/api/tool-result", "/api/mcp-send-message"];
+  for (const route of INTERNAL_ROUTE_LIST) {
+    const directInternal = await request(allowUpstream.port, route, { method: "POST", headers: { [INTERNAL_HEADER]: "internal-token" } });
+    assert(directInternal.status === 200, `ALLOWED_HOSTS 开启时内部令牌直连回环 Host 仍放行 ${route}（${directInternal.status}）`);
+    const proxiedInternal = await request(allowProxy.port, route, { method: "POST", headers: { [INTERNAL_HEADER]: "internal-token" } });
+    assert(proxiedInternal.status === 200, `ALLOWED_HOSTS 开启时经反代的内部路由仍放行 ${route}（${proxiedInternal.status}）`);
+    const wrongInternal = await request(allowUpstream.port, route, { method: "POST", headers: { [INTERNAL_HEADER]: "nope" } });
+    assert(wrongInternal.status === 403, `内部令牌错误时仍按 Host 白名单拒绝 ${route}（${wrongInternal.status}）`);
+  }
+  const allowInternalOnHistory = await request(allowUpstream.port, "/api/history", { headers: { [INTERNAL_HEADER]: "internal-token" } });
+  assert(allowInternalOnHistory.status === 403, `内部令牌不能越过 Host 白名单读历史（${allowInternalOnHistory.status}）`);
+  const allowHistoryNoToken = await request(allowUpstream.port, "/api/history");
+  assert(allowHistoryNoToken.status === 403, `白名单外 Host 无令牌访问历史 403（${allowHistoryNoToken.status}）`);
+  const allowedHostPage = await requestRaw("127.0.0.1", allowUpstream.port, "/api/history", { headers: { "x-access-token": "public-token", host: "arena.example.com" } });
+  assert(allowedHostPage.status === 200, `白名单内 Host + 访问令牌放行（${allowedHostPage.status}）`);
+  const allowedHostInternal = await requestRaw("127.0.0.1", allowUpstream.port, "/api/tool-result", { method: "POST", headers: { [INTERNAL_HEADER]: "internal-token", host: "arena.example.com" } });
+  assert(allowedHostInternal.status === 200, "白名单内 Host + 内部令牌同样放行内部路由");
+  const evilHostWithToken = await requestRaw("127.0.0.1", allowUpstream.port, "/api/history", { headers: { "x-access-token": "public-token", host: "evil.example" } });
+  assert(evilHostWithToken.status === 403, `白名单外 Host 即使令牌正确也 403（${evilHostWithToken.status}）`);
+  const evilHostWithInternal = await requestRaw("127.0.0.1", allowUpstream.port, "/api/history", { headers: { [INTERNAL_HEADER]: "internal-token", host: "evil.example" } });
+  assert(evilHostWithInternal.status === 403, "内部令牌只在内部路由上豁免 Host 白名单，历史接口不豁免");
+  await new Promise((resolve) => allowProxy.instance.close(resolve));
+  await new Promise((resolve) => allowUpstream.instance.close(resolve));
+
+  // 具体网卡地址绑定 + ALLOWED_HOSTS：内部回报的 Host 是 <网卡地址>:<port>
+  const nicForGate = Object.values(os.networkInterfaces())
+    .flat()
+    .find((info) => info && info.family === "IPv4" && !info.internal)?.address;
+  if (!nicForGate) {
+    skip("具体网卡地址 + ALLOWED_HOSTS 的内部路由回归", "本机没有可用的非回环 IPv4 地址");
+  } else {
+    const nicAccess = resolveAccessToken({ host: nicForGate, envToken: "nic-token", envInternalToken: "nic-internal", allowedHosts: "arena.example.com" });
+    const nicUpstream = await listenUpstream(nicAccess, nicForGate);
+    assert(nicUpstream.host === nicForGate, `上游确实绑定在具体网卡地址 ${nicForGate}（实际 ${nicUpstream.host}）`);
+    const nicInternal = await requestTo(nicForGate, nicUpstream.port, "/api/tool-result", { method: "POST", headers: { [INTERNAL_HEADER]: "nic-internal" } });
+    assert(nicInternal.status === 200, `绑定具体网卡地址时内部令牌放行 /api/tool-result（Host=${nicForGate}:${nicUpstream.port}，status=${nicInternal.status}）`);
+    const nicSend = await requestTo(nicForGate, nicUpstream.port, "/api/mcp-send-message", { method: "POST", headers: { [INTERNAL_HEADER]: "nic-internal" } });
+    assert(nicSend.status === 200, `绑定具体网卡地址时内部令牌放行 /api/mcp-send-message（${nicSend.status}）`);
+    const nicHistory = await requestTo(nicForGate, nicUpstream.port, "/api/history", { headers: { [INTERNAL_HEADER]: "nic-internal" } });
+    assert(nicHistory.status === 403, `绑定具体网卡地址时内部令牌读不到历史（${nicHistory.status}）`);
+    const nicNoToken = await requestTo(nicForGate, nicUpstream.port, "/api/sessions");
+    assert(nicNoToken.status === 403, `绑定具体网卡地址、白名单外 Host 无令牌 403（${nicNoToken.status}）`);
+    const nicWithToken = await requestRaw(nicForGate, nicUpstream.port, "/api/sessions", { headers: { "x-access-token": "nic-token", host: "arena.example.com" } });
+    assert(nicWithToken.status === 200, `绑定具体网卡地址时白名单内 Host + 访问令牌放行（${nicWithToken.status}）`);
+    await new Promise((resolve) => nicUpstream.instance.close(resolve));
+  }
 
   // ── P2 回归：内部回报必须连实际监听地址 ──
   const savedReportHost = process.env.PERMISSION_SERVER_HOST;
