@@ -1,8 +1,8 @@
-# 消息内文件修改 Diff 展示方案（v21，符号导航按钮移入标题行右侧）
+# 消息内文件修改 Diff 展示方案（v22，↑/↓ 导航独占标题下一行）
 
 日期：2026-10-10
 作者：马哥（qodercn）
-状态：v21 已实施（v20 的滚动手感铲屎官已认可；v21 的按钮观感待浏览器确认）
+状态：v22 已实施（v20 的滚动手感铲屎官已认可；v22 的按钮字形与头部高度待浏览器确认）
 变更记录：
 - v1 纯前端聚合方案；
 - v2 增加执行结果回报链路（YYF 认可方向，提出 5 点修订）；
@@ -25,11 +25,23 @@
 - v18 按铲屎官要求：打开面板自动把第一处增删行滚到代码区垂直中心，并为每行显示「修改前 / 修改后」行号（CSS 计数器实现，不增加 DOM 节点）；
 - v18.1 修复 YYF 复审指出的 P2 定位缺口（外层滚动改为让**目标行**在面板视口居中，不再只看代码块顶部是否可见；仅末尾换行变化时把 meta 行也算作第一处修改）。
 - v19 按铲屎官要求：代码区滚动条常显，并在滚动条旁加 VSCode 式概览标尺——按内容比例标出每处修改（可点击跳转）与当前视口位置。
+- v20 按 YYF 的设计重做 v19 的导航（取代每块一条标尺）：`.diff-panel-content` 独占纵向滚动（代码块不再自己滚），面板右侧改为一条始终可见的窄刻度轨（每处修改一个刻度，点击跳转并居中），顶部加「上一处 i/N 下一处」吸顶工具条，滚动时同步当前序号，长行换行与面板尺寸变化后按比例重算刻度。
 - v20.1 修复 YYF 复审 be5bb31 指出的生命周期缺口：打开面板的 rAF 回调加代次守卫并在关闭时取消，避免同一帧连续打开/关闭时旧回调重复构建或把已关闭的面板弹回来；
 - v21 按铲屎官要求：「上一处/下一处」改成 ⬆️ / ⬇️ 符号按钮，并从面板内容里的吸顶工具条移到标题行、文件名右侧右对齐。
-- v20 按 YYF 的设计重做 v19 的导航（取代每块一条标尺）：`.diff-panel-content` 独占纵向滚动（代码块不再自己滚），面板右侧改为一条始终可见的窄刻度轨（每处修改一个刻度，点击跳转并居中），顶部加「上一处 i/N 下一处」吸顶工具条，滚动时同步当前序号，长行换行与面板尺寸变化后按比例重算刻度。
+- v22 按铲屎官要求：按钮符号改 ↑/↓ 文本箭头（避免 emoji 跨平台渲染差异），控件从标题行内移到标题行下面独立的一行并右对齐。
 
-## v21 变更：符号导航按钮移入标题行右侧
+## v22 变更：导航按钮改 ↑/↓ 文本箭头并独占标题下一行
+
+**需求（铲屎官）**：建议把 ⬆️/⬇️ 换成 ↑/↓，并把布局调整到下一行。
+
+- **位置**：`#diff-nav` 从 `.diff-panel-header` 里移出，变成标题行下面独立的一行（顺序：标题行 → `#diff-nav` → `#diff-panel-sub` 路径行 → `.diff-panel-content`）。因为 `.diff-panel` 是 `flex-direction: column`，该行加 `flex-shrink: 0` 不被内容挤压；`padding: 0 16px 8px` 与 `background: var(--chat-bg)` 让它和上下两行连成同一片浅灰头部。
+- **右对齐**：改用 `justify-content: flex-end`（不再需要 `margin-left: auto`），标题行也不再需要为控件让位，故 v21 给 `.diff-panel-header h3` 加的 `flex: 1 1 auto; min-width: 0` 一并回退。
+- **符号**：按钮文本 ⬆️/⬇️ → ↑/↓（文本箭头），避免 emoji 在 macOS/Windows、Chrome/Safari 上的彩色渲染差异与基线偏移；`font-size` 12→14px、补 `color: var(--text)`，hover 同时变蓝字 + 蓝边 + 浅蓝底。按钮尺寸仍 24×24、`padding: 0`、`line-height: 1`，`title` 保留「上一处修改 / 下一处修改」以补足符号无语义的问题。
+- **未变**：`hidden` 生命周期（`buildDiffNav` 显示 / `clearDiffNav` 隐藏）、prev/next 监听在 `setupDiffPanel` 挂一次、序号 `i/N` 夹在两个箭头之间、刻度轨与跳转/居中逻辑均不动。
+- 回归用例：控件两个按钮文本为 ↑/↓；index.html 源码断言改为「关闭按钮所在标题行结束之后、`#diff-panel-sub` 之前」出现 `#diff-nav`（即独占下一行）；样式断言改为 `.diff-nav { justify-content: flex-end }` + `.diff-nav[hidden] { display: none }`，并断言 `.diff-panel-header h3` 不再带 `flex`（标题行无需为控件让位）。
+- **未验证项**：↑/↓ 在真实浏览器里的字形大小与垂直居中、独立一行后头部总高度（约多 32px）是否挤压内容区，仍需铲屎官确认。
+
+## v21 变更：符号导航按钮移入标题行右侧（位置已被 v22 取代，符号已改 ↑/↓）
 
 **需求（铲屎官）**：这一版效果不错，把「上一处/下一处」两个按钮改成 ⬆️ / ⬇️ 这样的符号按钮，放到文件名右边、向右对齐。
 
@@ -358,16 +370,17 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 31. 打开即定位（v18/v18.1）：面板第一个 `.diff-line.add/.del/.meta` 在其 `.diff-code` 内居中——`clientHeight=400`、`offsetTop=1000`、`offsetHeight=20` 时内层 `scrollTop=810`；仅末尾换行变化时定位到 meta 行；无任何 diff 行时返回 `null` 不滚动；外层部分可见（外层 `clientHeight=500`、块 `offsetTop=490`）时外层 `scrollTop=440`，即目标行在面板视口居中，而不是只保证代码块顶部可见。
 32. 行号（v18）：`.diff-code` 重置 `diff-old`/`diff-new` 计数器，ctx 双推进、del 只推进旧号、add 只推进新号，行号由 `::before` 以「旧 / 新」输出（缺侧 `-`、meta 行空）；`.diff-line` 内无子元素（不新增节点），面板顶部有「行号：修改前 / 修改后」图例。
 33. 概览标尺（v19，已被 v20 取代）：每块一条标尺 + 代码块内滚动的实现已删除（`.diff-code-wrap` / `.diff-ruler*` / `buildDiffRuler(s)` / `clearDiffRulers` / `centerFirstDiffChange`）；保留下来的只有 `.diff-panel-content` 滚动条常显。
+36. 导航按钮位置与符号（v22）：控件是标题行下面独立的一行（index.html 源码断言：关闭按钮所在行结束后、`#diff-panel-sub` 之前出现 `#diff-nav`），按钮文本 ↑/↓，`.diff-nav { justify-content: flex-end }` + `[hidden]{display:none}`，且 `.diff-panel-header h3` 不再带 `flex`。
 35. 代次守卫与符号按钮（v20.1/v21）：同一帧连点 `a.js`→`seg.js` 只有一份 `.diff-nav` 与一条 `.diff-rail`、`.diff-code` 2 个且无 `.diff-code-wrap`、标题为 `seg.js`、刻度 2 个；无布局时刻度轨隐藏；打开后立刻关闭 → 320ms 后面板无 `visible`/`open`、刻度轨与控件都隐藏；重开后控件 `hidden=false`、刻度 1 个。控件位于 `#diff-panel-title` 与 `#diff-close-btn` 之间（index.html 源码断言），按钮文本 ⬆️/⬇️，序号节点即 `nav.counter`；`.diff-nav { margin-left: auto }` + `.diff-nav[hidden] { display: none }` + `.diff-panel-header h3 { flex: 1 1 auto }` 实现右对齐。
 34. 修改刻度轨与上/下一处（v20）：`.diff-code` 无 `max-height` 且 `overflow: hidden`，面板内容是唯一纵向滚动轨道；`centerDiffLine` 按 `code.offsetTop + target.offsetTop` 居中（1120 → `scrollTop=880`），无目标或目标不在块内返回 `null`；`collectDiffHunks` 跨片段按面板顺序收集，连续 del+add 合一处、meta 单独一处、空容器 0 处；`groupHunksForRail` 把 900 处合并为 300 组（≤ `MAX_RAIL_TICKS=400`）且覆盖序号 0–899、混合组标 `mixed`、未超上限不合并；4 处修改（23 行文件改 2 处 + meta-only + 长行换行 + 预算耗尽）→ 恰好 4 个刻度、预算块 0 刻度，`scale=0.25` 下 `top` 为 60/125/155/215px（215px 证明长行换行的 60px 已计入布局坐标），刻度带 `del`/`meta` 类与「第 1/4 处修改」提示；工具条是面板内容第一个子节点，打开即 `1/4` + `scrollTop=100` + 当前处 2 行 `diff-current` + 对应刻度 `.active`；下一处 → `2/4`/`360`；点第 4 个刻度跨片段 → `4/4`/`720`；首末处再点不越界；点 meta 刻度 → 高亮 meta 行/`480`；`scrollTop=700` + `scroll` → 视口 `175px`/`75px`、序号 `3/4`；`clientHeight` 300→600 + `resize` → 刻度按 0.5 重算（`120px`）、`scrollTop` 保持 700、工具条仅一个、序号恢复 `4/4`；`clearDiffNav()` → 工具条移除、刻度轨清空并隐藏、高亮撤销、scroll 监听失效；无修改或全被预算截断 → `buildDiffNav()` 返回 `null`；样式源码断言覆盖旧标尺样式已删、`.diff-rail` 绝对定位 + `[hidden]`、刻度三色 + `mixed` 渐变、视口 `pointer-events: none`、`.diff-nav` 吸顶、`.diff-line.diff-current` 高亮条。
 
 ## 7. 实施进度
 
-- [x] `public/index.html`：`#diff-panel` 面板节点；v21 在标题行加 `#diff-nav`（`#diff-nav-prev` ⬆️ / `#diff-nav-count` / `#diff-nav-next` ⬇️，默认 `hidden`）。
+- [x] `public/index.html`：`#diff-panel` 面板节点；v21 加 `#diff-nav`（`#diff-nav-prev` / `#diff-nav-count` / `#diff-nav-next`，默认 `hidden`），v22 把它从标题行内移到标题行下面独立一行，按钮符号定为 ↑/↓。
 - [x] `public/app.js`：`$diffPanel` 等 DOM 引用。
 - [x] `permission-server.js`：Edit input 补 `replace_all`；三个编辑工具快照执行（v16 起不限快照大小 + sha256 changed 判定，形态判定委托 `classifySnapshot`）+ 回报。
 - [x] `lib/tool-result-reporter.js`：回报模块（状态码检查、413 降级 oversized 重试、流式 hashFile 区分 missing/error、`classifySnapshot` 纯函数：hash 失败/执行后文件缺失（无论执行前是否存在）/读取失败 → snapshotError 且 changed 未知，超预算 → oversized，否则有效快照）。
 - [x] `server.js`：`toolResultCorrelations`（仅审批通过时注册，2h TTL、一次性消费）；`POST /api/tool-result`（toolName/ok/filePath/快照字段强校验，`after` 必须为字符串，snapshotError/oversized 免快照）；`execution`（含 changed、服务端单调 seq）写回日志；SSE `permission-executed`；v12 默认绑定 `HOST ?? "127.0.0.1"`、启动日志打印真实地址、非回环时输出访问边界告警。
 - [x] `public/app.js`：聚合（仅 allow+success 且 changed≠false，基线序 finishedAt→seq）、`orderFileChanges`（按快照连续性重建顺序，重复状态/成环 → orderUnknown）、LCS diff（`splitDiffLines` 行语义 + 末尾换行 meta 行 + 降级标注）、净 Diff 链校验拆段、目录 upsert 渲染（.msg-model 之后，含「顺序未知」态；「分段」仅在 uncovered===0 且多段时标注）、侧栏面板（区分无快照/snapshotError/顺序未知 文案，无快照记录参与时片段降级为「局部快照片段」，v17 起只渲染净 Diff 片段区、不再有逐次明细与懒渲染，单块渲染上限 `MAX_DIFF_RENDER_LINES=12000`、面板级总预算 `MAX_PANEL_RENDER_LINES=20000`（同屏仅此一份），截断原因经 `truncatedBy` 区分并分别提示单块上限／面板预算耗尽；v18 新增 `centerFirstDiffChange` 在 `openDiffPanel` 的 rAF 内把第一处增删行滚到代码区中心，并在有片段时插入行号图例）、SSE 钩子、loadHistory 钩子（含从历史审批重建 permRequestIndex）、补挂机制；v20 新增 `centerDiffLine`（单轨道居中）、`diffLineKind` / `collectDiffHunks` / `groupHunksForRail`（`MAX_RAIL_TICKS=400`）、`buildDiffNav` / `setDiffNavIndex` / `gotoDiffHunk` / `syncDiffNavToScroll` / `rebuildDiffNav` / `clearDiffNav`，`setupDiffPanel` 建 `.diff-rail` 并注册 rAF 合并的 `resize` 重建，删除 `centerFirstDiffChange` 与 v19 的每块标尺函数；v20.1 加 `_diffNavFrame` / `_diffOpenGen` 代次守卫（open 取消旧 rAF、close 递增代次并取消）；v21 改引用 index.html 的 `$diffNav` / `$diffNavPrev` / `$diffNavCount` / `$diffNavNext`，`buildDiffNav` 只切 `hidden`、`clearDiffNav` 只隐藏，按钮监听移到 `setupDiffPanel`。
-- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；v18：`.diff-code`/`.diff-panel-content` 补 `position: relative`，行号用 `counter-reset` + 三类 `counter-increment` + `.diff-line::before`（12ch 定宽 flex 列），`.diff-legend` 图例；v19：滚动条常显（`.diff-code` / `.diff-panel-content` 的 `scrollbar-width` + `::-webkit-scrollbar`）、`.diff-code-wrap` 14px 留白、`.diff-ruler` / `.diff-ruler-mark`（add/del/meta 三色）/ `.diff-ruler-viewport`；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`；v20：`.diff-code` 去掉 `max-height`/`overflow: auto` 与深色滚动条样式（改 `overflow: hidden`）、删除 `.diff-code.has-lines { min-height }` 与 `.diff-code-wrap` / `.diff-ruler*`，`.diff-panel-content` 右内边距 32px，新增 `.diff-rail`（绝对定位 + `[hidden]`）/ `.diff-rail-tick`（add/del/meta/mixed/active）/ `.diff-rail-viewport` / `.diff-nav` / `.diff-nav-btn` / `.diff-nav-count` / `.diff-line.diff-current`；v21：`.diff-nav` 从 sticky 工具条改为标题行内的右对齐控件（`margin-left: auto`、`[hidden]{display:none}`、24×24 符号按钮），`.diff-panel-header h3` 补 `flex: 1 1 auto; min-width: 0`。
+- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；v18：`.diff-code`/`.diff-panel-content` 补 `position: relative`，行号用 `counter-reset` + 三类 `counter-increment` + `.diff-line::before`（12ch 定宽 flex 列），`.diff-legend` 图例；v19：滚动条常显（`.diff-code` / `.diff-panel-content` 的 `scrollbar-width` + `::-webkit-scrollbar`）、`.diff-code-wrap` 14px 留白、`.diff-ruler` / `.diff-ruler-mark`（add/del/meta 三色）/ `.diff-ruler-viewport`；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`；v20：`.diff-code` 去掉 `max-height`/`overflow: auto` 与深色滚动条样式（改 `overflow: hidden`）、删除 `.diff-code.has-lines { min-height }` 与 `.diff-code-wrap` / `.diff-ruler*`，`.diff-panel-content` 右内边距 32px，新增 `.diff-rail`（绝对定位 + `[hidden]`）/ `.diff-rail-tick`（add/del/meta/mixed/active）/ `.diff-rail-viewport` / `.diff-nav` / `.diff-nav-btn` / `.diff-nav-count` / `.diff-line.diff-current`；v21：`.diff-nav` 从 sticky 工具条改为右对齐控件（`[hidden]{display:none}`、24×24 符号按钮）；v22：控件独占标题下一行，`justify-content: flex-end` + `flex-shrink: 0` + `padding: 0 16px 8px` + `background: var(--chat-bg)`，按钮 `font-size: 14px` / `color: var(--text)`，并回退 v21 给 `.diff-panel-header h3` 加的 `flex`。
 - [x] 测试：`test-file-diff-display.js` 179 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾、v18 打开即居中定位第一处修改（含外层视口按目标行居中、meta-only 定位）与行号计数器/图例/零额外节点；v19 `centerDiffLine` 抽出复用、`collectDiffHunks` / `buildDiffRuler(s)` / `rebuildDiffRulers` / `clearDiffRulers` 概览标尺与视口指示器、open/close/resize 三处生命周期钩子；v20 单一滚动轨道居中、修改处归组与刻度上界、刻度轨定位/着色/点击跳转、上一处-下一处与序号同步、meta 与长行换行片段、预算截断不画刻度、resize 重建保留 `scrollTop`、`clearDiffNav` 清理，以及 `.diff-code` 无 `max-height`/旧标尺样式已删等样式断言；v20.1 同一帧连续打开与「打开后立即关闭」的代次守卫回归；v21 符号按钮 ⬆️/⬇️、控件位于标题行且右对齐、`hidden` 生命周期与 index.html 源码断言）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 29 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。

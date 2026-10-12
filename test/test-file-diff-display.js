@@ -89,7 +89,7 @@ const dom = new JSDOM(
 {
   const navFixture = dom.window.document.getElementById("diff-nav");
   navFixture.className = "diff-nav";
-  for (const [id, cls, text] of [["diff-nav-prev", "diff-nav-btn", "⬆️"], ["diff-nav-count", "diff-nav-count", "0/0"], ["diff-nav-next", "diff-nav-btn", "⬇️"]]) {
+  for (const [id, cls, text] of [["diff-nav-prev", "diff-nav-btn", "↑"], ["diff-nav-count", "diff-nav-count", "0/0"], ["diff-nav-next", "diff-nav-btn", "↓"]]) {
     const el = dom.window.document.getElementById(id);
     el.className = cls;
     el.textContent = text;
@@ -381,7 +381,7 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     const toolbar = document.getElementById("diff-nav");
     const toolbarBtns = [...toolbar.querySelectorAll(".diff-nav-btn")].map((b) => b.textContent);
     assert(toolbar.hidden === false, "有修改处时显示标题行右侧的上一处/下一处控件");
-    assert(toolbarBtns.join("/") === "⬆️/⬇️", `两个按钮是上下箭头符号（${toolbarBtns.join("/")}）`);
+    assert(toolbarBtns.join("/") === "↑/↓", `两个按钮是 ↑/↓ 文本箭头（${toolbarBtns.join("/")}）`);
     assert(toolbar.querySelector(".diff-nav-count") === nav.counter, "序号夹在两个箭头按钮之间");
     assert(nav.counter.textContent === "1/4", `打开即定位第一处并显示序号（${nav.counter.textContent}）`);
     assert(navBox.scrollTop === 100, `第一处修改居中（scrollTop ${navBox.scrollTop}，期望 240-(300-20)/2=100）`);
@@ -445,11 +445,11 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(/\.diff-rail \{[^}]*position: absolute;/.test(styleCss) && /\.diff-rail\[hidden\] \{ display: none; \}/.test(styleCss), "刻度轨绝对定位在面板右侧，未构建时不占位");
     assert(/\.diff-rail-tick\.add \{ background: #2ea043; \}/.test(styleCss) && /\.diff-rail-tick\.del \{ background: #f85149; \}/.test(styleCss) && /\.diff-rail-tick\.mixed \{ background: linear-gradient/.test(styleCss), "刻度按新增绿/删除红/混合双色着色");
     assert(/\.diff-rail-viewport \{[^}]*pointer-events: none;/.test(styleCss), "视口指示器不拦截刻度点击");
-    assert(/\.diff-nav \{[^}]*margin-left: auto;/.test(styleCss) && /\.diff-nav\[hidden\] \{ display: none; \}/.test(styleCss), "上一处/下一处控件右对齐，无修改处时不占位");
-    assert(/\.diff-panel-header h3 \{[^}]*flex: 1 1 auto;/.test(styleCss), "文件名占满剩余宽度，把控件挤到右边");
+    assert(/\.diff-nav \{[^}]*justify-content: flex-end;/.test(styleCss) && /\.diff-nav\[hidden\] \{ display: none; \}/.test(styleCss), "上一处/下一处独占一行并右对齐，无修改处时不占位");
+    assert(!/\.diff-panel-header h3 \{[^}]*flex:/.test(styleCss), "控件已移出标题行，标题行不需要为它让位");
     const headerHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-    assert(/<h3 id="diff-panel-title">[\s\S]*?<div id="diff-nav" class="diff-nav" hidden>[\s\S]*?<button id="diff-close-btn"/.test(headerHtml), "控件在标题行里、位于文件名右侧与关闭按钮之间");
-    assert(/id="diff-nav-prev"[^>]*>⬆️<\/button>/.test(headerHtml) && /id="diff-nav-next"[^>]*>⬇️<\/button>/.test(headerHtml), "按钮符号是 ⬆️ / ⬇️");
+    assert(/<button id="diff-close-btn"[\s\S]*?<\/div>\s*<div id="diff-nav" class="diff-nav" hidden>[\s\S]*?<\/div>\s*<div id="diff-panel-sub"/.test(headerHtml), "控件是标题行下面独立的一行，位于路径行之上");
+    assert(/id="diff-nav-prev"[^>]*>↑<\/button>/.test(headerHtml) && /id="diff-nav-next"[^>]*>↓<\/button>/.test(headerHtml), "按钮符号是 ↑ / ↓（文本箭头，不用 emoji）");
     assert(/\.diff-line\.diff-current \{ box-shadow: inset 3px 0 0 #4a6cf7; \}/.test(styleCss), "当前修改处有左侧高亮条");
     assert(/\.diff-panel-content::-webkit-scrollbar \{ width: 12px; \}/.test(styleCss), "面板滚动条常显（macOS 悬浮滚动条看不出进度）");
     delete navBox.clientHeight;

@@ -1739,8 +1739,6 @@ html, body {
   background: var(--chat-bg);
 }
 .diff-panel-header h3 {
-  flex: 1 1 auto;
-  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
@@ -1829,14 +1827,15 @@ html, body {
   border-bottom: 1px solid rgba(74, 108, 247, 0.65);
   pointer-events: none;
 }
-/* 上一处/下一处放在标题行右侧并右对齐，符号按钮比文字按钮省宽度 */
+/* 上一处/下一处独占标题下面一行，右对齐；↑/↓ 用文本箭头，避免 emoji 各平台渲染不一 */
 .diff-nav {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   flex-shrink: 0;
-  margin-left: auto;
-  margin-right: 8px;
+  padding: 0 16px 8px;
+  background: var(--chat-bg);
 }
 .diff-nav[hidden] { display: none; }
 .diff-nav-btn {
@@ -1846,11 +1845,12 @@ html, body {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: white;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
+  color: var(--text);
   cursor: pointer;
 }
-.diff-nav-btn:hover { border-color: #4a6cf7; background: rgba(74, 108, 247, 0.08); }
+.diff-nav-btn:hover { border-color: #4a6cf7; color: #4a6cf7; background: rgba(74, 108, 247, 0.08); }
 .diff-nav-count {
   min-width: 44px;
   text-align: center;
