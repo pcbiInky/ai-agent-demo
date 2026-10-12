@@ -114,6 +114,23 @@ html, body {
   line-height: 1;
   flex-shrink: 0;
 }
+.session-group-header .session-group-add {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  color: var(--text-light);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.session-group-header .session-group-add:hover { color: var(--text); background: var(--chat-bg); }
+.session-group-header .session-group-add:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
 .session-group-header + .session-item,
 .session-group-header ~ .session-item { margin-left: 8px; }
 

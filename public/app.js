@@ -2610,10 +2610,14 @@ function renderStats() {
 // ── 左侧栏：会话列表 ─────────────────────────────────────
 let sessionListLoading = false;
 let sessionListRefreshTimer = null;
-const collapsedSessionGroups = new Set();
+const groupCollapseOverrides = new Map();
+const SESSION_GROUP_DEFAULT_EXPANDED_COUNT = 2;
 const expandedSessionGroups = new Set();
 const SESSION_GROUP_VISIBLE_COUNT = 5;
+const SESSION_GROUP_LIST_VISIBLE_COUNT = 5;
+let sessionGroupListExpanded = false;
 const OTHER_GROUP_KEY = "__other__";
+const GROUP_LIST_MORE_KEY = "__group_list_more__";
 
 function buildSessionGroups(sessions) {
   const groups = new Map();
@@ -2643,8 +2647,7 @@ function buildSessionGroups(sessions) {
   });
 }
 
-function createSessionGroupHeader(group) {
-  const collapsed = collapsedSessionGroups.has(group.key);
+function createSessionGroupHeader(group, collapsed) {
   const header = document.createElement("div");
   header.className = `session-group-header${collapsed ? " collapsed" : ""}`;
   header.title = group.dir || "无工作目录";
@@ -2656,14 +2659,12 @@ function createSessionGroupHeader(group) {
     <span class="session-group-arrow" aria-hidden="true">▾</span>
     <span class="session-group-name">${escapeHtml(group.name)}</span>
     <span class="session-group-count">${group.sessions.length}</span>
+    <span class="session-group-add" role="button" tabindex="0" title="在此目录新建对话" aria-label="在 ${escapeAttribute(group.name)} 分组新建对话">+</span>
   `;
   const toggle = () => {
-    if (collapsedSessionGroups.has(group.key)) {
-      collapsedSessionGroups.delete(group.key);
-    } else {
-      collapsedSessionGroups.add(group.key);
-      expandedSessionGroups.delete(group.key);
-    }
+    const nextCollapsed = !collapsed;
+    groupCollapseOverrides.set(group.key, nextCollapsed);
+    if (nextCollapsed) expandedSessionGroups.delete(group.key);
     loadSessionList();
   };
   header.addEventListener("click", toggle);
@@ -2673,7 +2674,39 @@ function createSessionGroupHeader(group) {
       toggle();
     }
   });
+  const addBtn = header.querySelector(".session-group-add");
+  const createInGroup = (e) => {
+    e.stopPropagation();
+    createSessionInGroup(group);
+  };
+  addBtn.addEventListener("click", createInGroup);
+  addBtn.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      createInGroup(e);
+    }
+  });
   return header;
+}
+
+async function createSessionInGroup(group) {
+  const memberIds = Object.entries(state.characters)
+    .filter(([, cfg]) => !cfg.archived)
+    .map(([, cfg]) => cfg.id);
+  const sessionId = crypto.randomUUID();
+  await fetch("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, memberIds }),
+  });
+  if (group.dir) {
+    await fetch(`/api/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workingDirectory: group.dir }),
+    });
+  }
+  switchSession(sessionId);
 }
 
 function createShowMoreButton(group) {
@@ -2685,6 +2718,21 @@ function createShowMoreButton(group) {
   btn.setAttribute("aria-label", `展开 ${group.name} 分组的剩余对话`);
   const expand = () => {
     expandedSessionGroups.add(group.key);
+    loadSessionList();
+  };
+  btn.addEventListener("click", expand);
+  return btn;
+}
+
+function createShowMoreGroupsButton() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "session-group-more";
+  btn.textContent = "Show more";
+  btn.dataset.groupKey = GROUP_LIST_MORE_KEY;
+  btn.setAttribute("aria-label", "展开剩余会话分组");
+  const expand = () => {
+    sessionGroupListExpanded = true;
     loadSessionList();
   };
   btn.addEventListener("click", expand);
@@ -2825,9 +2873,14 @@ async function loadSessionList() {
 
     const listFocus = captureSessionListFocus();
     $sessionList.innerHTML = "";
-    for (const group of buildSessionGroups(sessions)) {
-      $sessionList.appendChild(createSessionGroupHeader(group));
-      if (collapsedSessionGroups.has(group.key)) continue;
+    const groups = buildSessionGroups(sessions);
+    const visibleGroups = sessionGroupListExpanded ? groups : groups.slice(0, SESSION_GROUP_LIST_VISIBLE_COUNT);
+    for (const [index, group] of visibleGroups.entries()) {
+      const collapsed = groupCollapseOverrides.has(group.key)
+        ? groupCollapseOverrides.get(group.key)
+        : index >= SESSION_GROUP_DEFAULT_EXPANDED_COUNT;
+      $sessionList.appendChild(createSessionGroupHeader(group, collapsed));
+      if (collapsed) continue;
       const expanded = expandedSessionGroups.has(group.key);
       const visible = expanded ? group.sessions : group.sessions.slice(0, SESSION_GROUP_VISIBLE_COUNT);
       for (const s of visible) {
@@ -2836,6 +2889,9 @@ async function loadSessionList() {
       if (!expanded && group.sessions.length > SESSION_GROUP_VISIBLE_COUNT) {
         $sessionList.appendChild(createShowMoreButton(group));
       }
+    }
+    if (!sessionGroupListExpanded && groups.length > SESSION_GROUP_LIST_VISIBLE_COUNT) {
+      $sessionList.appendChild(createShowMoreGroupsButton());
     }
     restoreSessionListFocus(listFocus);
   } catch {
