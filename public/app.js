@@ -1603,16 +1603,21 @@ function refreshFileDiffDirectory(character, messageId) {
   renderFileDiffDirectory(character, messageId, state.messageElements[replyId]);
 }
 
-let _rulerResizeFrame = null;
+let $diffRail = null;
+let _railResizeFrame = null;
 
 function setupDiffPanel() {
   $diffCloseBtn.addEventListener("click", closeDiffPanel);
-  // resize 会连续触发，标尺要按新布局重算，用 rAF 合并成一帧一次
+  $diffRail = document.createElement("div");
+  $diffRail.className = "diff-rail";
+  $diffRail.hidden = true;
+  $diffPanel.appendChild($diffRail);
+  // resize 连续触发，刻度按布局比例定位必须重算；用 rAF 合并成一帧一次
   window.addEventListener("resize", () => {
-    if (_rulerResizeFrame) return;
-    _rulerResizeFrame = requestAnimationFrame(() => {
-      _rulerResizeFrame = null;
-      rebuildDiffRulers();
+    if (_railResizeFrame) return;
+    _railResizeFrame = requestAnimationFrame(() => {
+      _railResizeFrame = null;
+      rebuildDiffNav();
     });
   });
 }
@@ -1679,112 +1684,191 @@ function buildDiffCodeBlock(diff, budget) {
   return body;
 }
 
-// 把指定 diff 行滚到代码区垂直中心；外层再按内层滚动后的目标行位置居中一次，
-// 否则代码块顶部可见、目标行仍在面板视口下方
+// 面板内容是唯一的纵向滚动轨道（代码块不再自己滚），目标行位置 = 代码块偏移 + 行内偏移
 function centerDiffLine(container, target) {
   const code = target?.closest?.(".diff-code");
   if (!container || !target || !code) return null;
-  const lineH = target.offsetHeight || 0;
-  code.scrollTop = Math.max(0, (target.offsetTop || 0) - Math.max(0, ((code.clientHeight || 0) - lineH) / 2));
   const viewH = container.clientHeight || 0;
-  if (viewH > 0) {
-    const wrap = code.parentElement?.classList.contains("diff-code-wrap") ? code.parentElement : null;
-    const baseTop = (wrap ? wrap.offsetTop || 0 : 0) + (code.offsetTop || 0);
-    container.scrollTop = Math.max(0, baseTop + (target.offsetTop || 0) - code.scrollTop - Math.max(0, (viewH - lineH) / 2));
-  }
-  return { code, target };
+  if (viewH <= 0) return { code, target, top: null };
+  const lineH = target.offsetHeight || 0;
+  const top = (code.offsetTop || 0) + (target.offsetTop || 0);
+  container.scrollTop = Math.max(0, top - Math.max(0, (viewH - lineH) / 2));
+  return { code, target, top };
 }
 
-// 打开面板即定位第一处修改：净 Diff 通常以大量上下文开头，不定位就得手动滚动。
-// 末尾换行变化只有 meta 行，也算一处修改。
-function centerFirstDiffChange(container) {
-  const target = container?.querySelector(".diff-line.add, .diff-line.del, .diff-line.meta");
-  if (!target) return null;
-  return centerDiffLine(container, target);
+// 概览刻度轨：把每处修改按内容比例画在面板右侧（含当前视口位置），点击即跳转，
+// 配「上一处 / i/N / 下一处」工具条。上千行上下文里只靠滚动条找不到下一处修改。
+const MAX_RAIL_TICKS = 400;
+
+function diffLineKind(line) {
+  if (line.classList.contains("del")) return "del";
+  if (line.classList.contains("add")) return "add";
+  if (line.classList.contains("meta")) return "meta";
+  return null;
 }
 
-// 概览标尺：把每处修改按内容比例画在代码块右侧（含当前视口位置），点击标记跳到该处。
-// 上千行上下文里只靠滚动条找不到下一处修改，因此不能省略这层导航。
-function collectDiffHunks(code) {
+// 连续的增/删/meta 行算一处修改；跨片段按面板顺序收集，所以跳转天然跨片段
+function collectDiffHunks(container) {
   const hunks = [];
-  let current = null;
-  for (const line of code.querySelectorAll(".diff-line")) {
-    const kind = line.classList.contains("del") ? "del" : line.classList.contains("add") ? "add" : line.classList.contains("meta") ? "meta" : null;
-    if (!kind) { current = null; continue; }
-    if (current) { current.last = line; continue; }
-    current = { kind, first: line, last: line };
-    hunks.push(current);
+  for (const code of container.querySelectorAll(".diff-code.has-lines")) {
+    let current = null;
+    for (const line of code.querySelectorAll(".diff-line")) {
+      const kind = diffLineKind(line);
+      if (!kind) { current = null; continue; }
+      if (current) { current.lines.push(line); current.last = line; continue; }
+      current = { kind, code, first: line, last: line, lines: [line] };
+      hunks.push(current);
+    }
   }
   return hunks;
 }
 
-let _diffRulerCleanups = [];
-
-function clearDiffRulers() {
-  for (const cleanup of _diffRulerCleanups) cleanup();
-  _diffRulerCleanups = [];
-}
-
-function buildDiffRuler(code, container) {
-  const scrollH = code.scrollHeight || 0;
-  const viewH = code.clientHeight || 0;
-  const hunks = collectDiffHunks(code);
-  if (scrollH <= 0 || viewH <= 0 || hunks.length === 0) return null;
-  const scale = viewH / scrollH;
-
-  const ruler = document.createElement("div");
-  ruler.className = "diff-ruler";
-  hunks.forEach((hunk, idx) => {
-    const mark = document.createElement("button");
-    mark.type = "button";
-    mark.className = `diff-ruler-mark ${hunk.kind}`;
-    const top = hunk.first.offsetTop || 0;
-    const bottom = (hunk.last.offsetTop || 0) + (hunk.last.offsetHeight || 0);
-    mark.style.top = `${top * scale}px`;
-    mark.style.height = `${Math.max(3, (bottom - top) * scale)}px`;
-    mark.title = `第 ${idx + 1}/${hunks.length} 处修改，点击定位`;
-    mark.addEventListener("click", () => centerDiffLine(container, hunk.first));
-    ruler.appendChild(mark);
-  });
-
-  const viewport = document.createElement("div");
-  viewport.className = "diff-ruler-viewport";
-  ruler.appendChild(viewport);
-  const syncViewport = () => {
-    const sh = code.scrollHeight || 0;
-    if (sh <= 0) return;
-    viewport.style.top = `${code.scrollTop * scale}px`;
-    viewport.style.height = `${Math.max(8, (code.clientHeight || 0) * scale)}px`;
-  };
-  syncViewport();
-
-  const wrap = document.createElement("div");
-  wrap.className = "diff-code-wrap";
-  code.replaceWith(wrap);
-  wrap.appendChild(code);
-  wrap.appendChild(ruler);
-
-  code.addEventListener("scroll", syncViewport, { passive: true });
-  _diffRulerCleanups.push(() => {
-    code.removeEventListener("scroll", syncViewport);
-    if (wrap.parentElement) wrap.replaceWith(code);
-  });
-  return { wrap, ruler, marks: ruler.querySelectorAll(".diff-ruler-mark").length, viewport, syncViewport };
-}
-
-function buildDiffRulers(container) {
-  const built = [];
-  for (const code of [...container.querySelectorAll(".diff-code.has-lines")]) {
-    const ruler = buildDiffRuler(code, container);
-    if (ruler) built.push(ruler);
+// 交替修改可能产生上千处，刻度节点必须有上界：超限时按顺序合并成等大的组
+function groupHunksForRail(hunks, maxTicks = MAX_RAIL_TICKS) {
+  if (hunks.length <= maxTicks) {
+    return hunks.map((hunk, i) => ({ start: i, end: i, kind: hunk.kind }));
   }
-  return built;
+  const per = Math.ceil(hunks.length / maxTicks);
+  const groups = [];
+  for (let start = 0; start < hunks.length; start += per) {
+    const slice = hunks.slice(start, start + per);
+    const kinds = new Set(slice.map((hunk) => hunk.kind));
+    groups.push({ start, end: start + slice.length - 1, kind: kinds.size === 1 ? slice[0].kind : "mixed" });
+  }
+  return groups;
 }
 
-function rebuildDiffRulers() {
-  clearDiffRulers();
-  if (!$diffPanel.classList.contains("open")) return [];
-  return buildDiffRulers($diffPanelContent);
+let _diffNav = null;
+
+function clearDiffNav() {
+  const nav = _diffNav;
+  _diffNav = null;
+  if (!nav) return;
+  nav.container.removeEventListener("scroll", nav.onScroll);
+  nav.toolbar.remove();
+  if (nav.active) for (const line of nav.active.lines) line.classList.remove("diff-current");
+  nav.rail.innerHTML = "";
+  nav.rail.hidden = true;
+}
+
+function setDiffNavIndex(index) {
+  const nav = _diffNav;
+  if (!nav) return null;
+  const next = Math.max(0, Math.min(nav.hunks.length - 1, index));
+  if (nav.active) for (const line of nav.active.lines) line.classList.remove("diff-current");
+  nav.index = next;
+  nav.active = nav.hunks[next];
+  for (const line of nav.active.lines) line.classList.add("diff-current");
+  nav.counter.textContent = `${next + 1}/${nav.hunks.length}`;
+  nav.ticks.forEach((tick, i) => {
+    const group = nav.groups[i];
+    tick.classList.toggle("active", next >= group.start && next <= group.end);
+  });
+  return next;
+}
+
+function gotoDiffHunk(index) {
+  const nav = _diffNav;
+  if (!nav) return null;
+  const next = Math.max(0, Math.min(nav.hunks.length - 1, index));
+  centerDiffLine(nav.container, nav.hunks[next].first);
+  return setDiffNavIndex(next);
+}
+
+// 滚动时同步当前处序号与视口指示器：以面板视口中线为准，取最后一个已越过中线的修改处
+function syncDiffNavToScroll() {
+  const nav = _diffNav;
+  if (!nav) return;
+  const { container, scale, viewport, tops } = nav;
+  const scrollH = container.scrollHeight || 0;
+  if (scrollH <= 0 || scale <= 0) return;
+  viewport.style.top = `${container.scrollTop * scale}px`;
+  viewport.style.height = `${Math.max(8, (container.clientHeight || 0) * scale)}px`;
+  const middle = container.scrollTop + (container.clientHeight || 0) / 2;
+  let index = 0;
+  for (let i = 0; i < tops.length; i++) {
+    if (tops[i] > middle) break;
+    index = i;
+  }
+  if (index !== nav.index) setDiffNavIndex(index);
+}
+
+function buildDiffNav(restoreScrollTop = null) {
+  clearDiffNav();
+  const container = $diffPanelContent;
+  const rail = $diffRail;
+  const hunks = collectDiffHunks(container);
+  if (hunks.length === 0) { rail.hidden = true; return null; }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "diff-nav";
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "diff-nav-btn";
+  prevBtn.textContent = "上一处";
+  const counter = document.createElement("span");
+  counter.className = "diff-nav-count";
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "diff-nav-btn";
+  nextBtn.textContent = "下一处";
+  toolbar.append(prevBtn, counter, nextBtn);
+  // 工具条会改变下方内容的偏移，必须先插入再度量
+  container.prepend(toolbar);
+
+  const scrollH = container.scrollHeight || 0;
+  const viewH = container.clientHeight || 0;
+  const scale = scrollH > 0 && viewH > 0 ? viewH / scrollH : 0;
+  rail.style.top = `${container.offsetTop || 0}px`;
+  rail.style.height = `${viewH}px`;
+  rail.innerHTML = "";
+  rail.hidden = scale <= 0;
+
+  const tops = hunks.map((hunk) => (hunk.code.offsetTop || 0) + (hunk.first.offsetTop || 0));
+  const groups = groupHunksForRail(hunks);
+  const ticks = groups.map((group) => {
+    const last = hunks[group.end];
+    const bottom = (last.code.offsetTop || 0) + (last.last.offsetTop || 0) + (last.last.offsetHeight || 0);
+    const tick = document.createElement("button");
+    tick.type = "button";
+    tick.className = `diff-rail-tick ${group.kind}`;
+    tick.style.top = `${tops[group.start] * scale}px`;
+    tick.style.height = `${Math.max(3, (bottom - tops[group.start]) * scale)}px`;
+    tick.title = group.start === group.end
+      ? `第 ${group.start + 1}/${hunks.length} 处修改，点击定位`
+      : `第 ${group.start + 1}–${group.end + 1} 处修改（共 ${hunks.length} 处，刻度已合并），点击定位`;
+    tick.addEventListener("click", () => gotoDiffHunk(group.start));
+    rail.appendChild(tick);
+    return tick;
+  });
+  const viewport = document.createElement("div");
+  viewport.className = "diff-rail-viewport";
+  rail.appendChild(viewport);
+
+  let frame = null;
+  const onScroll = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = null; syncDiffNavToScroll(); });
+  };
+  container.addEventListener("scroll", onScroll, { passive: true });
+
+  _diffNav = { container, rail, toolbar, prevBtn, nextBtn, counter, viewport, hunks, groups, ticks, tops, scale, onScroll, index: -1, active: null };
+  prevBtn.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) - 1));
+  nextBtn.addEventListener("click", () => gotoDiffHunk((_diffNav?.index ?? 0) + 1));
+
+  if (restoreScrollTop != null) {
+    container.scrollTop = restoreScrollTop;
+    syncDiffNavToScroll();
+  } else {
+    gotoDiffHunk(0);
+  }
+  return _diffNav;
+}
+
+// 面板宽度/高度变化会改变换行与总高度，刻度比例必须重算，但要把用户留在原处
+function rebuildDiffNav() {
+  if (!$diffPanel.classList.contains("open") || !_diffNav) return null;
+  return buildDiffNav($diffPanelContent.scrollTop);
 }
 
 function openDiffPanel(character, messageId, filePath) {
@@ -1795,7 +1879,7 @@ function openDiffPanel(character, messageId, filePath) {
   }
   $diffPanelTitle.textContent = filePath.split("/").pop();
   $diffPanelSub.textContent = filePath;
-  clearDiffRulers();
+  clearDiffNav();
   $diffPanelContent.innerHTML = "";
 
   const summary = summarizeFileChanges(changes);
@@ -1859,9 +1943,8 @@ function openDiffPanel(character, messageId, filePath) {
 
   $diffPanel.classList.add("open");
   requestAnimationFrame(() => {
-    // 标尺按布局比例定位，必须等面板 display:flex 之后才有 scrollHeight/clientHeight
-    buildDiffRulers($diffPanelContent);
-    centerFirstDiffChange($diffPanelContent);
+    // 刻度按布局比例定位，必须等面板 display:flex 之后才有 scrollHeight/clientHeight
+    buildDiffNav();
     $diffPanel.classList.add("visible");
   });
 }
@@ -1871,7 +1954,7 @@ function closeDiffPanel() {
   if (_closeDiffTimer) clearTimeout(_closeDiffTimer);
   _closeDiffTimer = setTimeout(() => {
     $diffPanel.classList.remove("open");
-    clearDiffRulers();
+    clearDiffNav();
     _closeDiffTimer = null;
   }, 250);
 }
