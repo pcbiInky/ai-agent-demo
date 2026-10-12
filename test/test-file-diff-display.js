@@ -21,6 +21,7 @@ function assert(condition, label) {
 }
 
 const appJs = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+const styleCss = fs.readFileSync(path.join(__dirname, "..", "public", "style.css"), "utf8");
 
 const IDS = [
   "messages", "message-input", "send-btn", "chat-container", "jump-to-latest-btn",
@@ -453,6 +454,19 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(manyText.includes("未渲染该块"), "预算耗尽后的片段明示未渲染");
     assert(manyPanel.querySelectorAll(".diff-change-block").length === 0, "多段场景同样不渲染逐次操作明细");
     assert(!manyText.includes("逐次操作明细"), "多段场景不再提示可按需展开明细");
+
+    // ── 占位样式：预算耗尽的空块不得撑出最小高度 ──
+    const manyCodes = [...manyPanel.querySelectorAll(".diff-code")];
+    const emptyCodes = manyCodes.filter((el) => el.querySelectorAll(".diff-line").length === 0);
+    assert(manyCodes.length === segCount, `每段各有一个 diff 代码块（实际 ${manyCodes.length}）`);
+    assert(emptyCodes.length === 35, `预算耗尽的空块 35 个（实际 ${emptyCodes.length}）`);
+    assert(emptyCodes.every((el) => !el.classList.contains("has-lines")), "空块不带 has-lines，不占最小高度");
+    assert(manyCodes.length - emptyCodes.length === 25 && manyCodes.filter((el) => el.querySelectorAll(".diff-line").length > 0).every((el) => el.classList.contains("has-lines")), "有行的块都带 has-lines");
+    const baseCodeRule = styleCss.match(/\.diff-code \{[^}]*\}/)?.[0] || "";
+    assert(!baseCodeRule.includes("min-height"), `通用 .diff-code 不设 min-height：${baseCodeRule.replace(/\s+/g, " ")}`);
+    assert(/\.diff-code\.has-lines \{ min-height: 240px; \}/.test(styleCss), "最小高度只作用于有 diff 行的块");
+    const zeroBudgetBlock = dom.window.buildDiffCodeBlock(cld("", "a\nb\nc"), { left: 0 });
+    assert(zeroBudgetBlock.renderedLines === 0 && !zeroBudgetBlock.classList.contains("has-lines"), "预算为 0 的块不渲染行也不带 has-lines");
 
     // ── 截断原因区分：单块 15000 行、面板总预算未耗尽 ──
     const twoK = Array.from({ length: 15000 }, (_, k) => `L${k}`).join("\n");

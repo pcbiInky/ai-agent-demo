@@ -1648,6 +1648,8 @@ function buildDiffCodeBlock(diff, budget) {
   }
   if (budget) budget.left -= shown;
   body.renderedLines = shown;
+  // 预算耗尽的块只剩一行提示，给它撑最小高度会堆出大片空白滚动区
+  if (shown > 0) body.classList.add("has-lines");
   if (diff.lines.length > shown) {
     // 单块上限与面板预算耗尽是两种不同原因，提示必须分开说
     const blockOnly = Math.min(diff.lines.length, MAX_DIFF_RENDER_LINES);

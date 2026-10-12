@@ -1773,12 +1773,12 @@ html, body {
   border-radius: 8px;
   overflow: auto;
   max-height: calc(100vh - 200px);
-  min-height: 240px;
   background: #0d1117;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.55;
 }
+.diff-code.has-lines { min-height: 240px; }
 .diff-line {
   padding: 0 10px;
   white-space: pre-wrap;

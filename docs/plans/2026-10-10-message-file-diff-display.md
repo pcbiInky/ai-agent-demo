@@ -20,7 +20,8 @@
 - v14 修复 YYF 第八轮复审指出的截断提示归因错误（单块 1500 行上限被说成"面板总预算已用尽"，并承诺明细可看到实际同样被截断的尾部）；
 - v15 修复 YYF 第九轮复审指出的混合场景矛盾文案（单块截断汇总里断言"面板总预算未用尽"，与同屏的面板总上限提示冲突）。
 - v16 按铲屎官要求暂时移除 80KB 快照预算，观察大文件 Diff 的实际响应；仅 `/api/tool-result` 的传输请求体上限改为 100MB，LCS 计算上限从 25 万放宽到 1000 万单元格，单块渲染上限从 1500 行提高到 5000 行，面板每区 6000 行总预算保留。
-- v17 按铲屎官要求删除面板中的「逐次操作明细」区，并放大净 Diff 窗口（面板宽 560→920px、代码区高度 420px→`calc(100vh - 200px)`）；因同屏只剩片段区一份预算，单块渲染上限 5000→12000 行、面板总预算 6000→20000 行。
+- v17 按铲屎官要求删除面板中的「逐次操作明细」区，并放大净 Diff 窗口（面板宽 560→920px、代码区高度 420px→`calc(100vh - 200px)`）；因同屏只剩片段区一份预算，单块渲染上限 5000→12000 行、面板总预算 6000→20000 行；
+- v17.1 修复 YYF 复审指出的 P2 占位问题（`min-height` 只作用于有 diff 行的块，预算耗尽的空块不再各占 240px）。
 
 ## v17 变更：面板只保留净 Diff
 
@@ -28,10 +29,11 @@
 
 - `openDiffPanel` 不再渲染明细区：删除 `逐次操作明细 · N 条` 标题、`<details class="diff-change-block">` 懒渲染分支与 `detailBudget`；面板内容由片段标签 + diff 代码块 + 提示组成。`summarizeFileChanges` 的返回值随之不再携带 `ordered`（仅内部用于排序与 uncovered 计数）。
 - 明细区消失后，面板同屏只剩片段区一份预算，因此上调：`MAX_DIFF_RENDER_LINES` 5000→12000（净 Diff 单段可见行数 2.4 倍）、`MAX_PANEL_RENDER_LINES` 6000→20000。同屏 `.diff-line` 上界由 12000（两份 6000）变为 20000。
-- 面板尺寸放大：`.diff-panel` 宽 560px→920px（`max-width: 96vw`），`.diff-code` `max-height` 420px→`calc(100vh - 200px)` 并加 `min-height: 240px`；删除已无引用的 `.diff-change-block` / `.diff-change-head` / `.diff-tool-badge` / `.diff-change-index` / `.diff-change-time` 样式。
+- 面板尺寸放大：`.diff-panel` 宽 560px→920px（`max-width: 96vw`），`.diff-code` `max-height` 420px→`calc(100vh - 200px)`；删除已无引用的 `.diff-change-block` / `.diff-change-head` / `.diff-tool-badge` / `.diff-change-index` / `.diff-change-time` 样式。
+- v17.1（YYF 复审 P2）：`min-height: 240px` 从通用 `.diff-code` 移到 `.diff-code.has-lines`，`buildDiffCodeBlock` 仅在 `shown > 0` 时加 `has-lines` 类。否则预算耗尽、只剩一行「未渲染该块」提示的片段也会各占 240px（60 段场景 35 个空块 ≈ 8400px 空白滚动区）。
 - 文案同步去掉对明细的引导与承诺：面板总预算提示不再说「逐次操作明细另有独立预算，可按需展开」，单块截断汇总不再说「被截去的尾部在逐次操作明细中同样不会显示」，无快照提示不再说「下方明细顺序仅为提示」。
 - **代价（明示）**：顺序未知（`orderUnknown`）与无快照记录的场景，此前还能靠明细看到单条 before/after，现在面板只给出文字结论，不再有任何逐条内容可看；被单块/面板预算截掉的尾部同样无处可看。
-- 回归用例：面板全文不含「逐次操作明细」、无 `.diff-change-block` 节点；单块 15000 行 → 渲染 12000 且归因为单块上限；60 段 × 800 行 → 面板恰 20000 行、35/60 片段未完整显示；混合场景（13000 + 3000×4 行）→ 面板 20000 行、`2/5` 面板截断与 `1/5` 单块截断并存。
+- 回归用例：面板全文不含「逐次操作明细」、无 `.diff-change-block` 节点；单块 15000 行 → 渲染 12000 且归因为单块上限；60 段 × 800 行 → 面板恰 20000 行、35/60 片段未完整显示；混合场景（13000 + 3000×4 行）→ 面板 20000 行、`2/5` 面板截断与 `1/5` 单块截断并存；60 段场景中 35 个空块不带 `has-lines`、25 个有行的块都带，通用 `.diff-code` 规则不含 `min-height`，`{ left: 0 }` 的块 `renderedLines=0` 且无 `has-lines`。
 
 ## v16 试用：放开编辑快照的 80KB 预算
 
@@ -284,6 +286,7 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 27. 多段面板总预算：同文件 60 段互不连续快照链（每段 400 行全量替换 → 每段 800 条 diff 行，合计 48000 行）→ 面板 `.diff-line` 恰为 20000、60 个片段标签全部保留、提示含「片段区已达到面板渲染总行数上限 20000」与「35/60 个片段未完整显示」、被跳过的块含「未渲染该块」，且不含任何明细相关文案。
 28. 截断原因归因：单块 15000 行且面板总预算未耗尽 → `renderedLines=12000`、`budget.left=8000`、`truncatedBy="block"`，提示为「单个 diff 块最多渲染 12000 行」且不出现「面板渲染总行数上限」；面板汇总为「1/1 个片段由单块渲染上限 12000 行截断」，不再引导去看逐次明细。
 29. 混合截断原因：5 段（首段 13000 行、后四段各 3000 行）→ `truncatedBy` 依次 `block, null, null, panel, panel`，面板 20000 行；两条汇总并存且不矛盾（「2/5 个片段未完整显示」与「1/5 个片段由单块渲染上限 12000 行截断」，不出现「面板总预算未用尽」）。
+30. 空块占位样式（v17.1）：60 段场景里 35 个预算耗尽的空块不带 `has-lines`（不撑 240px 最小高度），25 个有行的块都带；通用 `.diff-code` 规则不含 `min-height`；`buildDiffCodeBlock(diff, { left: 0 })` → `renderedLines=0` 且无 `has-lines`。
 
 ## 7. 实施进度
 
@@ -293,5 +296,5 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 - [x] `lib/tool-result-reporter.js`：回报模块（状态码检查、413 降级 oversized 重试、流式 hashFile 区分 missing/error、`classifySnapshot` 纯函数：hash 失败/执行后文件缺失（无论执行前是否存在）/读取失败 → snapshotError 且 changed 未知，超预算 → oversized，否则有效快照）。
 - [x] `server.js`：`toolResultCorrelations`（仅审批通过时注册，2h TTL、一次性消费）；`POST /api/tool-result`（toolName/ok/filePath/快照字段强校验，`after` 必须为字符串，snapshotError/oversized 免快照）；`execution`（含 changed、服务端单调 seq）写回日志；SSE `permission-executed`；v12 默认绑定 `HOST ?? "127.0.0.1"`、启动日志打印真实地址、非回环时输出访问边界告警。
 - [x] `public/app.js`：聚合（仅 allow+success 且 changed≠false，基线序 finishedAt→seq）、`orderFileChanges`（按快照连续性重建顺序，重复状态/成环 → orderUnknown）、LCS diff（`splitDiffLines` 行语义 + 末尾换行 meta 行 + 降级标注）、净 Diff 链校验拆段、目录 upsert 渲染（.msg-model 之后，含「顺序未知」态；「分段」仅在 uncovered===0 且多段时标注）、侧栏面板（区分无快照/snapshotError/顺序未知 文案，无快照记录参与时片段降级为「局部快照片段」，v17 起只渲染净 Diff 片段区、不再有逐次明细与懒渲染，单块渲染上限 `MAX_DIFF_RENDER_LINES=12000`、面板级总预算 `MAX_PANEL_RENDER_LINES=20000`（同屏仅此一份），截断原因经 `truncatedBy` 区分并分别提示单块上限／面板预算耗尽）、SSE 钩子、loadHistory 钩子（含从历史审批重建 permRequestIndex）、补挂机制。
-- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`、`min-height: 240px`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
-- [x] 测试：`test-file-diff-display.js` 89 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。
+- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
+- [x] 测试：`test-file-diff-display.js` 96 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。
