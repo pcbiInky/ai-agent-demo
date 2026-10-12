@@ -2662,6 +2662,7 @@ function createSessionGroupHeader(group) {
       collapsedSessionGroups.delete(group.key);
     } else {
       collapsedSessionGroups.add(group.key);
+      expandedSessionGroups.delete(group.key);
     }
     loadSessionList();
   };
