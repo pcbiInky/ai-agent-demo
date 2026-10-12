@@ -313,6 +313,46 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(/\.diff-line \{[^}]*display: flex;/.test(styleCss) && /\.diff-line::before \{[^}]*width: 12ch;/.test(styleCss), "行号是定宽 flex 列，正文换行不会挤到行号下方");
     assert(/\.diff-code \{[^}]*position: relative;/.test(styleCss) && /\.diff-panel-content \{[^}]*position: relative;/.test(styleCss), "offsetTop 以代码块/面板内容为基准，居中计算才有确定参照");
 
+    // ── 概览标尺：按内容比例标记每处修改、点击跳转、显示当前视口 ──
+    const rulerBox = document.createElement("div");
+    const before23 = Array.from({ length: 23 }, (_, k) => `c${k}`).join("\n");
+    const after23 = Array.from({ length: 23 }, (_, k) => (k === 10 || k === 22 ? `x${k}` : `c${k}`)).join("\n");
+    const rulerCode = dom.window.buildDiffCodeBlock(dom.window.computeLineDiff(before23, after23));
+    rulerBox.appendChild(rulerCode);
+    const rulerLines = [...rulerCode.querySelectorAll(".diff-line")];
+    assert(rulerLines.length === 25, `两处修改共 25 行 diff（实际 ${rulerLines.length}）`);
+    rulerLines.forEach((el, i) => {
+      Object.defineProperty(el, "offsetTop", { value: i * 20, configurable: true });
+      Object.defineProperty(el, "offsetHeight", { value: 20, configurable: true });
+    });
+    Object.defineProperty(rulerCode, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(rulerCode, "clientHeight", { value: 250, configurable: true });
+    const ruler = dom.window.buildDiffRuler(rulerCode, rulerBox);
+    assert(!!ruler && ruler.marks === 2, `两处修改聚合为 2 个标记（实际 ${ruler?.marks}）`);
+    assert(rulerCode.parentElement.classList.contains("diff-code-wrap"), "代码块被包进 .diff-code-wrap，标尺是其兄弟节点");
+    assert(rulerCode.parentElement.querySelector(".diff-ruler") === ruler.ruler, "标尺挂在 wrap 内，不随内容滚动");
+    const marks = [...ruler.ruler.querySelectorAll(".diff-ruler-mark")];
+    assert(marks[0].style.top === "100px" && marks[0].style.height === "20px", `第一处标记按内容比例定位（top ${marks[0].style.top}，height ${marks[0].style.height}）`);
+    assert(marks[1].style.top === "230px", `第二处标记定位在 460×250/500=230px（实际 ${marks[1].style.top}）`);
+    assert(marks[0].classList.contains("del") && marks[1].classList.contains("del"), "标记按该处首行类型着色");
+    assert(marks[1].title.includes("第 2/2 处修改"), `标记给出序号提示：「${marks[1].title}」`);
+    assert(ruler.viewport.style.top === "0px" && ruler.viewport.style.height === "125px", `视口指示器初始覆盖 250×250/500=125px（top ${ruler.viewport.style.top}，height ${ruler.viewport.style.height}）`);
+    marks[1].click();
+    assert(rulerCode.scrollTop === 345, `点击第二处标记后该行居中（scrollTop ${rulerCode.scrollTop}，期望 460-(250-20)/2=345）`);
+    rulerCode.scrollTop = 100;
+    rulerCode.dispatchEvent(new dom.window.Event("scroll"));
+    assert(ruler.viewport.style.top === "50px", `滚动时视口指示器跟随（top ${ruler.viewport.style.top}，期望 100×0.5=50px）`);
+    dom.window.clearDiffRulers();
+    assert(rulerCode.parentElement === rulerBox && rulerBox.querySelectorAll(".diff-ruler").length === 0, "清理后拆掉 wrap 与标尺，代码块回到原位");
+
+    const noChangeBox = document.createElement("div");
+    noChangeBox.appendChild(dom.window.buildDiffCodeBlock(dom.window.computeLineDiff("a", "a")));
+    assert(dom.window.buildDiffRuler(noChangeBox.firstElementChild, noChangeBox) === null, "无修改（无内容变化）时不生成标尺");
+    assert(/\.diff-code::-webkit-scrollbar \{ width: 12px; height: 12px; \}/.test(styleCss), "代码区滚动条常显（macOS 默认悬浮滚动条看不出进度）");
+    assert(/\.diff-code-wrap \{[^}]*position: relative;/.test(styleCss) && /\.diff-ruler \{[^}]*position: absolute;/.test(styleCss), "标尺绝对定位在代码块右侧，不占正文宽度");
+    assert(/\.diff-ruler-mark\.add \{ background: #2ea043; \}/.test(styleCss) && /\.diff-ruler-mark\.del \{ background: #f85149; \}/.test(styleCss), "标记按增/删着色");
+    assert(/\.diff-ruler-viewport \{[^}]*pointer-events: none;/.test(styleCss), "视口指示器不拦截标记点击");
+
     // 拆段文件：两段净 Diff + 范围外修改标注
     document.getElementById("diff-close-btn").click();
     await sleep(300);

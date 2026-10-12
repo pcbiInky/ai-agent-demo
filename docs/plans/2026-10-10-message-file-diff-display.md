@@ -1,8 +1,8 @@
-# 消息内文件修改 Diff 展示方案（v18，行号 + 打开即定位第一处修改）
+# 消息内文件修改 Diff 展示方案（v19，滚动条常显 + 概览标尺导航）
 
 日期：2026-10-10
 作者：马哥（qodercn）
-状态：v18 已实施（浏览器实测待铲屎官确认）
+状态：v19 已实施（浏览器实测待铲屎官确认）
 变更记录：
 - v1 纯前端聚合方案；
 - v2 增加执行结果回报链路（YYF 认可方向，提出 5 点修订）；
@@ -24,6 +24,20 @@
 - v17.1 修复 YYF 复审指出的 P2 占位问题（`min-height` 只作用于有 diff 行的块，预算耗尽的空块不再各占 240px）。
 - v18 按铲屎官要求：打开面板自动把第一处增删行滚到代码区垂直中心，并为每行显示「修改前 / 修改后」行号（CSS 计数器实现，不增加 DOM 节点）；
 - v18.1 修复 YYF 复审指出的 P2 定位缺口（外层滚动改为让**目标行**在面板视口居中，不再只看代码块顶部是否可见；仅末尾换行变化时把 meta 行也算作第一处修改）。
+- v19 按铲屎官要求：代码区滚动条常显，并在滚动条旁加 VSCode 式概览标尺——按内容比例标出每处修改（可点击跳转）与当前视口位置。
+
+## v19 变更：滚动条常显 + 概览标尺（修改位置导航）
+
+**需求（铲屎官）**：尺寸合适，但看完一处修改找不到下一处；希望滚动条显示出来，并像 VSCode 那样在滚动条处标记有修改的位置。
+
+- **滚动条常显**：macOS 默认是悬浮滚动条，静止时看不见，无法判断还剩多少内容。给 `.diff-code` 与 `.diff-panel-content` 显式画滚动条：`scrollbar-width: thin` + `scrollbar-color`（Firefox），`::-webkit-scrollbar{width:12px}` + track/thumb（Chrome/Safari，同时强制切回经典常驻滚动条）。代码区用深色（`#4b5563` on `#161b22`），面板用浅色。
+- **概览标尺**：新增 `collectDiffHunks(code)`（连续的 add/del/meta 行聚为一处修改）、`buildDiffRuler(code, container)`、`buildDiffRulers(container)`、`rebuildDiffRulers()`、`clearDiffRulers()`。标尺是代码块的兄弟节点：`buildDiffRuler` 把 `.diff-code` 包进 `.diff-code-wrap`（`position: relative; padding-right: 14px`），标尺 `.diff-ruler` 绝对定位在右侧 10px 宽的条带里，因此不随内容滚动、也不压住代码块自己的滚动条（滚动条在 14px 留白的左侧）。
+- **标记与视口**：每处修改一个 `.diff-ruler-mark`（`<button type="button">`，按该处首行类型着色：add 绿 / del 红 / meta 黄），`top = lineOffsetTop × clientHeight / scrollHeight`、`height = max(3px, 该处高度 × 同比例)`，`title` 为「第 i/N 处修改，点击定位」，点击调用 `centerDiffLine(container, 该处首行)`（与打开时定位共用同一套居中逻辑）。另有 `.diff-ruler-viewport` 指示当前视口（`top = scrollTop × scale`、`height = max(8px, clientHeight × scale)`），由 `code` 的 `scroll` 事件（passive）驱动，`pointer-events: none` 以免挡住标记点击。
+- **时机与清理**：标尺依赖布局，必须在 `openDiffPanel` 的 `requestAnimationFrame` 里、`centerFirstDiffChange` 之前构建；`openDiffPanel` 开头与 `closeDiffPanel` 收尾都调用 `clearDiffRulers()`（移除 scroll 监听并把 `.diff-code` 从 wrap 里拆回来）；`setupDiffPanel` 注册 `window.resize` → `rebuildDiffRulers()`，因为标记是按构建时的 `clientHeight` 换算成 px 的，窗口变化后必须重算。无布局（jsdom / `scrollHeight === 0`）或无修改行时不生成标尺。
+- **居中逻辑重构**：`centerFirstDiffChange` 拆出 `centerDiffLine(container, target)`，外层基准从 `code.offsetTop` 改为 `wrap.offsetTop + code.offsetTop`（有 wrap 时 `code.offsetTop` 以 wrap 为参照），无 wrap 时行为与 v18.1 一致。
+- **代价**：每个有行的代码块多一个 wrap + 一个标尺容器 + 每处修改一个按钮节点（远小于行节点数量级）；每个块一个 `scroll` 监听，只在滚动该块时触发。
+- 回归用例：23 行文件改第 10、22 行 → 25 行 diff 聚为 2 个标记；stub `scrollHeight=500 / clientHeight=250` 后标记 `top=100px/height=20px` 与 `top=230px`；标记带 `del` 类与「第 2/2 处修改」提示；视口指示器初始 `top=0/height=125px`；点击第二个标记 → `scrollTop=345`（460-(250-20)/2）；`scrollTop=100` + 派发 `scroll` → 视口 `top=50px`；`clearDiffRulers()` 后代码块回到原父节点且无 `.diff-ruler`；「无内容变化」块返回 `null`；样式源码断言覆盖 `::-webkit-scrollbar` 常显、wrap/标尺定位、标记配色、视口 `pointer-events: none`。
+- **未验证项**：真实浏览器里滚动条观感、14px 留白是否够、标尺与滚动条并排的实际视觉效果，以及窗口缩放后重建是否及时，仍需铲屎官确认。
 
 ## v18 变更：行号与打开即定位第一处修改
 
@@ -303,6 +317,7 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 30. 空块占位样式（v17.1）：60 段场景里 35 个预算耗尽的空块不带 `has-lines`（不撑 240px 最小高度），25 个有行的块都带；通用 `.diff-code` 规则不含 `min-height`；`buildDiffCodeBlock(diff, { left: 0 })` → `renderedLines=0` 且无 `has-lines`。
 31. 打开即定位（v18/v18.1）：面板第一个 `.diff-line.add/.del/.meta` 在其 `.diff-code` 内居中——`clientHeight=400`、`offsetTop=1000`、`offsetHeight=20` 时内层 `scrollTop=810`；仅末尾换行变化时定位到 meta 行；无任何 diff 行时返回 `null` 不滚动；外层部分可见（外层 `clientHeight=500`、块 `offsetTop=490`）时外层 `scrollTop=440`，即目标行在面板视口居中，而不是只保证代码块顶部可见。
 32. 行号（v18）：`.diff-code` 重置 `diff-old`/`diff-new` 计数器，ctx 双推进、del 只推进旧号、add 只推进新号，行号由 `::before` 以「旧 / 新」输出（缺侧 `-`、meta 行空）；`.diff-line` 内无子元素（不新增节点），面板顶部有「行号：修改前 / 修改后」图例。
+33. 概览标尺（v19）：`.diff-code` 与 `.diff-panel-content` 滚动条常显（`::-webkit-scrollbar` 12px + `scrollbar-width: thin`）；每个有行的代码块被包进 `.diff-code-wrap`，右侧 10px 条带内每处修改一个可点击标记（按内容比例定位、按 add/del/meta 着色、`title` 给出「第 i/N 处修改」），点击后该处首行在代码区居中；`.diff-ruler-viewport` 随 `scroll` 事件更新；`clearDiffRulers()` 拆 wrap 并移除监听；`window.resize` 触发 `rebuildDiffRulers()`；无修改或无布局（`scrollHeight === 0`）时不生成标尺。
 
 ## 7. 实施进度
 
@@ -312,5 +327,5 @@ toolResultCorrelations: Map<requestId, { browserSessionId, character, toolName, 
 - [x] `lib/tool-result-reporter.js`：回报模块（状态码检查、413 降级 oversized 重试、流式 hashFile 区分 missing/error、`classifySnapshot` 纯函数：hash 失败/执行后文件缺失（无论执行前是否存在）/读取失败 → snapshotError 且 changed 未知，超预算 → oversized，否则有效快照）。
 - [x] `server.js`：`toolResultCorrelations`（仅审批通过时注册，2h TTL、一次性消费）；`POST /api/tool-result`（toolName/ok/filePath/快照字段强校验，`after` 必须为字符串，snapshotError/oversized 免快照）；`execution`（含 changed、服务端单调 seq）写回日志；SSE `permission-executed`；v12 默认绑定 `HOST ?? "127.0.0.1"`、启动日志打印真实地址、非回环时输出访问边界告警。
 - [x] `public/app.js`：聚合（仅 allow+success 且 changed≠false，基线序 finishedAt→seq）、`orderFileChanges`（按快照连续性重建顺序，重复状态/成环 → orderUnknown）、LCS diff（`splitDiffLines` 行语义 + 末尾换行 meta 行 + 降级标注）、净 Diff 链校验拆段、目录 upsert 渲染（.msg-model 之后，含「顺序未知」态；「分段」仅在 uncovered===0 且多段时标注）、侧栏面板（区分无快照/snapshotError/顺序未知 文案，无快照记录参与时片段降级为「局部快照片段」，v17 起只渲染净 Diff 片段区、不再有逐次明细与懒渲染，单块渲染上限 `MAX_DIFF_RENDER_LINES=12000`、面板级总预算 `MAX_PANEL_RENDER_LINES=20000`（同屏仅此一份），截断原因经 `truncatedBy` 区分并分别提示单块上限／面板预算耗尽；v18 新增 `centerFirstDiffChange` 在 `openDiffPanel` 的 rAF 内把第一处增删行滚到代码区中心，并在有片段时插入行号图例）、SSE 钩子、loadHistory 钩子（含从历史审批重建 permRequestIndex）、补挂机制。
-- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；v18：`.diff-code`/`.diff-panel-content` 补 `position: relative`，行号用 `counter-reset` + 三类 `counter-increment` + `.diff-line::before`（12ch 定宽 flex 列），`.diff-legend` 图例；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
-- [x] 测试：`test-file-diff-display.js` 112 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾、v18 打开即居中定位第一处修改（含外层视口按目标行居中、meta-only 定位）与行号计数器/图例/零额外节点）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。
+- [x] `public/style.css`：目录、侧滑面板（v17：宽 920px / `max-width: 96vw`，`.diff-code` `max-height: calc(100vh - 200px)`，`min-height: 240px` 仅作用于 `.diff-code.has-lines`）、diff 高亮（含 `.diff-line.meta`）、拆段/降级标注样式；v18：`.diff-code`/`.diff-panel-content` 补 `position: relative`，行号用 `counter-reset` + 三类 `counter-increment` + `.diff-line::before`（12ch 定宽 flex 列），`.diff-legend` 图例；v19：滚动条常显（`.diff-code` / `.diff-panel-content` 的 `scrollbar-width` + `::-webkit-scrollbar`）、`.diff-code-wrap` 14px 留白、`.diff-ruler` / `.diff-ruler-mark`（add/del/meta 三色）/ `.diff-ruler-viewport`；已删除无引用的 `.diff-change-*` 与 `.diff-tool-badge`。
+- [x] 测试：`test-file-diff-display.js` 129 项（含回报倒序的实时/历史一致性、刷新后晚到结果补挂（allow 与 pending 两种）、重复快照状态标「顺序未知」、混入无快照记录时面板降级为「局部快照片段」且目录不标「分段」、snapshotError 计入、空文件/末尾换行边界与 meta 渲染、约 2000 行文件的 LCS 增删统计、纯换行 40000 行的单块渲染预算与截断提示、v17 面板无逐次明细节点与文案、60 段多片段的面板级总预算与省略数量提示、空块不撑最小高度（has-lines）、单块 15000 行时截断原因归因为单块上限而非面板预算、混合原因（block+panel 同屏）文案不矛盾、v18 打开即居中定位第一处修改（含外层视口按目标行居中、meta-only 定位）与行号计数器/图例/零额外节点；v19 `centerDiffLine` 抽出复用、`collectDiffHunks` / `buildDiffRuler(s)` / `rebuildDiffRulers` / `clearDiffRulers` 概览标尺与视口指示器、open/close/resize 三处生命周期钩子）、`test-tool-result.js` 41 项（含 seq 单调、snapshotError 200、`after: null` → 400、默认监听回环、超过旧 80KB 预算的大快照回报）、`test-tool-result-reporter.js` 30 项（含 missing/error 区分、classifySnapshot 形态分类与 after 缺失／两侧均缺失回归、大文本仍保留快照）全部通过；既有 test-tool-records-fold（26）/ test-thinking-restore（56）/ test-metric-bar-label（9）/ test-permission-history（20）/ test-permission-context（54）/ test-access-gate（120）无回归。另做 spawn permission-server 走 MCP stdio 的实机端到端复验（Write 新文件 before=null、Edit 快照真实、清空文件 after="" 不误报、失败 Edit 记 error+changed=false、seq 单调）。
