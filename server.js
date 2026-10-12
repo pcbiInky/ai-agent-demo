@@ -422,6 +422,8 @@ function consumeApproval(requestId, requiredToolName) {
 // ── 中间件 ────────────────────────────────────────────────
 // 门禁必须早于静态资源与路由：跨设备模式下页面、接口、SSE 一并受保护
 app.use(createAccessGate(access));
+// 编辑快照不再按 80KB 截断；只放宽执行结果回报的传输上限，其他接口仍用默认 100KB。
+app.use("/api/tool-result", express.json({ limit: "100mb" }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 

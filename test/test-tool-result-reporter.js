@@ -8,7 +8,6 @@ const os = require("os");
 const path = require("path");
 
 const {
-  SNAPSHOT_TOTAL_MAX_BYTES,
   fileSizeOrNull,
   hashFile,
   classifySnapshot,
@@ -59,7 +58,6 @@ function startMockServer(handler) {
     const dirSnap = await hashFile(tmpDir);
     assert(dirSnap.status === "error", `存在但不可读（目录）→ status=error（实际 ${dirSnap.status}）`);
     assert(fileSizeOrNull(fileA) === 5 && fileSizeOrNull(path.join(tmpDir, "x")) === null, "fileSizeOrNull 正常/缺失");
-    assert(SNAPSHOT_TOTAL_MAX_BYTES === 80 * 1024, "快照总预算 80KB（低于 express.json 100KB 上限）");
 
     // ── 成功回报：单次请求，无重试 ──
     {
@@ -123,36 +121,37 @@ function startMockServer(handler) {
       const missing = { status: "missing", hash: null };
       const err = { status: "error", hash: null };
 
-      let r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: "a", afterContent: "b", totalSize: 3 });
+      let r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: "a", afterContent: "b" });
       assert(r.changed === true && r.before === "a" && r.after === "b" && !r.snapshotError && !r.oversized, "正常修改：有效快照 + changed=true");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h"), afterSnap: okSnap("h"), beforeContent: "a", afterContent: "a", totalSize: 2 });
+      r = classifySnapshot({ beforeSnap: okSnap("h"), afterSnap: okSnap("h"), beforeContent: "a", afterContent: "a" });
       assert(r.changed === false && r.before === "a", "内容相同：changed=false 且仍带快照");
 
-      r = classifySnapshot({ beforeSnap: missing, afterSnap: okSnap("h2"), beforeContent: null, afterContent: "b", totalSize: 1 });
+      r = classifySnapshot({ beforeSnap: missing, afterSnap: okSnap("h2"), beforeContent: null, afterContent: "b" });
       assert(r.changed === true && r.before === null && r.after === "b" && !r.snapshotError, "新文件：before 为 null，不算读取失败");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: missing, beforeContent: "a", afterContent: null, totalSize: 1 });
+      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: missing, beforeContent: "a", afterContent: null });
       assert(r.snapshotError === true && r.before === undefined && r.after === undefined, "after 文件已不存在：snapshotError，不伪装成空文件");
       assert(r.changed === undefined, "after 文件已不存在：changed 未知");
 
-      r = classifySnapshot({ beforeSnap: missing, afterSnap: missing, beforeContent: null, afterContent: null, totalSize: 0 });
+      r = classifySnapshot({ beforeSnap: missing, afterSnap: missing, beforeContent: null, afterContent: null });
       assert(r.snapshotError === true && r.changed === undefined && r.before === undefined, "before/after 均缺失（新建后即被删除）：snapshotError + changed 未知，不判成无变化");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: null, afterContent: "b", totalSize: 3 });
+      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: null, afterContent: "b" });
       assert(r.snapshotError === true && r.changed === true, "before 读取失败：snapshotError（changed 仍按 hash 判定）");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: "a", afterContent: null, totalSize: 3 });
+      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: "a", afterContent: null });
       assert(r.snapshotError === true, "after 读取失败：snapshotError");
 
-      r = classifySnapshot({ beforeSnap: err, afterSnap: err, beforeContent: null, afterContent: null, totalSize: 0 });
+      r = classifySnapshot({ beforeSnap: err, afterSnap: err, beforeContent: null, afterContent: null });
       assert(r.snapshotError === true && r.changed === undefined, "hash 失败：snapshotError 且 changed 未知");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: null, afterContent: null, totalSize: SNAPSHOT_TOTAL_MAX_BYTES + 1 });
-      assert(r.oversized === true && !r.snapshotError && r.changed === true, "超过合计预算：oversized 而非 snapshotError");
+      const largeText = "x".repeat(120 * 1024);
+      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: okSnap("h2"), beforeContent: largeText, afterContent: largeText + "y" });
+      assert(r.before === largeText && r.after === largeText + "y" && !r.oversized, "超过旧 80KB 预算仍保留前后快照");
 
-      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: missing, beforeContent: null, afterContent: null, totalSize: SNAPSHOT_TOTAL_MAX_BYTES + 1 });
-      assert(r.snapshotError === true && !r.oversized, "超预算且 after 缺失：snapshotError 优先");
+      r = classifySnapshot({ beforeSnap: okSnap("h1"), afterSnap: missing, beforeContent: largeText, afterContent: null });
+      assert(r.snapshotError === true && !r.oversized, "大文件执行后缺失仍按 snapshotError 回报");
     }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

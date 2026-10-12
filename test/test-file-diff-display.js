@@ -398,6 +398,13 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     d = cld("a\nb", "a\nb\n");
     assert(stat(d).added === 0 && stat(d).removed === 0, "内容相同仅补末尾换行：0 +/-");
 
+    const largeLines = Array.from({ length: 2022 }, (_, i) => `line ${i}`);
+    const largeBefore = largeLines.join("\n") + "\n";
+    largeLines[1900] = "updated line 1900";
+    const largeDiff = cld(largeBefore, largeLines.join("\n") + "\n");
+    assert(!largeDiff.degraded && stat(largeDiff).added === 1 && stat(largeDiff).removed === 1,
+      "约 2000 行文件在放宽后的 LCS 预算内计算增删统计");
+
     const metaBlock = dom.window.buildDiffCodeBlock(cld("a", "a\n"));
     const metaEl = metaBlock.querySelector(".diff-line.meta");
     assert(!!metaEl, "meta 行渲染为 .diff-line.meta");
@@ -459,14 +466,14 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     const afterOpen = manyPanel.querySelectorAll(".diff-line").length;
     assert(afterOpen <= 12000, `展开单条明细后总节点仍受双预算约束（${afterOpen}）`);
 
-    // ── 截断原因区分：单块 2000 行、面板总预算未耗尽 ──
-    const twoK = Array.from({ length: 2000 }, (_, k) => `L${k}`).join("\n");
+    // ── 截断原因区分：单块 5500 行、面板总预算未耗尽 ──
+    const twoK = Array.from({ length: 5500 }, (_, k) => `L${k}`).join("\n");
     const twoKBudget = { left: 6000 };
     const twoKBlock = dom.window.buildDiffCodeBlock(cld("", twoK), twoKBudget);
-    assert(twoKBlock.renderedLines === 1500 && twoKBudget.left === 4500, `单块按 1500 行截断、面板预算剩 4500（rendered ${twoKBlock.renderedLines}，left ${twoKBudget.left}）`);
+    assert(twoKBlock.renderedLines === 5000 && twoKBudget.left === 1000, `单块按 5000 行截断、面板预算剩 1000（rendered ${twoKBlock.renderedLines}，left ${twoKBudget.left}）`);
     assert(twoKBlock.truncatedBy === "block", "截断原因标记为单块上限而非面板预算");
     const twoKNote = twoKBlock.querySelector(".diff-note")?.textContent || "";
-    assert(twoKNote.includes("单个 diff 块最多渲染 1500 行") && !twoKNote.includes("面板渲染总行数上限"), `单块截断不谎称面板预算耗尽：「${twoKNote}」`);
+    assert(twoKNote.includes("单个 diff 块最多渲染 5000 行") && !twoKNote.includes("面板渲染总行数上限"), `单块截断不谎称面板预算耗尽：「${twoKNote}」`);
 
     emitEdit(es, { requestId: "rqTwoK", filePath: "/x/twok.txt", before: "", after: twoK, seq: 1200 });
     await waitFor(() => itemByPath("twok.txt"));
@@ -475,15 +482,15 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     itemByPath("twok.txt").click();
     await waitFor(() => document.getElementById("diff-panel").classList.contains("visible"));
     const twoKPanel = document.getElementById("diff-panel-content");
-    assert(twoKPanel.querySelectorAll(".diff-line").length === 1500, `单段 2000 行面板只渲染 1500（实际 ${twoKPanel.querySelectorAll(".diff-line").length}）`);
+    assert(twoKPanel.querySelectorAll(".diff-line").length === 5000, `单段 5500 行面板只渲染 5000（实际 ${twoKPanel.querySelectorAll(".diff-line").length}）`);
     const twoKText = twoKPanel.textContent;
-    assert(/1\/1 个片段由单块渲染上限 1500 行截断/.test(twoKText), "面板汇总归因为单块上限");
+    assert(/1\/1 个片段由单块渲染上限 5000 行截断/.test(twoKText), "面板汇总归因为单块上限");
     assert(!twoKText.includes("面板渲染总行数上限"), "面板总预算未耗尽时不出现总上限文案");
     assert(twoKText.includes("被截去的尾部在逐次操作明细中同样不会显示"), "不承诺明细能展示单块截去的尾部");
 
     // ── 混合原因：单块截断与面板预算耗尽同时出现，文案不得互相矛盾 ──
     const truncSeg = (i, n) => ({ before: `H${i}\n`, after: `H${i}\n${Array.from({ length: n }, (_, k) => `s${i}-${k}`).join("\n")}\n` });
-    [1999, 1499, 1499, 1499, 1499].forEach((n, i) => {
+    [5499, 1499, 1499, 1499, 1499].forEach((n, i) => {
       const seg = truncSeg(i, n);
       emitEdit(es, { requestId: `rqX${i}`, filePath: "/x/mixtrunc.js", before: seg.before, after: seg.after, seq: 1300 + i });
     });
@@ -495,11 +502,11 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     const truncPanel = document.getElementById("diff-panel-content");
     const truncNotes = [...truncPanel.querySelectorAll(".diff-note")].map((el) => el.textContent);
     assert(truncPanel.querySelectorAll(".diff-line").length === 6000, `混合场景面板仍为 6000 行（实际 ${truncPanel.querySelectorAll(".diff-line").length}）`);
-    assert(truncNotes.some((t) => t.startsWith("仅渲染前 1500 行（共 2000 行）：单个 diff 块最多渲染 1500 行")), `首块按单块上限截断：${truncNotes.find((t) => t.startsWith("仅渲染前 1500 行（共 2000 行）"))}`);
+    assert(truncNotes.some((t) => t.startsWith("仅渲染前 5000 行（共 5500 行）：单个 diff 块最多渲染 5000 行")), `首块按单块上限截断：${truncNotes.find((t) => t.startsWith("仅渲染前 5000 行（共 5500 行）"))}`);
     assert(truncNotes.some((t) => t === "未渲染该块（共 1500 行）：已达到面板渲染总行数上限 6000"), "末块因面板预算耗尽未渲染");
     const truncText = truncPanel.textContent;
-    assert(/片段区已达到面板渲染总行数上限 6000：1\/5 个片段未完整显示/.test(truncText), `面板预算汇总计数正确：${(truncText.match(/片段区已达到面板渲染总行数上限 6000：\d+\/\d+ 个片段未完整显示/) || [])[0]}`);
-    assert(/1\/5 个片段由单块渲染上限 1500 行截断/.test(truncText), "单块截断汇总计数正确");
+    assert(/片段区已达到面板渲染总行数上限 6000：4\/5 个片段未完整显示/.test(truncText), `面板预算汇总计数正确：${(truncText.match(/片段区已达到面板渲染总行数上限 6000：\d+\/\d+ 个片段未完整显示/) || [])[0]}`);
+    assert(/1\/5 个片段由单块渲染上限 5000 行截断/.test(truncText), "单块截断汇总计数正确");
     assert(!truncText.includes("面板总预算未用尽"), "单块汇总不再断言面板预算状态（避免与总上限提示矛盾）");
   } catch (err) {
     console.error("测试异常:", err);

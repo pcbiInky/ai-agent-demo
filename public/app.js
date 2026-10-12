@@ -1406,12 +1406,12 @@ function splitDiffLines(text) {
   return { lines: (eol ? text.slice(0, -1) : text).split("\n"), eol };
 }
 
-// LCS 行级 diff；超过 250000 单元格降级（不提供虚假 +/- 统计）
+// LCS 行级 diff；试用时允许约 3000 行文件计算完整增删统计，极大矩阵仍降级。
 // 末尾换行状态变化用 meta 行表示（不计入 +/-）
 function computeLineDiff(oldText, newText) {
   const a = splitDiffLines(oldText);
   const b = splitDiffLines(newText);
-  if ((a.lines.length + 1) * (b.lines.length + 1) > 250000) {
+  if ((a.lines.length + 1) * (b.lines.length + 1) > 10000000) {
     return { lines: null, degraded: true };
   }
   const n = a.lines.length;
@@ -1611,8 +1611,8 @@ let _closeDiffTimer = null;
 
 // 单个 diff 块的渲染行数预算：LCS 单元格上限拦不住"窄而长"的内容
 // （如 4 万个空行只产生 1×40001 矩阵），不限量会同步创建数万节点卡住面板
-const MAX_DIFF_RENDER_LINES = 1500;
-// 面板级总预算：单块上限拦不住"多段"场景（60 段 × 1500 行 = 9 万节点），
+const MAX_DIFF_RENDER_LINES = 5000;
+// 面板级总预算：单块上限拦不住"多段"场景（60 段 × 5000 行可达 30 万节点），
 // 片段区与明细区各持一份，明细区按需展开才消耗，因此同屏上限为两份之和
 const MAX_PANEL_RENDER_LINES = 6000;
 
@@ -1721,7 +1721,7 @@ function openDiffPanel(character, messageId, filePath) {
   if (summary.uncovered > 0) {
     const note = document.createElement("div");
     note.className = "diff-note";
-    note.textContent = `${summary.uncovered} 次修改无可用快照（超过 before+after 合计 80KB 预算、文件不可读或执行后已不存在），未计算行级 Diff；这些记录相对快照链的先后无法证明，下方明细顺序仅为提示`;
+    note.textContent = `${summary.uncovered} 次修改无可用快照（旧记录受 80KB 限制、快照回报被拒、文件不可读或执行后已不存在），未计算行级 Diff；这些记录相对快照链的先后无法证明，下方明细顺序仅为提示`;
     $diffPanelContent.appendChild(note);
   }
   if (!summary.orderUnknown && summary.segments.length === 0 && summary.uncovered === 0) {
@@ -1757,7 +1757,7 @@ function openDiffPanel(character, messageId, filePath) {
       note.className = "diff-note";
       note.textContent = change.execution?.snapshotError
         ? "未计算行级 Diff（快照不可用：文件不可读或执行后已不存在，变更状态未知）"
-        : "未计算行级 Diff（超过 before+after 合计 80KB 快照预算）";
+        : "未计算行级 Diff（旧记录受 80KB 限制或快照回报被拒，已降级为无快照记录）";
       block.appendChild(note);
     }
     $diffPanelContent.appendChild(block);

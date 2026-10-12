@@ -117,8 +117,6 @@ async function withPermission(toolName, input, executeFn) {
 
 // ── 编辑类工具的执行结果回报（before/after 快照）────────────
 const {
-  SNAPSHOT_TOTAL_MAX_BYTES,
-  fileSizeOrNull,
   hashFile,
   classifySnapshot,
   reportToolResult,
@@ -136,17 +134,14 @@ function report(payload) {
   return reportToolResult(payload, { port: parseInt(PORT, 10), log });
 }
 
-// 快照执行封装：批准 → 读 before → 执行 → 读 after → 分类回报（有效快照 / oversized / snapshotError）
+// 快照执行封装：批准 → 读 before → 执行 → 读 after → 分类回报（有效快照 / snapshotError）
 // 内容不可得（hash 失败、读取失败、执行后文件已不存在）一律 snapshotError 且 changed 未知，
 // 绝不把缺失或读取失败当成"空文件"或"无变化"
 function withFileSnapshot(toolName, getFilePath, input, executeFn) {
   return withPermission(toolName, input, async (decision) => {
     const filePath = getFilePath(input);
-    const beforeSize = fileSizeOrNull(filePath);
     const beforeSnap = await hashFile(filePath);
-    const beforeContent = beforeSnap.status === "ok" && beforeSize !== null && beforeSize <= SNAPSHOT_TOTAL_MAX_BYTES
-      ? readFileOrNull(filePath)
-      : null;
+    const beforeContent = beforeSnap.status === "ok" ? readFileOrNull(filePath) : null;
 
     let resultText;
     try {
@@ -164,13 +159,9 @@ function withFileSnapshot(toolName, getFilePath, input, executeFn) {
       throw err;
     }
 
-    const afterSize = fileSizeOrNull(filePath);
     const afterSnap = await hashFile(filePath);
-    const totalSize = (beforeSize || 0) + (afterSize || 0);
-    const afterContent = afterSnap.status === "missing" || totalSize > SNAPSHOT_TOTAL_MAX_BYTES
-      ? null
-      : readFileOrNull(filePath);
-    const { changed, ...snapshot } = classifySnapshot({ beforeSnap, afterSnap, beforeContent, afterContent, totalSize });
+    const afterContent = afterSnap.status === "ok" ? readFileOrNull(filePath) : null;
+    const { changed, ...snapshot } = classifySnapshot({ beforeSnap, afterSnap, beforeContent, afterContent });
 
     await report({
       requestId: decision.requestId,

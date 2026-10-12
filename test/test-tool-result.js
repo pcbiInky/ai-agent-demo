@@ -153,6 +153,25 @@ async function testSuccessResult() {
   }
 }
 
+async function testLargeSnapshotResult() {
+  const sessionId = "tool-result-" + crypto.randomUUID();
+  cleanupLog(sessionId);
+  try {
+    const requestId = await approveEditRequest(sessionId);
+    const before = "a".repeat(120 * 1024);
+    const after = before + "b";
+    const result = await postJson("/api/tool-result", {
+      requestId, toolName: "Edit", ok: true, filePath: "/tmp/large.txt", before, after, changed: true,
+    });
+    assert(result.ok, "超过旧 80KB 预算的快照回报仍被接受");
+    const execution = readExecution(sessionId, requestId);
+    assert(execution?.before === before && execution.after === after && execution.diffAvailable === true,
+      "大快照完整写入日志并可用于 Diff");
+  } finally {
+    cleanupLog(sessionId);
+  }
+}
+
 async function testDeniedRequestCannotReportSuccess() {
   const sessionId = `tool-result-${crypto.randomUUID()}`;
   cleanupLog(sessionId);
@@ -256,6 +275,7 @@ async function main() {
   try {
     testDefaultListenIsLoopbackOnly();
     await testSuccessResult();
+    await testLargeSnapshotResult();
     await testDeniedRequestCannotReportSuccess();
     await testErrorAndOversizedResults();
     await testNonEditToolHasNoCorrelation();
