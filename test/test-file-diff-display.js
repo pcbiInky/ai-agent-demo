@@ -225,7 +225,7 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(mixPanel.textContent.includes("不代表文件最终净变化"), "明示片段不代表文件最终净变化");
     assert(mixPanel.textContent.includes("先后无法证明"), "明示无快照记录相对先后无法证明");
     assert(!mixPanel.textContent.includes("范围外修改"), "不把已记录的无快照操作误称范围外修改");
-    assert(mixPanel.querySelectorAll(".diff-change-block").length === 3, `逐次明细保留 3 条（实际 ${mixPanel.querySelectorAll(".diff-change-block").length}）`);
+    assert(!mixPanel.textContent.includes("逐次操作明细"), "面板不再显示逐次操作明细");
 
     // 无快照记录恰好把快照链切成两段：目录不得标「分段」（分段只是基线排序推断）
     es.emit("permission", { requestId: "rqA1", character: "YYF", toolName: "Edit", input: { file_path: "/x/mix2.js", old_string: "x", new_string: "y" }, messageId: "u1", timestamp: T });
@@ -265,7 +265,7 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     const delLines = [...panel.querySelectorAll(".diff-line.del")].map((el) => el.textContent);
     assert(addLines.some((t) => t.includes("b")) && delLines.some((t) => t.includes("a")), "面板展示 +b/-a 行级 diff");
     assert(panel.textContent.includes("净 Diff"), "面板含净 Diff 标签");
-    assert(panel.textContent.includes("逐次操作明细"), "面板含逐次操作明细");
+    assert(!panel.textContent.includes("逐次操作明细"), "面板只展示净 Diff，不再有逐次操作明细");
 
     // 拆段文件：两段净 Diff + 范围外修改标注
     document.getElementById("diff-close-btn").click();
@@ -276,7 +276,7 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(segLabels.length === 2, `seg.js 拆为 2 段净 Diff（实际 ${segLabels.length}）`);
     assert(document.getElementById("diff-panel-content").textContent.includes("范围外修改"), "拆段处标注范围外修改");
 
-    // 顺序未知文件：面板明示不可判定，不出净 Diff，但保留逐次明细
+    // 顺序未知文件：面板明示不可判定，不出净 Diff，也不出逐次明细
     document.getElementById("diff-close-btn").click();
     await sleep(300);
     itemByPath("dup.js").click();
@@ -284,7 +284,7 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     const dupPanel = document.getElementById("diff-panel-content");
     assert(dupPanel.textContent.includes("先后顺序无法确定"), "顺序未知时面板明示不可判定");
     assert([...dupPanel.querySelectorAll(".diff-seg-label")].filter((el) => el.textContent.startsWith("净 Diff")).length === 0, "顺序未知时不渲染净 Diff");
-    assert(dupPanel.querySelectorAll(".diff-change-block").length === 2, "顺序未知仍保留逐次操作明细");
+    assert(!dupPanel.textContent.includes("逐次操作明细"), "顺序未知时同样不渲染逐次操作明细");
 
     // ── 历史重载：带 execution 的记录聚合，存量无 execution 的不展示 ──
     historyPayload = {
@@ -428,18 +428,12 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     itemByPath("nl.txt").click();
     await waitFor(() => document.getElementById("diff-panel").classList.contains("visible"));
     const bigPanel = document.getElementById("diff-panel-content");
-    const bigBlocks = bigPanel.querySelectorAll(".diff-change-block");
-    assert(bigBlocks.length === 1, `逐次明细 1 条（实际 ${bigBlocks.length}）`);
-    assert(bigBlocks[0].querySelectorAll(".diff-line").length === 0, "折叠状态的明细不渲染 diff 行");
-    assert(bigPanel.querySelectorAll(".diff-line").length <= nlNodes, `面板初始行节点有界（${bigPanel.querySelectorAll(".diff-line").length}）`);
-    bigBlocks[0].open = true;
-    bigBlocks[0].dispatchEvent(new dom.window.Event("toggle"));
-    await waitFor(() => bigBlocks[0].querySelectorAll(".diff-line").length > 0);
-    assert(bigBlocks[0].querySelectorAll(".diff-line").length <= nlNodes, "展开后的明细同样受渲染预算约束");
+    assert(bigPanel.querySelectorAll(".diff-line").length === nlNodes, `面板行节点等于单块预算（${bigPanel.querySelectorAll(".diff-line").length}）`);
+    assert(bigPanel.querySelectorAll(".diff-change-block").length === 0, "面板不再渲染逐次操作明细节点");
 
     // ── 面板级总预算：60 段互不连续的快照链 ──
     const segCount = 60;
-    const segText = (tag, i) => Array.from({ length: 100 }, (_, k) => `${tag}${i}-${k}`).join("\n");
+    const segText = (tag, i) => Array.from({ length: 400 }, (_, k) => `${tag}${i}-${k}`).join("\n");
     for (let i = 0; i < segCount; i++) {
       emitEdit(es, { requestId: `rqM${i}`, filePath: "/x/many.js", before: segText("A", i), after: segText("B", i), seq: 1000 + i });
     }
@@ -450,30 +444,24 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     await waitFor(() => document.getElementById("diff-panel").classList.contains("visible"));
     const manyPanel = document.getElementById("diff-panel-content");
     const manyNodes = manyPanel.querySelectorAll(".diff-line").length;
-    assert(manyNodes > 0 && manyNodes <= 6000, `多段面板行节点受总预算约束（${manyNodes}）`);
+    assert(manyNodes > 0 && manyNodes <= 20000, `多段面板行节点受总预算约束（${manyNodes}）`);
     const manyLabels = manyPanel.querySelectorAll(".diff-seg-label").length;
-    assert(manyLabels >= segCount, `${segCount} 段标签全部保留（实际 ${manyLabels}）`);
+    assert(manyLabels === segCount, `${segCount} 段标签全部保留（实际 ${manyLabels}）`);
     const manyText = manyPanel.textContent;
-    assert(manyText.includes("片段区已达到面板渲染总行数上限 6000"), "超预算时明示面板总上限");
+    assert(manyText.includes("片段区已达到面板渲染总行数上限 20000"), "超预算时明示面板总上限");
     assert(/\d+\/60 个片段未完整显示/.test(manyText), `超预算时给出省略片段数量（${(manyText.match(/\d+\/60 个片段未完整显示/) || [])[0]}）`);
     assert(manyText.includes("未渲染该块"), "预算耗尽后的片段明示未渲染");
-    const manyBlocks = manyPanel.querySelectorAll(".diff-change-block");
-    assert(manyBlocks.length === segCount, `逐次明细 ${segCount} 条（实际 ${manyBlocks.length}）`);
-    assert(manyPanel.querySelectorAll(".diff-change-block .diff-line").length === 0, "多段场景下折叠明细不渲染行");
-    manyBlocks[0].open = true;
-    manyBlocks[0].dispatchEvent(new dom.window.Event("toggle"));
-    await waitFor(() => manyBlocks[0].querySelectorAll(".diff-line").length > 0);
-    const afterOpen = manyPanel.querySelectorAll(".diff-line").length;
-    assert(afterOpen <= 12000, `展开单条明细后总节点仍受双预算约束（${afterOpen}）`);
+    assert(manyPanel.querySelectorAll(".diff-change-block").length === 0, "多段场景同样不渲染逐次操作明细");
+    assert(!manyText.includes("逐次操作明细"), "多段场景不再提示可按需展开明细");
 
-    // ── 截断原因区分：单块 5500 行、面板总预算未耗尽 ──
-    const twoK = Array.from({ length: 5500 }, (_, k) => `L${k}`).join("\n");
-    const twoKBudget = { left: 6000 };
+    // ── 截断原因区分：单块 15000 行、面板总预算未耗尽 ──
+    const twoK = Array.from({ length: 15000 }, (_, k) => `L${k}`).join("\n");
+    const twoKBudget = { left: 20000 };
     const twoKBlock = dom.window.buildDiffCodeBlock(cld("", twoK), twoKBudget);
-    assert(twoKBlock.renderedLines === 5000 && twoKBudget.left === 1000, `单块按 5000 行截断、面板预算剩 1000（rendered ${twoKBlock.renderedLines}，left ${twoKBudget.left}）`);
+    assert(twoKBlock.renderedLines === 12000 && twoKBudget.left === 8000, `单块按 12000 行截断、面板预算剩 8000（rendered ${twoKBlock.renderedLines}，left ${twoKBudget.left}）`);
     assert(twoKBlock.truncatedBy === "block", "截断原因标记为单块上限而非面板预算");
     const twoKNote = twoKBlock.querySelector(".diff-note")?.textContent || "";
-    assert(twoKNote.includes("单个 diff 块最多渲染 5000 行") && !twoKNote.includes("面板渲染总行数上限"), `单块截断不谎称面板预算耗尽：「${twoKNote}」`);
+    assert(twoKNote.includes("单个 diff 块最多渲染 12000 行") && !twoKNote.includes("面板渲染总行数上限"), `单块截断不谎称面板预算耗尽：「${twoKNote}」`);
 
     emitEdit(es, { requestId: "rqTwoK", filePath: "/x/twok.txt", before: "", after: twoK, seq: 1200 });
     await waitFor(() => itemByPath("twok.txt"));
@@ -482,15 +470,15 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     itemByPath("twok.txt").click();
     await waitFor(() => document.getElementById("diff-panel").classList.contains("visible"));
     const twoKPanel = document.getElementById("diff-panel-content");
-    assert(twoKPanel.querySelectorAll(".diff-line").length === 5000, `单段 5500 行面板只渲染 5000（实际 ${twoKPanel.querySelectorAll(".diff-line").length}）`);
+    assert(twoKPanel.querySelectorAll(".diff-line").length === 12000, `单段 15000 行面板只渲染 12000（实际 ${twoKPanel.querySelectorAll(".diff-line").length}）`);
     const twoKText = twoKPanel.textContent;
-    assert(/1\/1 个片段由单块渲染上限 5000 行截断/.test(twoKText), "面板汇总归因为单块上限");
+    assert(/1\/1 个片段由单块渲染上限 12000 行截断/.test(twoKText), "面板汇总归因为单块上限");
     assert(!twoKText.includes("面板渲染总行数上限"), "面板总预算未耗尽时不出现总上限文案");
-    assert(twoKText.includes("被截去的尾部在逐次操作明细中同样不会显示"), "不承诺明细能展示单块截去的尾部");
+    assert(!twoKText.includes("逐次操作明细"), "单块截断提示不再引导去看逐次明细");
 
     // ── 混合原因：单块截断与面板预算耗尽同时出现，文案不得互相矛盾 ──
     const truncSeg = (i, n) => ({ before: `H${i}\n`, after: `H${i}\n${Array.from({ length: n }, (_, k) => `s${i}-${k}`).join("\n")}\n` });
-    [5499, 1499, 1499, 1499, 1499].forEach((n, i) => {
+    [12999, 2999, 2999, 2999, 2999].forEach((n, i) => {
       const seg = truncSeg(i, n);
       emitEdit(es, { requestId: `rqX${i}`, filePath: "/x/mixtrunc.js", before: seg.before, after: seg.after, seq: 1300 + i });
     });
@@ -501,13 +489,14 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     await waitFor(() => document.getElementById("diff-panel").classList.contains("visible"));
     const truncPanel = document.getElementById("diff-panel-content");
     const truncNotes = [...truncPanel.querySelectorAll(".diff-note")].map((el) => el.textContent);
-    assert(truncPanel.querySelectorAll(".diff-line").length === 6000, `混合场景面板仍为 6000 行（实际 ${truncPanel.querySelectorAll(".diff-line").length}）`);
-    assert(truncNotes.some((t) => t.startsWith("仅渲染前 5000 行（共 5500 行）：单个 diff 块最多渲染 5000 行")), `首块按单块上限截断：${truncNotes.find((t) => t.startsWith("仅渲染前 5000 行（共 5500 行）"))}`);
-    assert(truncNotes.some((t) => t === "未渲染该块（共 1500 行）：已达到面板渲染总行数上限 6000"), "末块因面板预算耗尽未渲染");
+    assert(truncPanel.querySelectorAll(".diff-line").length === 20000, `混合场景面板仍为 20000 行（实际 ${truncPanel.querySelectorAll(".diff-line").length}）`);
+    assert(truncNotes.some((t) => t.startsWith("仅渲染前 12000 行（共 13000 行）：单个 diff 块最多渲染 12000 行")), `首块按单块上限截断：${truncNotes.find((t) => t.startsWith("仅渲染前 12000 行（共 13000 行）"))}`);
+    assert(truncNotes.some((t) => t === "未渲染该块（共 3000 行）：已达到面板渲染总行数上限 20000"), "末块因面板预算耗尽未渲染");
     const truncText = truncPanel.textContent;
-    assert(/片段区已达到面板渲染总行数上限 6000：4\/5 个片段未完整显示/.test(truncText), `面板预算汇总计数正确：${(truncText.match(/片段区已达到面板渲染总行数上限 6000：\d+\/\d+ 个片段未完整显示/) || [])[0]}`);
-    assert(/1\/5 个片段由单块渲染上限 5000 行截断/.test(truncText), "单块截断汇总计数正确");
+    assert(/片段区已达到面板渲染总行数上限 20000：2\/5 个片段未完整显示/.test(truncText), `面板预算汇总计数正确：${(truncText.match(/片段区已达到面板渲染总行数上限 20000：\d+\/\d+ 个片段未完整显示/) || [])[0]}`);
+    assert(/1\/5 个片段由单块渲染上限 12000 行截断/.test(truncText), "单块截断汇总计数正确");
     assert(!truncText.includes("面板总预算未用尽"), "单块汇总不再断言面板预算状态（避免与总上限提示矛盾）");
+    assert(!truncText.includes("逐次操作明细"), "混合截断文案不再提及逐次操作明细");
   } catch (err) {
     console.error("测试异常:", err);
     failed += 1;

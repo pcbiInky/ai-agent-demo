@@ -1528,7 +1528,7 @@ function summarizeFileChanges(changes) {
   const { ordered, orderUnknown } = orderFileChanges(changes);
   const uncoveredCount = ordered.filter((c) => !c.execution?.diffAvailable).length;
   if (orderUnknown) {
-    return { ordered, orderUnknown, segments: [], complete: false, uncovered: uncoveredCount, added: 0, removed: 0, statsKnown: false, count: changes.length };
+    return { orderUnknown, segments: [], complete: false, uncovered: uncoveredCount, added: 0, removed: 0, statsKnown: false, count: changes.length };
   }
   const { segments, complete, uncovered } = buildFileDiffSegments(ordered);
   let added = 0;
@@ -1543,7 +1543,7 @@ function summarizeFileChanges(changes) {
     return { seg, diff };
   });
   const statsKnown = segDiffs.length > 0 && uncovered === 0 && segDiffs.every((s) => !s.diff.degraded);
-  return { ordered, orderUnknown, segments: segDiffs, complete, uncovered, added, removed, statsKnown, count: changes.length };
+  return { orderUnknown, segments: segDiffs, complete, uncovered, added, removed, statsKnown, count: changes.length };
 }
 
 function shortenFilePath(filePath) {
@@ -1611,10 +1611,9 @@ let _closeDiffTimer = null;
 
 // 单个 diff 块的渲染行数预算：LCS 单元格上限拦不住"窄而长"的内容
 // （如 4 万个空行只产生 1×40001 矩阵），不限量会同步创建数万节点卡住面板
-const MAX_DIFF_RENDER_LINES = 5000;
-// 面板级总预算：单块上限拦不住"多段"场景（60 段 × 5000 行可达 30 万节点），
-// 片段区与明细区各持一份，明细区按需展开才消耗，因此同屏上限为两份之和
-const MAX_PANEL_RENDER_LINES = 6000;
+const MAX_DIFF_RENDER_LINES = 12000;
+// 面板级总预算：单块上限拦不住"多段"场景（60 段 × 12000 行可达 72 万节点）
+const MAX_PANEL_RENDER_LINES = 20000;
 
 function buildDiffCodeBlock(diff, budget) {
   const body = document.createElement("div");
@@ -1650,7 +1649,7 @@ function buildDiffCodeBlock(diff, budget) {
   if (budget) budget.left -= shown;
   body.renderedLines = shown;
   if (diff.lines.length > shown) {
-    // 单块上限截掉的尾部在明细里同样看不到，面板预算耗尽则可以——两种原因必须分开说
+    // 单块上限与面板预算耗尽是两种不同原因，提示必须分开说
     const blockOnly = Math.min(diff.lines.length, MAX_DIFF_RENDER_LINES);
     const byPanel = budget && shown < blockOnly;
     body.truncatedBy = byPanel ? "panel" : "block";
@@ -1709,19 +1708,19 @@ function openDiffPanel(character, messageId, filePath) {
   if (panelTruncated > 0) {
     const note = document.createElement("div");
     note.className = "diff-note";
-    note.textContent = `片段区已达到面板渲染总行数上限 ${MAX_PANEL_RENDER_LINES}：${panelTruncated}/${summary.segments.length} 个片段未完整显示，逐次操作明细另有独立预算，可按需展开`;
+    note.textContent = `片段区已达到面板渲染总行数上限 ${MAX_PANEL_RENDER_LINES}：${panelTruncated}/${summary.segments.length} 个片段未完整显示`;
     $diffPanelContent.appendChild(note);
   }
   if (blockTruncated > 0) {
     const note = document.createElement("div");
     note.className = "diff-note";
-    note.textContent = `${blockTruncated}/${summary.segments.length} 个片段由单块渲染上限 ${MAX_DIFF_RENDER_LINES} 行截断，被截去的尾部在逐次操作明细中同样不会显示`;
+    note.textContent = `${blockTruncated}/${summary.segments.length} 个片段由单块渲染上限 ${MAX_DIFF_RENDER_LINES} 行截断`;
     $diffPanelContent.appendChild(note);
   }
   if (summary.uncovered > 0) {
     const note = document.createElement("div");
     note.className = "diff-note";
-    note.textContent = `${summary.uncovered} 次修改无可用快照（旧记录受 80KB 限制、快照回报被拒、文件不可读或执行后已不存在），未计算行级 Diff；这些记录相对快照链的先后无法证明，下方明细顺序仅为提示`;
+    note.textContent = `${summary.uncovered} 次修改无可用快照（旧记录受 80KB 限制、快照回报被拒、文件不可读或执行后已不存在），未计算行级 Diff；这些记录相对快照链的先后无法证明`;
     $diffPanelContent.appendChild(note);
   }
   if (!summary.orderUnknown && summary.segments.length === 0 && summary.uncovered === 0) {
@@ -1730,38 +1729,6 @@ function openDiffPanel(character, messageId, filePath) {
     note.textContent = "(无可用快照内容)";
     $diffPanelContent.appendChild(note);
   }
-
-  const detailTitle = document.createElement("div");
-  detailTitle.className = "diff-seg-label";
-  detailTitle.textContent = `逐次操作明细 · ${summary.ordered.length} 条`;
-  $diffPanelContent.appendChild(detailTitle);
-
-  const detailBudget = { left: MAX_PANEL_RENDER_LINES };
-  summary.ordered.forEach((change, idx) => {
-    const block = document.createElement("details");
-    block.className = "diff-change-block";
-    const head = document.createElement("summary");
-    head.className = "diff-change-head";
-    head.innerHTML = `<span class="diff-tool-badge">${escapeHtml(change.toolName)}</span><span class="diff-change-index">修改 ${idx + 1}/${summary.ordered.length}</span><span class="diff-change-time">${escapeHtml(change.timestamp ? formatTimeShort(change.timestamp) : "")}</span>`;
-    block.appendChild(head);
-    if (change.execution?.diffAvailable) {
-      // 明细默认折叠，展开时才算 diff 并建行节点：同面板重复渲染数万节点会卡住界面
-      let built = false;
-      block.addEventListener("toggle", () => {
-        if (built || !block.open) return;
-        built = true;
-        block.appendChild(buildDiffCodeBlock(computeLineDiff(change.execution.before, change.execution.after), detailBudget));
-      });
-    } else {
-      const note = document.createElement("div");
-      note.className = "diff-note";
-      note.textContent = change.execution?.snapshotError
-        ? "未计算行级 Diff（快照不可用：文件不可读或执行后已不存在，变更状态未知）"
-        : "未计算行级 Diff（旧记录受 80KB 限制或快照回报被拒，已降级为无快照记录）";
-      block.appendChild(note);
-    }
-    $diffPanelContent.appendChild(block);
-  });
 
   $diffPanel.classList.add("open");
   requestAnimationFrame(() => $diffPanel.classList.add("visible"));
