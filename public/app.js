@@ -1569,7 +1569,7 @@ function renderFileDiffDirectory(character, messageId, replyEl) {
   dir.className = "file-diff-dir";
   const title = document.createElement("div");
   title.className = "file-diff-dir-title";
-  title.textContent = `已记录的文件修改（Edit/Write/NotebookEdit） · ${Object.keys(files).length} 个`;
+  title.textContent = `已记录的文件修改 · ${Object.keys(files).length} 个`;
   dir.appendChild(title);
 
   const list = document.createElement("div");
