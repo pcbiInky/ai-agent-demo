@@ -616,6 +616,20 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(!largeDiff.degraded && stat(largeDiff).added === 1 && stat(largeDiff).removed === 1,
       "约 2000 行文件在放宽后的 LCS 预算内计算增删统计");
 
+    const tenKLines = Array.from({ length: 10000 }, (_, i) => `line ${i}`);
+    const tenKBefore = tenKLines.join("\n") + "\n";
+    const tenKEdited = tenKLines.slice();
+    tenKEdited[5000] = "updated line 5000";
+    const tenKDiff = cld(tenKBefore, tenKEdited.join("\n") + "\n");
+    assert(!tenKDiff.degraded && stat(tenKDiff).added === 1 && stat(tenKDiff).removed === 1,
+      "10000 行文件的单行修改正常计算行级 Diff");
+    const reversedDiff = cld(tenKBefore, tenKLines.slice().reverse().join("\n") + "\n");
+    assert(!reversedDiff.degraded && stat(reversedDiff).added === 9999 && stat(reversedDiff).removed === 9999,
+      "10000×10000 行对的稀疏匹配正常计算精确增删统计");
+    const overLimit = Array.from({ length: 10001 }, (_, i) => `other ${i}`).join("\n") + "\n";
+    assert(cld(tenKBefore + "extra\n", overLimit).degraded,
+      "变化区超过 10000×10000 行对时仍有计算上限");
+
     const metaBlock = dom.window.buildDiffCodeBlock(cld("a", "a\n"));
     const metaEl = metaBlock.querySelector(".diff-line.meta");
     assert(!!metaEl, "meta 行渲染为 .diff-line.meta");

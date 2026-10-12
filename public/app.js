@@ -1652,32 +1652,176 @@ function splitDiffLines(text) {
   return { lines: (eol ? text.slice(0, -1) : text).split("\n"), eol };
 }
 
-// LCS 行级 diff；试用时允许约 3000 行文件计算完整增删统计，极大矩阵仍降级。
-// 末尾换行状态变化用 meta 行表示（不计入 +/-）
+const MAX_DIFF_MATRIX_CELLS = 10000000;
+const MAX_DIFF_LINE_PAIRS = 10000 * 10000;
+const MAX_SPARSE_MATCH_PAIRS = 250000;
+const MAX_DENSE_DIFF_MS = 1000;
+
+// 稀疏匹配用 Hunt–Szymanski 重建精确 LCS；常见的大文件编辑无需扫描整张矩阵。
+function appendSparseDiff(a, aStart, aEnd, b, bStart, bEnd, lines) {
+  const positions = new Map();
+  for (let j = bStart; j < bEnd; j++) {
+    if (!positions.has(b[j])) positions.set(b[j], []);
+    positions.get(b[j]).push(j);
+  }
+  let pairCount = 0;
+  for (let i = aStart; i < aEnd; i++) {
+    pairCount += positions.get(a[i])?.length || 0;
+    if (pairCount > MAX_SPARSE_MATCH_PAIRS) return false;
+  }
+
+  const tails = [];
+  const nodes = [];
+  for (let i = aStart; i < aEnd; i++) {
+    const matches = positions.get(a[i]);
+    if (!matches) continue;
+    for (let k = matches.length - 1; k >= 0; k--) {
+      const j = matches[k];
+      let low = 0;
+      let high = tails.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (tails[middle] < j) low = middle + 1;
+        else high = middle;
+      }
+      if (tails[low] === j) continue;
+      const node = { oldIndex: i, newIndex: j, previous: low > 0 ? nodes[low - 1] : null };
+      tails[low] = j;
+      nodes[low] = node;
+    }
+  }
+
+  const common = [];
+  for (let node = nodes[nodes.length - 1]; node; node = node.previous) common.push(node);
+  common.reverse();
+  let oldIndex = aStart;
+  let newIndex = bStart;
+  for (const match of common) {
+    while (oldIndex < match.oldIndex) lines.push({ type: "del", text: a[oldIndex++] });
+    while (newIndex < match.newIndex) lines.push({ type: "add", text: b[newIndex++] });
+    lines.push({ type: "ctx", text: a[oldIndex] });
+    oldIndex++;
+    newIndex++;
+  }
+  while (oldIndex < aEnd) lines.push({ type: "del", text: a[oldIndex++] });
+  while (newIndex < bEnd) lines.push({ type: "add", text: b[newIndex++] });
+  return true;
+}
+
+// 高重复内容用 Hirschberg 保留精确结果；超时则降级，避免阻塞页面。
+const DIFF_TIME_LIMIT = Symbol("diff time limit");
+function appendLinearSpaceDiff(a, aStart, aEnd, b, bStart, bEnd, lines, deadline) {
+  const n = aEnd - aStart;
+  const m = bEnd - bStart;
+  if (n === 0) {
+    for (let j = bStart; j < bEnd; j++) lines.push({ type: "add", text: b[j] });
+    return;
+  }
+  if (m === 0) {
+    for (let i = aStart; i < aEnd; i++) lines.push({ type: "del", text: a[i] });
+    return;
+  }
+  if (n === 1) {
+    let match = bStart;
+    while (match < bEnd && a[aStart] !== b[match]) match++;
+    if (match === bEnd) {
+      lines.push({ type: "del", text: a[aStart] });
+      for (let j = bStart; j < bEnd; j++) lines.push({ type: "add", text: b[j] });
+    } else {
+      for (let j = bStart; j < match; j++) lines.push({ type: "add", text: b[j] });
+      lines.push({ type: "ctx", text: a[aStart] });
+      for (let j = match + 1; j < bEnd; j++) lines.push({ type: "add", text: b[j] });
+    }
+    return;
+  }
+
+  const middle = aStart + Math.floor(n / 2);
+  const lengths = (start, end, reverseA, reverseB) => {
+    let previous = new Uint32Array(m + 1);
+    let current = new Uint32Array(m + 1);
+    for (let i = 0; i < end - start; i++) {
+      if ((i & 63) === 0 && Date.now() > deadline) throw DIFF_TIME_LIMIT;
+      const aLine = a[reverseA ? end - 1 - i : start + i];
+      for (let j = 1; j <= m; j++) {
+        const bLine = b[reverseB ? bEnd - j : bStart + j - 1];
+        current[j] = aLine === bLine
+          ? previous[j - 1] + 1
+          : Math.max(previous[j], current[j - 1]);
+      }
+      [previous, current] = [current, previous];
+    }
+    return previous;
+  };
+  const left = lengths(aStart, middle, false, false);
+  const right = lengths(middle, aEnd, true, true);
+  let split = 0;
+  let best = -1;
+  for (let j = 0; j <= m; j++) {
+    const score = left[j] + right[m - j];
+    if (score > best) { best = score; split = j; }
+  }
+  appendLinearSpaceDiff(a, aStart, middle, b, bStart, bStart + split, lines, deadline);
+  appendLinearSpaceDiff(a, middle, aEnd, b, bStart + split, bEnd, lines, deadline);
+}
+
+// 行级 diff：先剔除相同前后缀；变化区小则用矩阵，大则优先稀疏匹配并限时尝试线性内存 LCS。
+// 变化区上限为 10000×10000 行对；末尾换行变化用 meta 行表示（不计入 +/-）。
 function computeLineDiff(oldText, newText) {
   const a = splitDiffLines(oldText);
   const b = splitDiffLines(newText);
-  if ((a.lines.length + 1) * (b.lines.length + 1) > 10000000) {
-    return { lines: null, degraded: true };
+  const oldLines = a.lines;
+  const newLines = b.lines;
+  const n = oldLines.length;
+  const m = newLines.length;
+  let prefix = 0;
+  while (prefix < n && prefix < m && oldLines[prefix] === newLines[prefix]) prefix++;
+  let oldEnd = n;
+  let newEnd = m;
+  while (oldEnd > prefix && newEnd > prefix && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
   }
-  const n = a.lines.length;
-  const m = b.lines.length;
-  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a.lines[i] === b.lines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
+  const oldCount = oldEnd - prefix;
+  const newCount = newEnd - prefix;
+  if (oldCount * newCount > MAX_DIFF_LINE_PAIRS) {
+    return { lines: null, degraded: true, reason: "size" };
   }
+
   const lines = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a.lines[i] === b.lines[j]) { lines.push({ type: "ctx", text: a.lines[i] }); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { lines.push({ type: "del", text: a.lines[i] }); i++; }
-    else { lines.push({ type: "add", text: b.lines[j] }); j++; }
+  for (let i = 0; i < prefix; i++) lines.push({ type: "ctx", text: oldLines[i] });
+  if ((oldCount + 1) * (newCount + 1) > MAX_DIFF_MATRIX_CELLS) {
+    if (!appendSparseDiff(oldLines, prefix, oldEnd, newLines, prefix, newEnd, lines)) {
+      try {
+        appendLinearSpaceDiff(oldLines, prefix, oldEnd, newLines, prefix, newEnd, lines, Date.now() + MAX_DENSE_DIFF_MS);
+      } catch (error) {
+        if (error === DIFF_TIME_LIMIT) return { lines: null, degraded: true, reason: "time" };
+        throw error;
+      }
+    }
+  } else {
+    const dp = Array.from({ length: oldCount + 1 }, () => new Uint32Array(newCount + 1));
+    for (let i = oldCount - 1; i >= 0; i--) {
+      for (let j = newCount - 1; j >= 0; j--) {
+        dp[i][j] = oldLines[prefix + i] === newLines[prefix + j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < oldCount && j < newCount) {
+      if (oldLines[prefix + i] === newLines[prefix + j]) {
+        lines.push({ type: "ctx", text: oldLines[prefix + i] }); i++; j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        lines.push({ type: "del", text: oldLines[prefix + i] }); i++;
+      } else {
+        lines.push({ type: "add", text: newLines[prefix + j] }); j++;
+      }
+    }
+    while (i < oldCount) { lines.push({ type: "del", text: oldLines[prefix + i] }); i++; }
+    while (j < newCount) { lines.push({ type: "add", text: newLines[prefix + j] }); j++; }
   }
-  while (i < n) { lines.push({ type: "del", text: a.lines[i] }); i++; }
-  while (j < m) { lines.push({ type: "add", text: b.lines[j] }); j++; }
+  for (let i = oldEnd; i < n; i++) lines.push({ type: "ctx", text: oldLines[i] });
   if (n > 0 && a.eol === false && b.eol !== false) {
     lines.push({ type: "meta", text: "\\ 修改前文件末尾无换行" });
   }
@@ -1912,7 +2056,9 @@ function buildDiffCodeBlock(diff, budget) {
   if (diff.degraded || !diff.lines) {
     const note = document.createElement("div");
     note.className = "diff-note";
-    note.textContent = "未计算行级 Diff（内容过大）";
+    note.textContent = diff.reason === "time"
+      ? "未计算行级 Diff（计算耗时过长）"
+      : "未计算行级 Diff（内容过大）";
     body.appendChild(note);
     return body;
   }
@@ -2464,6 +2610,109 @@ function renderStats() {
 // ── 左侧栏：会话列表 ─────────────────────────────────────
 let sessionListLoading = false;
 let sessionListRefreshTimer = null;
+const collapsedSessionGroups = new Set();
+const OTHER_GROUP_KEY = "__other__";
+
+function buildSessionGroups(sessions) {
+  const groups = new Map();
+  for (const s of sessions) {
+    const trimmed = (s.workingDirectory || "").trim();
+    // 根目录 "/" 去尾斜杠后为空串，需保留为有效分组而非归入 Other。
+    const dir = trimmed.replace(/\/+$/, "") || (trimmed ? "/" : "");
+    const key = dir || OTHER_GROUP_KEY;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        dir,
+        name: dir ? (dir.replace(/\/+$/, "").split("/").pop() || dir) : "Other",
+        sessions: [],
+        lastMessageAt: 0,
+      });
+    }
+    const group = groups.get(key);
+    group.sessions.push(s);
+    group.lastMessageAt = Math.max(group.lastMessageAt, s.lastMessageAt || 0);
+  }
+  return [...groups.values()].sort((a, b) => {
+    if ((a.key === OTHER_GROUP_KEY) !== (b.key === OTHER_GROUP_KEY)) {
+      return a.key === OTHER_GROUP_KEY ? 1 : -1;
+    }
+    return b.lastMessageAt - a.lastMessageAt;
+  });
+}
+
+function createSessionGroupHeader(group) {
+  const collapsed = collapsedSessionGroups.has(group.key);
+  const header = document.createElement("div");
+  header.className = `session-group-header${collapsed ? " collapsed" : ""}`;
+  header.title = group.dir || "无工作目录";
+  header.setAttribute("role", "button");
+  header.setAttribute("tabindex", "0");
+  header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  header.innerHTML = `
+    <span class="session-group-arrow" aria-hidden="true">▾</span>
+    <span class="session-group-name">${escapeHtml(group.name)}</span>
+    <span class="session-group-count">${group.sessions.length}</span>
+  `;
+  const toggle = () => {
+    if (collapsedSessionGroups.has(group.key)) {
+      collapsedSessionGroups.delete(group.key);
+    } else {
+      collapsedSessionGroups.add(group.key);
+    }
+    loadSessionList();
+  };
+  header.addEventListener("click", toggle);
+  header.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return header;
+}
+
+function createSessionItem(s) {
+  const isCurrent = s.sessionId === state.sessionId;
+  const readCount = state.sessionReadCounts?.[s.sessionId] || 0;
+  const unreadCount = isCurrent && document.visibilityState !== "hidden"
+    ? 0
+    : Math.max(0, (s.unreadMessageCount || 0) - readCount);
+  const div = document.createElement("div");
+  div.className = `session-item${isCurrent ? " active" : ""}`;
+  const memberNames = Array.isArray(s.memberNames)
+    ? s.memberNames
+    : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
+  const avatarsHtml = memberNames.map((name) => {
+    const cfg = state.characters[name] || {};
+    const charClass = getCharClass(name);
+    const av = getAvatar(name, cfg.avatar);
+    return '<span class="mini-avatar" title="' + escapeAttribute(name) + '" aria-label="' + escapeAttribute(name) + '" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
+  }).join('');
+  const title = s.title || s.sessionId.slice(0, 12);
+  const approvalBadge = s.pendingApprovalCount > 0
+    ? `<span class="session-approval-badge" role="status" aria-label="${s.pendingApprovalCount} 个任务等待审批" title="${s.pendingApprovalCount} 个任务等待审批">审批</span>`
+    : "";
+  const taskIndicator = s.activeTaskCount > 0
+    ? `<span class="session-task-spinner" role="status" aria-label="${s.activeTaskCount} 个任务执行中" title="${s.activeTaskCount} 个任务执行中"></span>`
+    : "";
+  const unreadBadge = unreadCount > 0
+    ? `<span class="session-unread-badge" aria-label="${unreadCount} 条未读消息" title="${unreadCount} 条未读消息">${unreadCount > 99 ? "99+" : unreadCount}</span>`
+    : "";
+  div.innerHTML = `
+    <div class="session-avatars">${avatarsHtml}</div>
+    <div class="session-title-row">
+      <div class="session-preview" title="${escapeAttribute(title)}">${escapeHtml(title)}${isCurrent ? " (当前)" : ""}</div>
+      <div class="session-indicators">${approvalBadge}${taskIndicator}${unreadBadge}</div>
+    </div>
+    <div class="session-meta">
+      <span>${s.messageCount} 条消息</span>
+      <span>${formatTime(s.lastMessageAt)}</span>
+    </div>
+  `;
+  div.addEventListener("click", () => switchSession(s.sessionId));
+  return div;
+}
 
 function ensureSessionReadCounts(sessions) {
   if (state.sessionReadCounts !== null) return;
@@ -2529,47 +2778,12 @@ async function loadSessionList() {
     }
 
     $sessionList.innerHTML = "";
-    for (const s of sessions) {
-      const isCurrent = s.sessionId === state.sessionId;
-      const readCount = state.sessionReadCounts?.[s.sessionId] || 0;
-      const unreadCount = isCurrent && document.visibilityState !== "hidden"
-        ? 0
-        : Math.max(0, (s.unreadMessageCount || 0) - readCount);
-      const div = document.createElement("div");
-      div.className = `session-item${isCurrent ? " active" : ""}`;
-      const memberNames = Array.isArray(s.memberNames)
-        ? s.memberNames
-        : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
-      const avatarsHtml = memberNames.map((name) => {
-        const cfg = state.characters[name] || {};
-        const charClass = getCharClass(name);
-        const av = getAvatar(name, cfg.avatar);
-        return '<span class="mini-avatar" title="' + escapeAttribute(name) + '" aria-label="' + escapeAttribute(name) + '" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
-      }).join('');
-      const title = s.title || s.sessionId.slice(0, 12);
-      const approvalBadge = s.pendingApprovalCount > 0
-        ? `<span class="session-approval-badge" role="status" aria-label="${s.pendingApprovalCount} 个任务等待审批" title="${s.pendingApprovalCount} 个任务等待审批">审批</span>`
-        : "";
-      const taskIndicator = s.activeTaskCount > 0
-        ? `<span class="session-task-spinner" role="status" aria-label="${s.activeTaskCount} 个任务执行中" title="${s.activeTaskCount} 个任务执行中"></span>`
-        : "";
-      const unreadBadge = unreadCount > 0
-        ? `<span class="session-unread-badge" aria-label="${unreadCount} 条未读消息" title="${unreadCount} 条未读消息">${unreadCount > 99 ? "99+" : unreadCount}</span>`
-        : "";
-      div.innerHTML = `
-        <div class="session-avatars">${avatarsHtml}</div>
-        <div class="session-title-row">
-          <div class="session-preview" title="${escapeAttribute(title)}">${escapeHtml(title)}${isCurrent ? " (当前)" : ""}</div>
-          <div class="session-indicators">${approvalBadge}${taskIndicator}${unreadBadge}</div>
-        </div>
-        <div class="session-path">${escapeHtml(s.workingDirectory || s.sessionId)}</div>
-        <div class="session-meta">
-          <span>${s.messageCount} 条消息</span>
-          <span>${formatTime(s.lastMessageAt)}</span>
-        </div>
-      `;
-      div.addEventListener("click", () => switchSession(s.sessionId));
-      $sessionList.appendChild(div);
+    for (const group of buildSessionGroups(sessions)) {
+      $sessionList.appendChild(createSessionGroupHeader(group));
+      if (collapsedSessionGroups.has(group.key)) continue;
+      for (const s of group.sessions) {
+        $sessionList.appendChild(createSessionItem(s));
+      }
     }
   } catch {
     // 保留上一次成功渲染的会话列表。

@@ -81,6 +81,42 @@ html, body {
   padding: 8px;
 }
 
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  margin-top: 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+.session-group-header:first-child { margin-top: 0; }
+.session-group-header:hover { background: var(--chat-bg); color: var(--text); }
+.session-group-header:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
+.session-group-header .session-group-arrow { font-size: 10px; transition: transform 0.15s; }
+.session-group-header.collapsed .session-group-arrow { transform: rotate(-90deg); }
+.session-group-header .session-group-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-group-header .session-group-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--chat-bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.session-group-header + .session-item,
+.session-group-header ~ .session-item { margin-left: 8px; }
+
 .session-item {
   padding: 10px 12px;
   border-radius: 8px;
@@ -130,7 +166,6 @@ html, body {
   font-weight: 700;
   line-height: 1;
 }
-.session-item .session-path { font-size: 11px; color: var(--text-light); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 4px; display: flex; justify-content: space-between; }
 .session-item .session-avatars { display: flex; flex-wrap: wrap; row-gap: 2px; margin-bottom: 4px; }
 .session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid white; }
