@@ -71,7 +71,8 @@ const render = (win, index) => {
   const html = dom.window.eval(`renderMetricBar(${JSON.stringify(win)}, ${index})`);
   const doc = new JSDOM(`<body>${html}</body>`).window.document;
   const labelEl = doc.querySelector(".metric-bar-label");
-  return { label: labelEl?.textContent || "", title: labelEl?.getAttribute("title") || "", labelClass: labelEl?.className || "" };
+  const valueEl = doc.querySelector(".metric-bar-value");
+  return { label: labelEl?.textContent || "", title: labelEl?.getAttribute("title") || "", labelClass: labelEl?.className || "", value: valueEl?.textContent || "" };
 };
 
 const RESET_5H = Date.now() + 3 * 3600 * 1000;
@@ -100,6 +101,20 @@ assert(kimiMonth.label === "month", `kimi 次行显示 month: ${kimiMonth.label}
 // codex week 居次位显示维度名（既有行为不回退）
 const codexWeek = render({ key: "week", label: "week", usedPercent: 60, resetsAt: RESET_MONTH }, 1);
 assert(codexWeek.label === "week", `codex 次行显示 week: ${codexWeek.label}`);
+
+// ctx 维度无数据时数值显示 0%（不再显示 --），有数据时显示百分比
+const ctxEmpty = render({ key: "ctx", label: "ctx", usedPercent: null, resetsAt: null }, 1);
+assert(ctxEmpty.value === "0%", `ctx 无数据显示 0%: ${ctxEmpty.value}`);
+const ctxUsed = render({ key: "ctx", label: "ctx", usedPercent: 40, resetsAt: null }, 1);
+assert(ctxUsed.value === "40%", `ctx 有数据显示百分比: ${ctxUsed.value}`);
+
+// 非 ctx 维度无数据仍显示 --（保持既有行为）
+const weekEmpty = render({ key: "week", label: "week", usedPercent: null, resetsAt: null }, 1);
+assert(weekEmpty.value === "--", `非 ctx 维度无数据仍显示 --: ${weekEmpty.value}`);
+
+// renderCtxBar（非 qodercn 角色的 ctx 行）无数据时同样显示 0%
+const emptyCtxDoc = new JSDOM(`<body>${dom.window.eval("renderCtxBar(null, 262144)")}</body>`).window.document;
+assert(emptyCtxDoc.querySelector(".metric-bar-value")?.textContent === "0%", "renderCtxBar 无数据显示 0%");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

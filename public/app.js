@@ -2382,7 +2382,7 @@ function getUsageWindows(member, metrics) {
 }
 
 // ctx 上下文占用条：橙色进度条，长度 = contextTokens / contextWindow。
-// contextWindow 默认 256k，可在设置中按角色调整；无数据时显示 --。
+// contextWindow 默认 256k，可在设置中按角色调整；无数据时显示 0%（不显示 --）。
 function renderCtxBar(contextTokens, contextWindow) {
   const size = Number(contextWindow) > 0 ? Number(contextWindow) : 262144;
   if (contextTokens === null || contextTokens === undefined) {
@@ -2392,7 +2392,7 @@ function renderCtxBar(contextTokens, contextWindow) {
         <div class="metric-bar-track">
           <div class="metric-bar-fill metric-bar-fill-ctx" style="width: 0%"></div>
         </div>
-        <span class="metric-bar-value">--</span>
+        <span class="metric-bar-value">0%</span>
       </div>
     `;
   }
@@ -2437,7 +2437,7 @@ function renderMetricBar(win, index) {
       <div class="metric-bar-track">
         <div class="metric-bar-fill metric-bar-fill-${fillVariant}${lowClass}" style="width: ${pct !== null ? pct + '%' : '0%'}"></div>
       </div>
-      <span class="metric-bar-value">${pct !== null ? pct + '%' : '--'}</span>
+      <span class="metric-bar-value">${pct !== null ? pct + '%' : (isCtx ? '0%' : '--')}</span>
     </div>
   `;
 }
