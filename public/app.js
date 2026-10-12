@@ -1669,19 +1669,20 @@ function buildDiffCodeBlock(diff, budget) {
   return body;
 }
 
-// 打开面板即把第一处增删行滚到代码区垂直中心：净 Diff 通常以大量上下文开头，
-// 不定位就得手动滚动才看得到改动
+// 打开面板即把第一处修改滚到代码区垂直中心：净 Diff 通常以大量上下文开头，
+// 不定位就得手动滚动才看得到改动。末尾换行变化只有 meta 行，也算一处修改。
 function centerFirstDiffChange(container) {
-  const target = container?.querySelector(".diff-line.add, .diff-line.del");
+  const target = container?.querySelector(".diff-line.add, .diff-line.del, .diff-line.meta");
   if (!target) return null;
   const code = target.closest(".diff-code");
   if (!code) return null;
-  const offset = Math.max(0, ((code.clientHeight || 0) - (target.offsetHeight || 0)) / 2);
-  code.scrollTop = Math.max(0, (target.offsetTop || 0) - offset);
+  const lineH = target.offsetHeight || 0;
+  code.scrollTop = Math.max(0, (target.offsetTop || 0) - Math.max(0, ((code.clientHeight || 0) - lineH) / 2));
   const viewH = container.clientHeight || 0;
-  const blockTop = code.offsetTop || 0;
-  if (viewH > 0 && (blockTop < container.scrollTop || blockTop > container.scrollTop + viewH)) {
-    container.scrollTop = Math.max(0, blockTop - 12);
+  if (viewH > 0) {
+    // 内层滚动会改变目标行在外层内容中的位置，居中的是目标行而不是代码块顶部
+    const targetTop = (code.offsetTop || 0) + (target.offsetTop || 0) - code.scrollTop;
+    container.scrollTop = Math.max(0, targetTop - Math.max(0, (viewH - lineH) / 2));
   }
   return { code, target };
 }

@@ -279,9 +279,26 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(!!focusRes && focusRes.target === firstChange && focusRes.code === focusCode, "定位命中第一处增删行所在的代码块");
     assert(focusCode.scrollTop === 810, `第一处修改位于代码区垂直中心（scrollTop ${focusCode.scrollTop}，期望 1000-(400-20)/2=810）`);
     const metaOnlyBox = document.createElement("div");
-    metaOnlyBox.appendChild(dom.window.buildDiffCodeBlock(dom.window.computeLineDiff("a", "a\n")));
-    assert(dom.window.centerFirstDiffChange(metaOnlyBox) === null, "只有 meta 行（末尾换行变化）时不滚动");
-    assert(dom.window.centerFirstDiffChange(document.createElement("div")) === null, "无增删行时不滚动");
+    const metaOnlyCode = dom.window.buildDiffCodeBlock(dom.window.computeLineDiff("a", "a\n"));
+    metaOnlyBox.appendChild(metaOnlyCode);
+    const metaOnlyRes = dom.window.centerFirstDiffChange(metaOnlyBox);
+    assert(!!metaOnlyRes && metaOnlyRes.target.classList.contains("meta"), "仅末尾换行变化时定位到 meta 行（这也是一处修改）");
+    assert(dom.window.centerFirstDiffChange(document.createElement("div")) === null, "无任何 diff 行时不滚动");
+
+    // ── 外层视口：内层居中后目标行仍可能落在外层视口外，需按目标行再次居中 ──
+    const outerBox = document.createElement("div");
+    const outerCode = dom.window.buildDiffCodeBlock(dom.window.computeLineDiff(Array.from({ length: 200 }, (_, k) => `c${k}`).join("\n"), Array.from({ length: 200 }, (_, k) => (k === 150 ? "changed" : `c${k}`)).join("\n")));
+    outerBox.appendChild(outerCode);
+    Object.defineProperty(outerBox, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(outerCode, "clientHeight", { value: 400, configurable: true });
+    Object.defineProperty(outerCode, "offsetTop", { value: 490, configurable: true });
+    const outerTarget = outerCode.querySelector(".diff-line.del, .diff-line.add");
+    Object.defineProperty(outerTarget, "offsetTop", { value: 1000, configurable: true });
+    Object.defineProperty(outerTarget, "offsetHeight", { value: 20, configurable: true });
+    const outerRes = dom.window.centerFirstDiffChange(outerBox);
+    assert(outerCode.scrollTop === 810, `外层场景内层同样居中（scrollTop ${outerCode.scrollTop}）`);
+    assert(outerBox.scrollTop === 440, `外层按目标行居中：490+1000-810-(500-20)/2=440（实际 ${outerBox.scrollTop}）`);
+    assert(!!outerRes && outerRes.target === outerTarget, "外层场景命中同一目标行");
 
     // ── 行号：由 CSS 计数器生成，不增加行节点 ──
     assert(panel.textContent.includes("行号：修改前 / 修改后"), "面板给出行号列图例");
