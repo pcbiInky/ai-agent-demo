@@ -1722,7 +1722,7 @@ html, body {
   height: 100vh;
   background: white;
   border-left: 1px solid var(--border);
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.1);
+  box-shadow: -12px 0 40px rgba(20, 18, 40, 0.18);
   z-index: 41;
   display: none;
   flex-direction: column;
@@ -1739,10 +1739,14 @@ html, body {
   background: var(--chat-bg);
 }
 .diff-panel-header h3 {
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text);
   margin: 0;
+  padding: 3px 8px;
+  background: rgba(74, 108, 247, 0.08);
+  border-radius: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1782,20 +1786,28 @@ html, body {
 }
 .diff-panel-content::-webkit-scrollbar-thumb:hover { background: #a8adb5; }
 .diff-seg-label {
-  margin: 10px 0 6px;
+  display: inline-block;
+  margin: 14px 0 6px;
+  padding: 3px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-light);
+  color: #4a6cf7;
+  background: rgba(74, 108, 247, 0.08);
+  border: 1px solid rgba(74, 108, 247, 0.22);
+  border-radius: 6px;
 }
 .diff-seg-label:first-child { margin-top: 0; }
 .diff-legend + .diff-seg-label { margin-top: 0; }
 /* 面板内容是唯一纵向滚动轨道：代码块随内容展开，不再自己滚 */
 .diff-code {
   position: relative;
-  border: 1px solid var(--border);
+  border: 1px solid #30363d;
   border-radius: 8px;
   overflow: hidden;
   background: #0d1117;
+  box-shadow: 0 2px 10px rgba(13, 17, 23, 0.12);
+  margin-bottom: 12px;
+  padding: 6px 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -1807,7 +1819,8 @@ html, body {
   right: 16px;
   width: 10px;
   border-radius: 5px;
-  background: rgba(13, 17, 23, 0.07);
+  background: rgba(13, 17, 23, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(13, 17, 23, 0.06);
   z-index: 2;
 }
 .diff-rail[hidden] { display: none; }
@@ -1849,20 +1862,29 @@ html, body {
   height: 24px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   background: white;
   font-size: 14px;
   line-height: 1;
   color: var(--text);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
 .diff-nav-btn:hover { border-color: #4a6cf7; color: #4a6cf7; background: rgba(74, 108, 247, 0.08); }
+.diff-nav-btn:active { transform: translateY(1px); }
 .diff-nav-count {
   min-width: 44px;
   text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  color: var(--text-light);
+  font-weight: 600;
+  color: #4a6cf7;
+  padding: 3px 6px;
+  background: rgba(74, 108, 247, 0.08);
+  border-radius: 5px;
 }
 .diff-line {
   display: flex;
@@ -1871,6 +1893,7 @@ html, body {
   white-space: pre-wrap;
   word-break: break-all;
   color: #c9d1d9;
+  transition: background-color 0.15s ease;
 }
 .diff-line.ctx { counter-increment: diff-old diff-new; }
 .diff-line.del { counter-increment: diff-old; }
@@ -1886,13 +1909,30 @@ html, body {
 .diff-line.ctx::before { content: counter(diff-old) " / " counter(diff-new); }
 .diff-line.del::before { content: counter(diff-old) " / -"; }
 .diff-line.add::before { content: "- / " counter(diff-new); }
-.diff-line.add { background: rgba(46, 160, 67, 0.22); color: #aff5b4; }
-.diff-line.del { background: rgba(248, 81, 73, 0.18); color: #ffc1bc; }
+.diff-line.add { background: rgba(46, 160, 67, 0.15); color: #7ee787; box-shadow: inset 2px 0 0 #2ea043; }
+.diff-line.del { background: rgba(248, 81, 73, 0.13); color: #ffa198; box-shadow: inset 2px 0 0 #f85149; }
 .diff-line.ctx { color: #8b949e; }
-.diff-line.meta { color: #d29922; font-style: italic; }
+.diff-line.meta { color: #d29922; font-style: italic; background: rgba(210, 153, 34, 0.08); }
 .diff-line.diff-current { box-shadow: inset 3px 0 0 #4a6cf7; }
 .diff-note {
-  padding: 8px 10px;
+  padding: 6px 10px;
+  margin: 4px 0;
   font-size: 12px;
-  color: var(--text-light);
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.1);
+  border-left: 3px solid rgba(210, 153, 34, 0.6);
+  border-radius: 0 6px 6px 0;
+}
+/* 面板浅色区域里的提示（汇总/降级标注）用浅底深字 */
+.diff-panel-content > .diff-note {
+  color: #9a6700;
+  background: rgba(210, 153, 34, 0.08);
+  border-left-color: rgba(210, 153, 34, 0.5);
+}
+/* 深色代码块内的提示（截断/降级）留出两侧空隙，与代码块内边距对齐 */
+.diff-code .diff-note { margin: 4px 8px; }
+.diff-note.diff-legend {
+  color: #4a6cf7;
+  background: rgba(74, 108, 247, 0.06);
+  border-left-color: #4a6cf7;
 }

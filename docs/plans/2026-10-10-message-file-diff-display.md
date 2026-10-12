@@ -30,6 +30,20 @@
 - v21 按铲屎官要求：「上一处/下一处」改成 ⬆️ / ⬇️ 符号按钮，并从面板内容里的吸顶工具条移到标题行、文件名右侧右对齐。
 - v22 按铲屎官要求：按钮符号改 ↑/↓ 文本箭头（避免 emoji 跨平台渲染差异），控件从标题行内移到标题行下面独立的一行并右对齐。
 - v23 按铲屎官要求：↑/↓ 不再独占一行，改为与文件路径行（`#diff-panel-sub`）同一行，路径吃掉剩余宽度把导航推到右边。
+- v24 按铲屎官要求做视觉美化：纯 CSS，不改结构与行为。
+
+## v24 变更：面板视觉美化（纯 CSS）
+
+**需求（铲屎官）**：给 diff 窗口做一下美化。
+
+- **面板与头部**：`.diff-panel` 阴影加深为 `-12px 0 40px rgba(20,18,40,0.18)`；标题 `h3` 改为等宽字体文件名胶囊（13.5px、`rgba(74,108,247,0.08)` 浅蓝底、6px 圆角），不加 `flex`（v23 断言仍要求标题行不带 flex）。
+- **片段标签**：`.diff-seg-label` 从纯文字改为 `inline-block` 蓝色胶囊（浅蓝底 + 1px 蓝边 + 6px 圆角），`first-child` 与 `.diff-legend +` 的紧凑间距规则保留。
+- **代码块**：`.diff-code` 边框从浅灰 `var(--border)` 改为深色 `#30363d`（与 `#0d1117` 底色衔接），加 `box-shadow` / `margin-bottom: 12px` / `padding: 6px 0`；`position: relative` / `overflow: hidden` / `counter-reset` 等行为性声明原样保留（测试按源码断言）。
+- **diff 行**：add/del 背景调淡并加 2px 左侧色条（`inset 2px 0 0`，绿/红），文字改用 GitHub 深色主题色（`#7ee787` / `#ffa198`）；meta 行补 `rgba(210,153,34,0.08)` 浅琥珀底。当前处高亮规则 `.diff-line.diff-current { box-shadow: inset 3px 0 0 #4a6cf7; }` 原样保留——同 specificity 且位置更靠后，仍覆盖 add/del 的 2px 色条。
+- **提示条**：`.diff-note` 改为带左侧色条的提示条；深色代码块内（截断/降级提示，`buildDiffCodeBlock` 追加在 `.diff-code` 内）用琥珀色亮字 + 半透明底（`.diff-code .diff-note` 两侧留 8px 空隙），面板浅色区域（汇总/顺序未知/图例）用深字浅底（`.diff-panel-content > .diff-note`）；`.diff-note.diff-legend` 图例用蓝色系与截断警告区分。
+- **导航与刻度轨**：`.diff-nav-btn` 圆角 4→6px、加 transition 与 `:active` 下压；`.diff-nav-count` 改为蓝色小胶囊；`.diff-rail` 底色加深并加内描边。
+- **不变**：DOM 结构、JS 行为、行号计数器、滚动/刻度/代次守卫逻辑全部未动；`test-file-diff-display.js` 180 项 + metric-bar-label(9) / tool-records-fold(26) / thinking-restore(56) 全部通过。
+- **未验证项**：真实浏览器里的观感（胶囊、色条、阴影）需铲屎官确认。
 
 ## v23 变更：↑/↓ 与文件路径同一行
 
