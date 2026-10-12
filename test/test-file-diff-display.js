@@ -32,7 +32,7 @@ const IDS = [
   "settings-skills-panel", "thread-panel", "thread-messages", "thread-close-btn",
   "skill-trace-list", "skill-list",
   "diff-panel", "diff-panel-title", "diff-panel-sub", "diff-panel-content", "diff-close-btn",
-  "diff-nav", "diff-nav-prev", "diff-nav-count", "diff-nav-next",
+  "diff-nav", "diff-nav-prev", "diff-nav-count", "diff-nav-next", "diff-resize-handle",
 ];
 
 let historyPayload = {
@@ -721,6 +721,25 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(/1\/5 个片段由单块渲染上限 12000 行截断/.test(truncText), "单块截断汇总计数正确");
     assert(!truncText.includes("面板总预算未用尽"), "单块汇总不再断言面板预算状态（避免与总上限提示矛盾）");
     assert(!truncText.includes("逐次操作明细"), "混合截断文案不再提及逐次操作明细");
+
+    // ── v25：左缘拖动调整面板宽度 ──
+    const resizeHandle = document.getElementById("diff-resize-handle");
+    assert(!!resizeHandle, "面板左缘有拖动手柄");
+    assert(/<div id="diff-panel" class="diff-panel">\s*<div id="diff-resize-handle"/.test(headerHtml), "手柄是 #diff-panel 的第一个子节点（绝对定位在左缘）");
+    assert(/\.diff-resize-handle \{[^}]*cursor: col-resize;/.test(styleCss), "手柄悬停显示横向拖拽光标");
+    assert(/\.diff-panel \{[^}]*min-width: 420px;/.test(styleCss), "CSS 层同样兜住最小宽度");
+    const panelForResize = document.getElementById("diff-panel");
+    resizeHandle.dispatchEvent(new dom.window.MouseEvent("mousedown", { clientX: 400, bubbles: true }));
+    assert(resizeHandle.classList.contains("active") && document.body.style.userSelect === "none", "按下后手柄高亮并禁用文本选中");
+    dom.window.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 600 }));
+    assert(panelForResize.style.width === "424px", `拖到 clientX=600 → 宽 1024-600=424px（实际 ${panelForResize.style.width}）`);
+    dom.window.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 900 }));
+    assert(panelForResize.style.width === "420px", `拖过下限被钳到 420px（实际 ${panelForResize.style.width}）`);
+    dom.window.dispatchEvent(new dom.window.MouseEvent("mouseup"));
+    dom.window.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 100 }));
+    assert(panelForResize.style.width === "420px", "松手后不再跟随鼠标");
+    assert(!resizeHandle.classList.contains("active") && document.body.style.userSelect === "", "拖动结束后撤掉高亮与选中禁用");
+    panelForResize.style.width = "";
   } catch (err) {
     console.error("测试异常:", err);
     failed += 1;

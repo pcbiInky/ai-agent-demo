@@ -1718,6 +1718,7 @@ html, body {
   top: 0;
   right: 0;
   width: 920px;
+  min-width: 420px;
   max-width: 96vw;
   height: 100vh;
   background: white;
@@ -1731,6 +1732,28 @@ html, body {
 }
 .diff-panel.open { display: flex; }
 .diff-panel.visible { transform: translateX(0); }
+/* 左缘拖动手柄：6px 热区 + 2px 高亮线，hover/拖动中变蓝 */
+.diff-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+}
+.diff-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.diff-resize-handle:hover::after,
+.diff-resize-handle.active::after { background: #4a6cf7; }
 .diff-panel-header {
   display: flex;
   align-items: center;

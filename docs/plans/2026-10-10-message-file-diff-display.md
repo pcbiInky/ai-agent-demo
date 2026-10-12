@@ -31,6 +31,18 @@
 - v22 按铲屎官要求：按钮符号改 ↑/↓ 文本箭头（避免 emoji 跨平台渲染差异），控件从标题行内移到标题行下面独立的一行并右对齐。
 - v23 按铲屎官要求：↑/↓ 不再独占一行，改为与文件路径行（`#diff-panel-sub`）同一行，路径吃掉剩余宽度把导航推到右边。
 - v24 按铲屎官要求做视觉美化：纯 CSS，不改结构与行为。
+- v25 按铲屎官要求：面板左缘支持拖动调宽（下限 420px，上限沿用 `max-width: 96vw`）。
+
+## v25 变更：左缘拖动调整面板宽度
+
+**需求（铲屎官）**：Diff 窗口大小能支持左侧拖动调整大小吗。
+
+- **结构**：`#diff-panel` 第一个子节点新增 `#diff-resize-handle`（`.diff-resize-handle`，`title="拖动调整面板宽度"`）。
+- **样式**：手柄 `position: absolute; left: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 3`，`::after` 画 2px 高亮线，hover / 拖动中（`.active`）变 `#4a6cf7`；`.diff-panel` 补 `min-width: 420px`，上限沿用 `max-width: 96vw`。
+- **行为**（`setupDiffPanel`）：手柄 `mousedown` 进入拖动（加 `.active`、`body` 禁文本选中、`preventDefault`）；`window.mousemove` 中宽度 = `window.innerWidth - e.clientX`（面板右缘贴视口右边），钳到 `DIFF_PANEL_MIN_WIDTH = 420` 后写内联 `style.width`（CSS `96vw` 上限仍生效）；`window.mouseup` 结束拖动、还原选中，并在面板打开时 `rebuildDiffNav()` 一次（宽度变化后长行换行改变，刻度按比例重算，保留 `scrollTop`）。拖动过程中不重算刻度，避免每帧遍历全部行。
+- **不持久化**：刷新后回到默认 920px，如有需要再加 localStorage。
+- 回归用例（`test-file-diff-display.js` 189 项）：手柄存在且是 `#diff-panel` 首子节点、`cursor: col-resize`、`.diff-panel` 含 `min-width: 420px`；mousedown → `.active` + 禁选中；jsdom `innerWidth=1024` 下 clientX 600 → `width: 424px`、clientX 900 → 钳到 `420px`；mouseup 后 mousemove 不再改变宽度、`.active` 与 `userSelect` 还原。其余 4 个 eval app.js 的套件（metric-bar-label / tool-records-fold / thinking-restore / thread-attribution）IDS 列表补 `diff-resize-handle`，全部通过。
+- **未验证项**：真实浏览器里的拖动手感、手柄热区 6px 是否好抓、拖出窗口外松手的边缘情况，需铲屎官确认。
 
 ## v24 变更：面板视觉美化（纯 CSS）
 

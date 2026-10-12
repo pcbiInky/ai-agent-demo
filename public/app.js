@@ -77,6 +77,7 @@ const $diffNav = $("#diff-nav");
 const $diffNavPrev = $("#diff-nav-prev");
 const $diffNavCount = $("#diff-nav-count");
 const $diffNavNext = $("#diff-nav-next");
+const $diffResizeHandle = $("#diff-resize-handle");
 const $skillTraceList = $("#skill-trace-list");
 const $skillList = $("#skill-list");
 
@@ -1618,6 +1619,28 @@ function setupDiffPanel() {
   $diffRail.className = "diff-rail";
   $diffRail.hidden = true;
   $diffPanel.appendChild($diffRail);
+  // 左缘拖动调宽：面板右缘贴着视口右边，宽度 = 视口宽 - 指针横坐标；
+  // 宽度只写内联 style，CSS 的 max-width: 96vw 仍是上限
+  let resizeDrag = null;
+  $diffResizeHandle.addEventListener("mousedown", (e) => {
+    resizeDrag = true;
+    $diffResizeHandle.classList.add("active");
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!resizeDrag) return;
+    const width = Math.max(DIFF_PANEL_MIN_WIDTH, Math.round(window.innerWidth - e.clientX));
+    $diffPanel.style.width = `${width}px`;
+  });
+  window.addEventListener("mouseup", () => {
+    if (!resizeDrag) return;
+    resizeDrag = null;
+    $diffResizeHandle.classList.remove("active");
+    document.body.style.userSelect = "";
+    // 宽度变化后长行换行改变、刻度比例失真，松手后按新布局重算一次（保留 scrollTop）
+    if ($diffPanel.classList.contains("open")) rebuildDiffNav();
+  });
   // resize 连续触发，刻度按布局比例定位必须重算；用 rAF 合并成一帧一次
   window.addEventListener("resize", () => {
     if (_railResizeFrame) return;
@@ -1638,6 +1661,9 @@ let _diffOpenGen = 0;
 const MAX_DIFF_RENDER_LINES = 12000;
 // 面板级总预算：单块上限拦不住"多段"场景（60 段 × 12000 行可达 72 万节点）
 const MAX_PANEL_RENDER_LINES = 20000;
+
+// 左缘拖动调宽的下限：再窄行号列 + 代码就没法看了
+const DIFF_PANEL_MIN_WIDTH = 420;
 
 function buildDiffCodeBlock(diff, budget) {
   const body = document.createElement("div");
