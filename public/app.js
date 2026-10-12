@@ -2611,6 +2611,8 @@ function renderStats() {
 let sessionListLoading = false;
 let sessionListRefreshTimer = null;
 const collapsedSessionGroups = new Set();
+const expandedSessionGroups = new Set();
+const SESSION_GROUP_VISIBLE_COUNT = 5;
 const OTHER_GROUP_KEY = "__other__";
 
 function buildSessionGroups(sessions) {
@@ -2649,6 +2651,7 @@ function createSessionGroupHeader(group) {
   header.setAttribute("role", "button");
   header.setAttribute("tabindex", "0");
   header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  header.dataset.groupKey = group.key;
   header.innerHTML = `
     <span class="session-group-arrow" aria-hidden="true">▾</span>
     <span class="session-group-name">${escapeHtml(group.name)}</span>
@@ -2672,6 +2675,47 @@ function createSessionGroupHeader(group) {
   return header;
 }
 
+function createShowMoreButton(group) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "session-group-more";
+  btn.textContent = "Show more";
+  btn.dataset.groupKey = group.key;
+  btn.setAttribute("aria-label", `展开 ${group.name} 分组的剩余对话`);
+  const expand = () => {
+    expandedSessionGroups.add(group.key);
+    loadSessionList();
+  };
+  btn.addEventListener("click", expand);
+  return btn;
+}
+
+function captureSessionListFocus() {
+  const active = document.activeElement;
+  if (!active || !$sessionList.contains(active)) return null;
+  if (active.classList.contains("session-group-header")) {
+    return { type: "header", key: active.dataset.groupKey };
+  }
+  if (active.classList.contains("session-group-more")) {
+    return { type: "more", key: active.dataset.groupKey };
+  }
+  if (active.classList.contains("session-item")) {
+    return { type: "item", key: active.dataset.sessionId };
+  }
+  return null;
+}
+
+function restoreSessionListFocus(focus) {
+  if (!focus) return;
+  const match = (selector, attr) =>
+    [...$sessionList.querySelectorAll(selector)].find((el) => el.dataset[attr] === focus.key);
+  let target = null;
+  if (focus.type === "header") target = match(".session-group-header", "groupKey");
+  else if (focus.type === "item") target = match(".session-item", "sessionId");
+  else target = match(".session-group-more", "groupKey") || match(".session-group-header", "groupKey");
+  if (target) target.focus();
+}
+
 function createSessionItem(s) {
   const isCurrent = s.sessionId === state.sessionId;
   const readCount = state.sessionReadCounts?.[s.sessionId] || 0;
@@ -2680,6 +2724,7 @@ function createSessionItem(s) {
     : Math.max(0, (s.unreadMessageCount || 0) - readCount);
   const div = document.createElement("div");
   div.className = `session-item${isCurrent ? " active" : ""}`;
+  div.dataset.sessionId = s.sessionId;
   const memberNames = Array.isArray(s.memberNames)
     ? s.memberNames
     : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
@@ -2777,14 +2822,21 @@ async function loadSessionList() {
       markSessionRead(state.sessionId, currentSummary.unreadMessageCount);
     }
 
+    const listFocus = captureSessionListFocus();
     $sessionList.innerHTML = "";
     for (const group of buildSessionGroups(sessions)) {
       $sessionList.appendChild(createSessionGroupHeader(group));
       if (collapsedSessionGroups.has(group.key)) continue;
-      for (const s of group.sessions) {
+      const expanded = expandedSessionGroups.has(group.key);
+      const visible = expanded ? group.sessions : group.sessions.slice(0, SESSION_GROUP_VISIBLE_COUNT);
+      for (const s of visible) {
         $sessionList.appendChild(createSessionItem(s));
       }
+      if (!expanded && group.sessions.length > SESSION_GROUP_VISIBLE_COUNT) {
+        $sessionList.appendChild(createShowMoreButton(group));
+      }
     }
+    restoreSessionListFocus(listFocus);
   } catch {
     // 保留上一次成功渲染的会话列表。
   } finally {
