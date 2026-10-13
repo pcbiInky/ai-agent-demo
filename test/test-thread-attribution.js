@@ -201,6 +201,16 @@ function buildHistoryFixture(roleA, roleB) {
       replyTo: i === 0 ? threadId : `old-reply-${i - 1}`,
     });
   }
+  // 回归主线的角色保持同 threadId，但 depth=0（省略字段），仍属于回复链。
+  messages.push(
+    { id: "return-root", role: "assistant", character: roleA.name, text: "马哥，请实现主界面自适应", timestamp: 70, threadId: "return-root", aiMentions: [roleB.name], replyTo: "u0" },
+    { id: "return-child", role: "assistant", character: roleB.name, text: "实现完成，请验收", timestamp: 71, threadId: "return-root", depth: 1, replyTo: "return-root" },
+    { id: "return-middle", role: "assistant", character: roleA.name, text: "验收发现转义问题，请修正", timestamp: 72, threadId: "return-root", aiMentions: [roleB.name], replyTo: "return-child" },
+    { id: "return-fixed", role: "assistant", character: roleB.name, text: "转义已修正", timestamp: 73, threadId: "return-root", depth: 1, replyTo: "return-middle" },
+    { id: "return-final", role: "assistant", character: roleA.name, text: "最终验收通过", timestamp: 74, threadId: "return-root", replyTo: "return-fixed" },
+    // depth 省略且 replyTo 直接指向线程根（originId 分支），同样属于回复链
+    { id: "return-to-root", role: "assistant", character: roleB.name, text: "直接回复线程根的补充", timestamp: 75, threadId: "return-root", replyTo: "return-root" },
+  );
   messages.push({ id: "u1", role: "user", text: "铲屎官的新指令", timestamp: 100 });
   messages.push({
     id: "new-msg",
@@ -307,6 +317,12 @@ async function runFrontendChecks(roleA, roleB) {
   // 空文本 error 不算有效回复：13 条而非 14 条
   assert(!/14 条回复/.test(barText("thread-root")), "空文本 error 记录不计入回复数");
 
+  assert(/5 条回复/.test(barText("return-root")), "历史回复链计入主线返回、直回线程根的中间消息和最终回复");
+  dom.window.openThread("return-root");
+  const returnTexts = [...document.querySelectorAll("#thread-messages .bubble")].map((el) => el.textContent);
+  assert(returnTexts.join("|") === "马哥，请实现主界面自适应|实现完成，请验收|验收发现转义问题，请修正|转义已修正|最终验收通过|直接回复线程根的补充",
+    "历史面板完整显示根→子→主线返回→子→最终回复→直回线程根，且保持顺序");
+
   // ── 实时链路：新召唤开新线程，计数与刷新后一致 ──
   const es = esInstances[0];
   es.emit("reply", {
@@ -329,6 +345,32 @@ async function runFrontendChecks(roleA, roleB) {
   });
   await sleep(200);
   assert(/1 条回复/.test(barText("live-root")), `实时空文本回复不计入（${barText("live-root")}）`);
+  dom.window.openThread("live-root");
+  const liveContinuations = [
+    { character: roleA.name, messageId: "live-reply", replyId: "live-return", text: "实时主线返回并再次召唤", timestamp: 303, threadId: "live-root", aiMentions: [roleB.name] },
+    { character: roleB.name, messageId: "live-return", replyId: "live-fixed", text: "实时修正完成", timestamp: 304, threadId: "live-root", depth: 1 },
+    { character: roleA.name, messageId: "live-fixed", replyId: "live-final", text: "实时最终验收", timestamp: 305, threadId: "live-root" },
+    // depth 省略且父消息就是线程根（originId 分支）
+    { character: roleB.name, messageId: "live-root", replyId: "live-rootnote", text: "实时直回线程根", timestamp: 306, threadId: "live-root" },
+  ];
+  for (const msg of liveContinuations) es.emit("reply", msg);
+  assert(/5 条回复/.test(barText("live-root")), "实时链路计入省略 depth 的主线返回与直回线程根消息");
+  const liveTexts = [...document.querySelectorAll("#thread-messages .bubble")].map((el) => el.textContent);
+  assert(liveTexts.join("|") === "实时新一轮召唤|实时回复|实时主线返回并再次召唤|实时修正完成|实时最终验收|实时直回线程根",
+    "已打开的实时面板立即更新且不丢中间主线消息");
+  es.emit("reply", liveContinuations[0]);
+  assert(/5 条回复/.test(barText("live-root")), "重复回报不重复计入主线返回消息");
+
+  historyPayload.messages.push(
+    { id: "live-root", role: "assistant", character: roleA.name, text: "实时新一轮召唤", timestamp: 300, threadId: "live-root", aiMentions: [roleB.name], replyTo: "u1" },
+    { id: "live-reply", role: "assistant", character: roleB.name, text: "实时回复", timestamp: 301, threadId: "live-root", depth: 1, replyTo: "live-root" },
+    ...liveContinuations.map(({ replyId, messageId, ...msg }) => ({ ...msg, id: replyId, replyTo: messageId, role: "assistant" })),
+  );
+  await dom.window.loadHistory();
+  assert(/5 条回复/.test(barText("live-root")), "刷新后的主线返回与直回线程根消息计数与实时一致");
+  dom.window.openThread("live-root");
+  assert(document.getElementById("thread-messages").textContent.includes("实时主线返回并再次召唤"),
+    "刷新后的回复链仍保留中间主线消息");
 }
 
 main();

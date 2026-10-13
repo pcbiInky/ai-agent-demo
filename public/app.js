@@ -437,7 +437,8 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     finalizeThinking(data.character, data.messageId, "done");
 
-    if (data.threadId && data.depth > 0) {
+    // SSE reply 事件字段：replyId=本条消息自身 id，messageId=父消息 id（即 replyTo）
+    if (isThreadReply(data.threadId, data.replyId, data.messageId, data.depth)) {
       appendThreadReply(data);
       // 召唤链 thread 回复：执行记录嵌入回复内部（与历史渲染一致）
       attachThinkingToReply(data.character, data.messageId, state.messageElements[data.replyId]);
@@ -677,6 +678,18 @@ function appendAssistantMessage(character, text, replyId, threadId, aiMentions, 
   }
 
   handlePostAppend({ shouldAutoScroll });
+}
+
+// depth 表示角色调用栈层级；回到主线后 depth=0 的消息仍可属于原回复链。
+// 用 replyTo 指向线程根或已收录回复来认定续聊，避免旧 threadId 串入另一条用户指令。
+function isThreadReply(threadId, replyId, replyTo, depth) {
+  if (!threadId) return false;
+  const thread = state.threads[threadId];
+  if (replyId === threadId || replyId === thread?.originId) return false;
+  if (depth > 0) return true; // 兼容旧日志中缺少 replyTo 的深层回复
+  if (!thread || !replyTo) return false;
+  // replyTo 命中线程根（直接引用根的续聊）或链内已收录回复（回到主线后的续聊）
+  return replyTo === thread.originId || thread.replies.some((reply) => reply.id === replyTo);
 }
 
 // ── Thread 回复渲染（主聊天流中，带引用条） ──────────────
@@ -3056,7 +3069,8 @@ async function loadHistory(forSessionId = state.sessionId) {
       };
     }
     for (const msg of log.messages) {
-      if (msg.threadId && msg.depth > 0 && state.threads[msg.threadId]) {
+      if ((msg.role === "assistant" || msg.role === "error") && state.threads[msg.threadId]
+        && isThreadReply(msg.threadId, msg.id, msg.replyTo, msg.depth)) {
         // 空文本记录（如协议违规产生的 error）不构成有效回复，不进计数与面板
         if (!String(msg.text || "").trim()) continue;
         state.threads[msg.threadId].replies.push({
@@ -3104,7 +3118,7 @@ async function loadHistory(forSessionId = state.sessionId) {
       if (msg.role === "user") {
         appendUserMessage(msg.text, msg.timestamp);
       } else if (msg.role === "assistant") {
-        if (msg.threadId && msg.depth > 0) {
+        if (isThreadReply(msg.threadId, msg.id, msg.replyTo, msg.depth)) {
           // 召唤链的 thread 深层回复：执行记录同样嵌入该回复，不另起一行
           flushPerms(msg.character, msg.replyTo);
           appendThreadReply({
