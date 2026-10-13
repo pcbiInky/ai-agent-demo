@@ -1,0 +1,268 @@
+#!/usr/bin/env node
+// 消息内 Mermaid 渲染的回归测试（jsdom + 真实 marked/marked-highlight/hljs/DOMPurify + 可控假 Mermaid）
+// 覆盖：主聊天/历史重放/消息链面板渲染、ID 唯一、去重、串行队列错误后继续、
+//       超长与加载失败回退、异步期间切换会话丢弃旧结果、SVG 二次清洗、普通 Markdown 回归
+const fs = require("fs");
+const path = require("path");
+
+let JSDOM = null;
+try {
+  JSDOM = require("jsdom").JSDOM;
+} catch (err) {
+  console.error(`❌ 无法加载 jsdom（请先 npm install）：${err.message}`);
+  process.exit(1);
+}
+const { marked } = require("marked");
+const markedHighlightPkg = require("marked-highlight");
+const hljs = require("highlight.js");
+const createDOMPurify = require("dompurify");
+
+let passed = 0;
+let failed = 0;
+function assert(condition, label) {
+  if (condition) { console.log(`✅ ${label}`); passed += 1; }
+  else { console.log(`❌ ${label}`); failed += 1; }
+}
+
+const appJs = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+
+const IDS = [
+  "messages", "message-input", "send-btn", "chat-container", "jump-to-latest-btn",
+  "session-id-display", "new-session-btn", "session-list", "mention-hints",
+  "character-statuses", "chat-title-text", "chat-subtitle", "edit-session-meta-btn",
+  "settings-btn", "settings-modal", "settings-form", "settings-error",
+  "settings-save-btn", "settings-cancel-btn", "settings-title", "settings-subtitle",
+  "settings-skills-panel", "thread-panel", "thread-messages", "thread-close-btn",
+  "skill-trace-list", "skill-list",
+  "diff-panel", "diff-panel-title", "diff-panel-sub", "diff-panel-content", "diff-close-btn",
+  "diff-nav", "diff-nav-prev", "diff-nav-count", "diff-nav-next", "diff-resize-handle",
+];
+
+// 可控的假 Mermaid：记录 render 调用，按源码内容决定行为
+const mermaidMock = {
+  calls: [],
+  delayMs: 0,
+  async render(id, source) {
+    this.calls.push({ id, source });
+    if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
+    if (source.includes("INVALID")) throw new Error("Parse error on line 1: <bad>");
+    if (source.includes("EVIL")) {
+      return {
+        svg: `<svg xmlns="http://www.w3.org/2000/svg" id="${id}-svg" width="10" height="10">`
+          + `<script>window.__pwned = 1</script>`
+          + `<foreignObject><body xmlns="http://www.w3.org/1999/xhtml"><div>x</div></body></foreignObject>`
+          + `<rect width="10" height="10" onclick="window.__pwned = 1"/>`
+          + `<a href="javascript:window.__pwned = 1"><text>恶意链</text></a></svg>`,
+      };
+    }
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" id="${id}-svg" width="80" height="40"><text>${source.includes("开始") ? "开始" : "节点"}</text></svg>` };
+  },
+};
+
+const FLOW_A = 'flowchart TD\n  A["开始"] --> B{是否有效}\n  B -- 是 --> C["继续"]\n  B -- 否 --> D["结束"]';
+const FLOW_B = "flowchart LR\n  X[甲] --> Y[乙]";
+const FLOW_C = "sequenceDiagram\n  客户端->>服务端: 发起请求";
+const md = (code) => "```mermaid\n" + code + "\n```";
+
+const historyPayload = {
+  sessionId: "sess-mermaid",
+  createdAt: 0,
+  messages: [
+    { id: "u1", role: "user", text: "用户消息里提到 " + md(FLOW_A) + " 不应被转换", timestamp: 1 },
+    { id: "h1", role: "assistant", character: "YYF", text: "历史里的图：\n" + md(FLOW_A), timestamp: 2 },
+  ],
+  lastSeq: 1,
+  activeThinking: [],
+};
+
+const esInstances = [];
+class MockEventSource {
+  constructor(url) {
+    this.url = url;
+    this.listeners = {};
+    esInstances.push(this);
+  }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  emit(type, data) { for (const fn of this.listeners[type] || []) fn({ data: JSON.stringify(data) }); }
+  close() {}
+}
+
+function stubFetch(url) {
+  const ok = (payload) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+  if (url.includes("/api/history")) return ok(historyPayload);
+  if (url.includes("/api/characters")) return ok({ characters: { "YYF": { cli: "codex", id: "r1" }, "马哥": { cli: "qodercn", id: "r2" } } });
+  if (url.includes("/members") && !url.includes("runtime-metrics")) return ok({ members: [] });
+  if (url.includes("/api/sessions/") && url.includes("skill-traces")) return ok({ traces: [] });
+  if (url.includes("/api/sessions/") && !url.includes("runtime-metrics")) return ok({ session: { title: "t", workingDirectory: "/x" } });
+  if (url.includes("/api/skills")) return ok({ skills: [] });
+  if (url.includes("/api/sessions") && !url.includes("runtime-metrics")) return ok({ sessions: [] });
+  return ok({});
+}
+
+const dom = new JSDOM(
+  `<!DOCTYPE html><html><body>${IDS.map((id) => `<div id="${id}"></div>`).join("")}</body></html>`,
+  {
+    runScripts: "outside-only",
+    url: "http://localhost/",
+    beforeParse(window) {
+      window.fetch = stubFetch;
+      window.EventSource = MockEventSource;
+      window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
+      window.sessionStorage.setItem("sessionId", "sess-mermaid");
+      if (!window.crypto || !window.crypto.randomUUID) {
+        window.crypto = { randomUUID: () => "uuid-" + Math.random().toString(36).slice(2) };
+      }
+      window.marked = marked;
+      window.markedHighlight = markedHighlightPkg;
+      window.hljs = hljs;
+      window.DOMPurify = createDOMPurify(window);
+      window.__mermaidModuleForTest = mermaidMock;
+    },
+  }
+);
+
+dom.window.eval(appJs);
+const { document } = dom.window;
+const window = dom.window;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (fn, n = 80) => {
+  for (let i = 0; i < n; i++) { await sleep(50); try { if (fn()) return true; } catch { /* retry */ } }
+  return false;
+};
+
+const blocks = () => [...document.querySelectorAll(".mermaid-block")];
+const doneBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "done");
+const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "error");
+
+(async () => {
+  try {
+    await waitFor(() => esInstances.length >= 1);
+    const es = esInstances[0];
+    assert(!!es, "init 建立 SSE 连接");
+
+    // ── 1. 历史重放：assistant 历史消息里的 mermaid 被渲染 ──
+    const historyRendered = await waitFor(() => doneBlocks().length >= 1);
+    assert(historyRendered, "历史重放：assistant 历史消息的 Mermaid 渲染为 SVG");
+    const histBlock = blocks()[0];
+    assert(!!histBlock?.querySelector(".mermaid-figure svg"), "图形区包含 SVG");
+    const histSource = histBlock?.querySelector(".mermaid-source pre code");
+    assert(histSource?.textContent.includes('A["开始"]'), "折叠区保留转义前的原始源码（引号完整）");
+    assert(histSource?.classList.contains("language-mermaid"), "源码节点保留 language-mermaid 类");
+    assert(histSource?.querySelectorAll("span").length === 0, "Mermaid 源码不走 hljs 高亮（无 span 包裹）");
+    assert(histBlock?.querySelector(".mermaid-source")?.open === false, "渲染成功时源码默认折叠");
+
+    // ── 2. 用户消息不转换 ──
+    const userMsg = document.querySelector(".message.user");
+    assert(!!userMsg && !userMsg.querySelector(".mermaid-block") && !userMsg.querySelector("pre"), "用户纯文本消息不被转换为 Mermaid 图块");
+
+    // ── 3. 实时回复：同图源码再次渲染，renderId 不复用 ──
+    es.emit("thinking", { character: "YYF", messageId: "u1" });
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r1", text: "再看一次：\n" + md(FLOW_A), timestamp: 100 });
+    await waitFor(() => doneBlocks().length >= 2);
+    const ids1 = mermaidMock.calls.map((c) => c.id);
+    assert(new Set(ids1).size === ids1.length && ids1.length === 2, `同源码两次渲染 ID 不串用（${ids1.join(", ")}）`);
+
+    // ── 4. 单条消息多图 ──
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r2", text: "两张图：\n" + md(FLOW_B) + "\n以及：\n" + md(FLOW_C), timestamp: 101 });
+    await waitFor(() => doneBlocks().length >= 4);
+    const r2Msg = state_messageElements("r2");
+    assert(r2Msg?.querySelectorAll(".mermaid-block").length === 2, "单条消息内的多个 Mermaid 代码块各自成图");
+
+    // ── 5. 去重：对同一消息重复调用 renderMermaidBlocks 不重复排队 ──
+    const callsBefore = mermaidMock.calls.length;
+    window.renderMermaidBlocks(r2Msg);
+    window.renderMermaidBlocks(document.getElementById("messages"));
+    await sleep(200);
+    assert(mermaidMock.calls.length === callsBefore, "重复扫描同一 DOM 不重复渲染（WeakSet 去重）");
+
+    // ── 6. 单条消息内错误图后接有效图：错误回退 + 队列继续 ──
+    es.emit("reply", {
+      character: "YYF", messageId: "u1", replyId: "r3",
+      text: "坏的：\n```mermaid\nINVALID {{{\n```\n好的：\n" + md(FLOW_B), timestamp: 102,
+    });
+    await waitFor(() => errorBlocks().length >= 1 && doneBlocks().length >= 5);
+    const errBlock = errorBlocks()[0];
+    assert(errBlock.querySelector(".mermaid-error")?.textContent.includes("Mermaid 渲染失败"), "语法错误显示简短提示");
+    assert(!errBlock.querySelector(".mermaid-error")?.innerHTML.includes("<bad>"), "异常字符串不当 HTML 注入");
+    assert(errBlock.querySelector(".mermaid-source")?.open === true, "失败时源码默认展开");
+    assert(errBlock.querySelector(".mermaid-source pre")?.textContent.includes("INVALID"), "失败时保留可读源码");
+    const r3Msg = state_messageElements("r3");
+    assert(r3Msg?.querySelectorAll('.mermaid-block[data-mermaid-state="done"]').length === 1, "错误图之后的有效图仍正常渲染（串行队列可恢复）");
+
+    // ── 7. 超长源码：直接回退，不调用 render ──
+    const callsBefore7 = mermaidMock.calls.length;
+    const bigSource = "flowchart TD\n  A[" + "长".repeat(21000) + "] --> B[x]";
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r4", text: md(bigSource), timestamp: 103 });
+    await waitFor(() => errorBlocks().length >= 2);
+    assert(errorBlocks()[1].querySelector(".mermaid-error")?.textContent.includes("上限"), "超长源码提示超过上限");
+    assert(mermaidMock.calls.length === callsBefore7, "超长源码不进入 Mermaid 渲染");
+
+    // ── 8. 组件加载失败：回退并可恢复 ──
+    window.__mermaidModuleForTest = { then: (_ok, onErr) => onErr(new Error("网络错误")) };
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r5", text: md(FLOW_B), timestamp: 104 });
+    await waitFor(() => errorBlocks().length >= 3);
+    assert(errorBlocks()[2].querySelector(".mermaid-error")?.textContent.includes("加载失败"), "组件加载失败有回退提示");
+    window.__mermaidModuleForTest = mermaidMock;
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r6", text: md(FLOW_B), timestamp: 105 });
+    const recovered = await waitFor(() => state_messageElements("r6")?.dataset && doneBlocks().some((b) => state_messageElements("r6").contains(b)));
+    assert(recovered, "加载失败恢复后后续图正常渲染");
+
+    // ── 9. 恶意 SVG 二次清洗 ──
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r7", text: md("flowchart TD\n  EVIL --> Z"), timestamp: 106 });
+    await waitFor(() => doneBlocks().some((b) => state_messageElements("r7")?.contains(b)));
+    const evilFig = state_messageElements("r7").querySelector(".mermaid-figure");
+    assert(!!evilFig.querySelector("svg"), "清洗后 SVG 仍保留");
+    assert(!evilFig.querySelector("script") && !evilFig.querySelector("foreignObject"), "script / foreignObject 被清除");
+    assert(!evilFig.querySelector("[onclick]"), "事件属性被清除");
+    assert(![...evilFig.querySelectorAll("a")].some((a) => String(a.getAttribute("href") || "").startsWith("javascript:")), "javascript: 链接被清除");
+    assert(window.__pwned === undefined, "注入的脚本未执行");
+
+    // ── 10. 异步渲染期间切换会话：旧结果丢弃，不留悬挂节点 ──
+    mermaidMock.delayMs = 300;
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r8", text: md(FLOW_C), timestamp: 107 });
+    await waitFor(() => mermaidMock.calls.some((c) => c.source === FLOW_C));
+    document.getElementById("messages").innerHTML = ""; // 模拟切换会话清空消息
+    await sleep(600);
+    mermaidMock.delayMs = 0;
+    assert(!document.querySelector("#messages svg"), "切换会话后旧渲染结果不写入新 DOM");
+    const stray = [...document.body.querySelectorAll("[id]")].filter((el) => /^d?mermaid-/.test(el.id));
+    assert(stray.length === 0, `body 下无悬挂的 mermaid 临时节点（残留 ${stray.length} 个）`);
+
+    // ── 11. 消息链（thread）面板渲染 ──
+    es.emit("reply", { character: "YYF", messageId: "u1", replyId: "r10", text: "@马哥 看图", aiMentions: ["马哥"], timestamp: 110 });
+    es.emit("reply", { character: "马哥", messageId: "r10", replyId: "r11", threadId: "r10", depth: 1, text: "链上的图：\n" + md(FLOW_A), timestamp: 111 });
+    await waitFor(() => doneBlocks().some((b) => state_messageElements("r11")?.contains(b)));
+    assert(doneBlocks().some((b) => state_messageElements("r11")?.contains(b)), "主聊天中的 thread 回复同样渲染 Mermaid");
+    window.openThread("r10");
+    const panelRendered = await waitFor(() => !!document.querySelector("#thread-messages .mermaid-block svg"));
+    assert(panelRendered, "右侧消息链面板内渲染 Mermaid");
+    const panelIds = mermaidMock.calls.map((c) => c.id);
+    assert(new Set(panelIds).size === panelIds.length, "主聊天与消息链中同一源码不复用渲染 ID");
+
+    // ── 12. 普通 Markdown 回归 ──
+    es.emit("reply", {
+      character: "YYF", messageId: "u1", replyId: "r12",
+      text: "说明 `inline` 一下：\n```js\nconst a = 1;\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n[链接](https://example.com)", timestamp: 112,
+    });
+    await sleep(300);
+    const r12 = state_messageElements("r12");
+    const jsCode = r12?.querySelector("pre code.language-js");
+    assert(!!jsCode && !r12.querySelector(".mermaid-block"), "普通 js 代码块不生成 Mermaid 图块");
+    assert(!!jsCode?.querySelector("span"), "普通 js 代码块仍走 hljs 高亮");
+    assert(!!r12?.querySelector("code")?.textContent.includes("inline"), "行内代码正常");
+    assert(!!r12?.querySelector("table") && !!r12?.querySelector('a[href="https://example.com"]'), "表格与链接渲染无回归");
+
+  } catch (err) {
+    console.error("测试异常:", err);
+    failed += 1;
+  }
+
+  console.log(`\nResult: ${passed} passed, ${failed} failed`);
+  process.exit(failed > 0 ? 1 : 0);
+})();
+
+// state.messageElements 在 eval 作用域内，通过 window 访问消息元素
+function state_messageElements(replyId) {
+  return document.querySelector(`.message[data-msg-id="${replyId}"]`);
+}

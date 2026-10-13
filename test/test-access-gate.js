@@ -414,6 +414,38 @@ async function main() {
   assert(/hostname: process\.env\.PERMISSION_SERVER_HOST \|\| "127\.0\.0\.1"/.test(reporterSource), "tool-result-reporter 按 PERMISSION_SERVER_HOST 回报，仅在未注入时回落回环");
   assert(process.env.PERMISSION_SERVER_HOST === resolveInternalHost(process.env.HOST ?? "127.0.0.1"), "server.js 启动时把实际监听地址写入 PERMISSION_SERVER_HOST 供子进程继承");
 
+  // ── /vendor/mermaid 静态资源路由 ──
+  // 路由注册必须在门禁之后（未认证不可读），且只开放 mermaid 的 dist 目录
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf-8");
+  const gateIndex = serverSource.indexOf("createAccessGate(access)");
+  const vendorIndex = serverSource.indexOf('"/vendor/mermaid"');
+  assert(gateIndex !== -1 && vendorIndex > gateIndex, "/vendor/mermaid 路由注册在门禁之后");
+  assert(!/express\.static\(path\.join\(__dirname,\s*"node_modules"\)\)/.test(serverSource), "不公开整个 node_modules 目录");
+
+  // 真实 server（默认本机模式，门禁未启用）：ESM 主文件与内部 chunks 可读，目录外不可读
+  const realPort = server.serverInstance.address().port;
+  const mjs = await request(realPort, "/vendor/mermaid/mermaid.esm.min.mjs");
+  assert(mjs.status === 200 && mjs.text.length > 10000 && mjs.text.includes('from"./chunks/'), `默认模式下可加载 mermaid ESM 主文件且保留相对 chunk 路径（${mjs.status}, ${mjs.text.length}B）`);
+  const chunksDir = path.join(__dirname, "..", "node_modules", "mermaid", "dist", "chunks");
+  const chunkFile = fs.readdirSync(chunksDir, { recursive: true }).map(String).find((f) => f.endsWith(".mjs"));
+  const chunkRes = chunkFile ? await request(realPort, `/vendor/mermaid/chunks/${chunkFile}`) : { status: 0 };
+  assert(chunkFile && chunkRes.status === 200, `mermaid 内部 chunk 可加载（${chunkFile}，${chunkRes.status}）`);
+  const escapeTry = await requestRaw("127.0.0.1", realPort, "/vendor/mermaid/../package.json");
+  assert(escapeTry.status === 403 || escapeTry.status === 404, `路径穿越读不到 dist 外文件（${escapeTry.status}）`);
+  const otherPkg = await request(realPort, "/vendor/express/package.json");
+  assert(otherPkg.status === 404, `其他 node_modules 包不开放（${otherPkg.status}）`);
+
+  // 门禁启用时：同样的路由顺序下未认证 401、带令牌 200
+  const gatedVendor = express();
+  gatedVendor.use(createAccessGate(enabled));
+  gatedVendor.use("/vendor/mermaid", express.static(path.join(__dirname, "..", "node_modules", "mermaid", "dist")));
+  const gatedVendorServer = await listen(gatedVendor);
+  const vendorDenied = await request(gatedVendorServer.port, "/vendor/mermaid/mermaid.esm.min.mjs");
+  assert(vendorDenied.status === 401, `门禁启用时未认证读不到 mermaid 资源（${vendorDenied.status}）`);
+  const vendorOk = await request(gatedVendorServer.port, "/vendor/mermaid/mermaid.esm.min.mjs", { headers: { "x-access-token": token } });
+  assert(vendorOk.status === 200, "门禁启用时携带令牌可加载 mermaid 资源");
+  await new Promise((resolve) => gatedVendorServer.instance.close(resolve));
+
   // ── server.js 默认配置 ──
   assert(server.accessConfig?.enabled === false, "server.js 默认（HOST=127.0.0.1）不启用门禁");
 

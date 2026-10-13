@@ -662,6 +662,7 @@ function appendAssistantMessage(character, text, replyId, threadId, aiMentions, 
     </div>
   `;
   $messages.appendChild(div);
+  renderMermaidBlocks(div);
 
   // 追踪消息元素
   state.messageElements[msgId] = div;
@@ -755,6 +756,7 @@ function appendThreadReply(data) {
     </div>
   `;
   $messages.appendChild(div);
+  renderMermaidBlocks(div);
   state.messageElements[msgId] = div;
 
   handlePostAppend({ shouldAutoScroll });
@@ -877,6 +879,7 @@ function renderThreadPanel(threadId) {
   }
 
   $threadMessages.scrollTop = $threadMessages.scrollHeight;
+  renderMermaidBlocks($threadMessages);
 }
 
 function buildThreadMessage(character, text) {
@@ -3377,6 +3380,8 @@ function renderMarkdown(text) {
     marked.use(markedHighlight.markedHighlight({
       langPrefix: "hljs language-",
       highlight: function (code, lang) {
+        // mermaid 代码块不做高亮：转义后原样保留源码，插入 DOM 后异步替换成图
+        if (lang === "mermaid") return escapeHtml(code);
         if (lang && hljs.getLanguage(lang)) {
           try { return hljs.highlight(code, { language: lang }).value; } catch {}
         }
@@ -3386,6 +3391,137 @@ function renderMarkdown(text) {
     }));
   }
 })();
+
+// ── Mermaid 图形渲染 ─────────────────────────────────────
+// Markdown 管线保持同步：mermaid 代码块先按普通代码块插入，
+// 进入 DOM 后再异步替换为「图形 + 折叠源码」，失败回退为源码 + 提示
+const MERMAID_MAX_SOURCE_CHARS = 20000;
+let _mermaidModulePromise = null;
+let _mermaidRenderSeq = 0;
+let _mermaidQueue = Promise.resolve();
+// 已排队/已处理的 <code> 节点；消息链重建会产生新节点，天然重新渲染
+const _mermaidHandled = new WeakSet();
+
+function loadMermaid() {
+  // 测试钩子：jsdom 注入假实现，验证调度与回退逻辑
+  if (typeof window !== "undefined" && window.__mermaidModuleForTest) {
+    return Promise.resolve(window.__mermaidModuleForTest);
+  }
+  if (!_mermaidModulePromise) {
+    _mermaidModulePromise = import("/vendor/mermaid/mermaid.esm.min.mjs").then((mod) => {
+      const mermaid = mod.default || mod;
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        htmlLabels: false,
+        suppressErrorRendering: true,
+        flowchart: { htmlLabels: false },
+        maxTextSize: MERMAID_MAX_SOURCE_CHARS,
+        maxEdges: 300,
+      });
+      return mermaid;
+    }).catch((err) => {
+      _mermaidModulePromise = null; // 加载失败允许下次重试
+      throw err;
+    });
+  }
+  return _mermaidModulePromise;
+}
+
+// Mermaid 生成的 SVG 再过一次 DOMPurify：只留 SVG profile 的标签与属性，
+// 禁 foreignObject / script / 事件属性 / javascript: 链接
+function sanitizeMermaidSvg(svgText) {
+  return DOMPurify.sanitize(svgText, {
+    USE_PROFILES: { svg: true, svgFilters: true },
+    FORBID_TAGS: ["foreignObject", "iframe", "object", "embed", "script", "audio", "video"],
+  });
+}
+
+function renderMermaidBlocks(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  for (const codeEl of root.querySelectorAll(".markdown-body pre > code.language-mermaid")) {
+    queueMermaidBlock(codeEl);
+  }
+}
+
+function queueMermaidBlock(codeEl) {
+  if (_mermaidHandled.has(codeEl)) return;
+  _mermaidHandled.add(codeEl);
+  const pre = codeEl.parentElement;
+  if (!pre || !pre.parentNode) return;
+  const source = codeEl.textContent || "";
+
+  // 容器：图形区 + 折叠源码；源码直接搬移已清洗的 <pre> 节点，不做字符串注入
+  const block = document.createElement("div");
+  block.className = "mermaid-block";
+  const figure = document.createElement("div");
+  figure.className = "mermaid-figure";
+  const details = document.createElement("details");
+  details.className = "mermaid-source";
+  const summary = document.createElement("summary");
+  summary.textContent = "Mermaid 源码";
+  details.appendChild(summary);
+  block.appendChild(figure);
+  block.appendChild(details);
+  pre.parentNode.insertBefore(block, pre);
+  details.appendChild(pre);
+
+  const task = {
+    block, figure, details, source,
+    renderId: `mermaid-${Date.now().toString(36)}-${(++_mermaidRenderSeq).toString(36)}`,
+  };
+  // 串行队列：单图失败只回退该图，后续图继续渲染，不出现未处理 rejection
+  _mermaidQueue = _mermaidQueue.then(() => renderMermaidTask(task)).catch((err) => {
+    console.error("mermaid queue error", err);
+  });
+}
+
+async function renderMermaidTask(task) {
+  const { block, figure, source, renderId } = task;
+  // 会话切换 / 面板重建后旧结果直接丢弃
+  if (!block.isConnected) return;
+  if (!source.trim()) return showMermaidError(task, "图源码为空");
+  if (source.length > MERMAID_MAX_SOURCE_CHARS) {
+    return showMermaidError(task, `源码超过 ${MERMAID_MAX_SOURCE_CHARS} 字符上限`);
+  }
+  let mermaid;
+  try {
+    mermaid = await loadMermaid();
+  } catch {
+    return showMermaidError(task, "组件加载失败");
+  }
+  if (!block.isConnected) return;
+  // 异步期间用户是否仍停留在底部：贴近底部才跟随，已上翻不强制拉回
+  const stickToBottom = $chatContainer?.contains(block) ? isNearBottom() : false;
+  try {
+    const { svg } = await mermaid.render(renderId, source);
+    // mermaid 渲染时会在 body 挂 id 为 renderId 的临时测量节点，成功/失败都兜底清理
+    document.getElementById(renderId)?.remove();
+    document.getElementById(`d${renderId}`)?.remove();
+    if (!block.isConnected) return;
+    figure.innerHTML = sanitizeMermaidSvg(svg);
+    if (!figure.querySelector("svg")) return showMermaidError(task, "渲染结果为空");
+    block.dataset.mermaidState = "done";
+    if (stickToBottom) scrollToBottom();
+  } catch (err) {
+    document.getElementById(renderId)?.remove();
+    document.getElementById(`d${renderId}`)?.remove();
+    if (!block.isConnected) return;
+    showMermaidError(task, err?.message ? String(err.message).slice(0, 120) : "语法错误");
+  }
+}
+
+function showMermaidError(task, message) {
+  const { block, figure, details } = task;
+  block.dataset.mermaidState = "error";
+  figure.textContent = "";
+  const note = document.createElement("div");
+  note.className = "mermaid-error";
+  // textContent 赋值，Mermaid 的异常字符串不当 HTML 注入
+  note.textContent = `Mermaid 渲染失败：${message}`;
+  figure.appendChild(note);
+  details.open = true; // 失败时源码直接可见
+}
 
 function initProfiles() {
   // Profiles are now managed server-side via role system

@@ -448,6 +448,9 @@ app.use(createAccessGate(access));
 app.use("/api/tool-result", express.json({ limit: "100mb" }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+// Mermaid 前端库：只开放 dist 目录（浏览器按需 import ESM 主文件及其内部 chunks），
+// 路由注册在门禁之后，不公开整个 node_modules
+app.use("/vendor/mermaid", express.static(path.join(__dirname, "node_modules", "mermaid", "dist")));
 
 // ── API: 角色列表（兼容旧前端 + 新前端）─────────────────
 app.get("/api/characters", (_req, res) => {

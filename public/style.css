@@ -2198,3 +2198,46 @@ html, body {
   background: rgba(74, 108, 247, 0.06);
   border-left-color: #4a6cf7;
 }
+
+/* ── Mermaid 图块（主聊天与消息链通用） ─────────────────── */
+.mermaid-block {
+  margin: 8px 0;
+}
+.mermaid-figure {
+  overflow-x: auto;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mermaid-figure svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.mermaid-figure:empty {
+  display: none;
+}
+.mermaid-error {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--error-text);
+  background: var(--error-bg);
+  border-radius: 6px;
+}
+.mermaid-source {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.mermaid-source > summary {
+  cursor: pointer;
+  color: var(--text-light);
+  user-select: none;
+}
+.mermaid-source > summary:hover {
+  color: var(--text);
+}
+.mermaid-source pre {
+  margin-top: 6px;
+}
