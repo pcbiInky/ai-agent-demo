@@ -613,14 +613,20 @@ html, body {
 
 /* ── 右侧栏 ────────────────────────────── */
 #sidebar-right {
-  background: var(--sidebar-bg);
+  background: linear-gradient(180deg, #fbfaff 0%, var(--sidebar-bg) 120px);
   border-left: 1px solid var(--border);
   padding: 16px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+#sidebar-right::-webkit-scrollbar { width: 6px; }
+#sidebar-right::-webkit-scrollbar-track { background: transparent; }
+#sidebar-right::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+#sidebar-right::-webkit-scrollbar-thumb:hover { background: var(--text-light); }
 
 .panel h3 {
   font-size: 13px;
@@ -659,7 +665,8 @@ html, body {
 }
 .status-dot.online { background: var(--green); }
 .status-dot.idle { background: #ffc107; }
-.status-dot.thinking { background: #ffc107; animation: pulse 1.5s infinite; }
+.status-dot.thinking { background: #ffc107; animation: pulse 1.5s infinite; box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.25); }
+.status-dot.online { box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.14); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .char-status-name { flex: 1; }
@@ -672,6 +679,12 @@ html, body {
   border-radius: var(--radius);
   padding: 10px 12px;
   margin-bottom: 8px;
+  box-shadow: 0 1px 3px rgba(26, 26, 46, 0.05);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.role-card:hover {
+  box-shadow: 0 4px 12px rgba(26, 26, 46, 0.09);
+  transform: translateY(-1px);
 }
 .role-card-header {
   display: flex;
@@ -746,11 +759,15 @@ html, body {
 .metric-bar-fill-low {
   background: #f59e42;
 }
+.metric-bar-fill-empty {
+  background: var(--error-text);
+}
 .metric-bar-value {
   color: var(--text-light);
   width: 30px;
   text-align: right;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 .role-card-footer {
   display: flex;
