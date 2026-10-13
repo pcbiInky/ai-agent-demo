@@ -154,7 +154,7 @@ html, body {
   display: inline-block;
   width: auto;
   margin: 2px 0 4px 8px;
-  padding: 5px 8px;
+  padding: 5px 8px 5px 12px;
   border: none;
   background: none;
   border-radius: 6px;
@@ -167,6 +167,7 @@ html, body {
   transition: background 0.15s, color 0.15s;
 }
 .session-group-more:hover { background: var(--chat-bg); color: var(--text-light); }
+.session-group-more-root { margin-left: 0; padding-left: 8px; }
 .session-group-more:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
 
 .session-item {

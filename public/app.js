@@ -2708,7 +2708,7 @@ function createShowMoreButton(group) {
 function createShowMoreGroupsButton() {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "session-group-more";
+  btn.className = "session-group-more session-group-more-root";
   btn.textContent = "Show more";
   btn.dataset.groupKey = GROUP_LIST_MORE_KEY;
   btn.setAttribute("aria-label", "展开剩余会话分组");
@@ -2945,6 +2945,7 @@ function showNewSessionModal(workingDirectory = "") {
           </label>
         `).join("")}
       </div>
+      <div id="new-session-error" class="settings-error hidden" role="alert"></div>
       <div class="modal-actions">
         <button class="btn-secondary" id="new-session-cancel">取消</button>
         <button class="btn-primary" id="new-session-create">创建</button>
@@ -2955,11 +2956,19 @@ function showNewSessionModal(workingDirectory = "") {
 
   modal.querySelector("[data-close]").addEventListener("click", () => modal.remove());
   modal.querySelector("#new-session-cancel").addEventListener("click", () => modal.remove());
-  modal.querySelector("#new-session-create").addEventListener("click", async () => {
+  const errEl = modal.querySelector("#new-session-error");
+  const createBtn = modal.querySelector("#new-session-create");
+  const showErr = (msg) => {
+    errEl.textContent = msg;
+    errEl.classList.remove("hidden");
+  };
+  createBtn.addEventListener("click", async () => {
     const checked = modal.querySelectorAll('input[type="checkbox"]:checked');
     const memberIds = [...checked].map(cb => cb.value);
     const sessionId = crypto.randomUUID();
 
+    createBtn.disabled = true;
+    errEl.classList.add("hidden");
     try {
       const createRes = await fetch("/api/sessions", {
         method: "POST",
@@ -2968,7 +2977,7 @@ function showNewSessionModal(workingDirectory = "") {
       });
       if (!createRes.ok) {
         const err = await createRes.json().catch(() => ({}));
-        appendErrorMessage("系统", err.error || "新建会话失败");
+        showErr(err.error || "新建会话失败");
         return;
       }
       if (workingDirectory) {
@@ -2979,13 +2988,15 @@ function showNewSessionModal(workingDirectory = "") {
         });
         if (!patchRes.ok) {
           const err = await patchRes.json().catch(() => ({}));
-          appendErrorMessage("系统", err.error || "设置工作目录失败");
+          showErr(err.error || "设置工作目录失败");
           return;
         }
       }
     } catch {
-      appendErrorMessage("系统", "网络错误，新建会话失败");
+      showErr("网络错误，新建会话失败");
       return;
+    } finally {
+      createBtn.disabled = false;
     }
 
     modal.remove();
