@@ -103,7 +103,7 @@ html, body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: var(--text-light);
+  color: var(--text);
   transition: background 0.15s, color 0.15s;
 }
 .session-group-header:first-child { margin-top: 0; }
@@ -151,22 +151,22 @@ html, body {
 .session-group-header ~ .session-item { margin-left: 8px; }
 
 .session-group-more {
-  display: block;
-  width: calc(100% - 8px);
+  display: inline-block;
+  width: auto;
   margin: 2px 0 4px 8px;
   padding: 5px 8px;
   border: none;
   background: none;
   border-radius: 6px;
-  color: var(--defualt-button);
+  color: #b6b6c6;
   font-size: 11px;
   font-weight: 600;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
-.session-group-more:hover { background: rgba(74, 108, 247, 0.08); text-decoration: none; }
+.session-group-more:hover { background: var(--chat-bg); color: var(--text-light); }
 .session-group-more:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
 
 .session-item {
