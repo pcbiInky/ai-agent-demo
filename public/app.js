@@ -2783,8 +2783,11 @@ function restoreSessionListFocus(focus) {
     const header = match(".session-group-header", "groupKey");
     target = (header && header.querySelector(".session-group-add")) || header;
   } else if (focus.key === GROUP_LIST_MORE_KEY) {
-    const headers = [...$sessionList.querySelectorAll(".session-group-header")];
-    target = headers[SESSION_GROUP_LIST_VISIBLE_COUNT] || headers[headers.length - 1] || null;
+    target = match(".session-group-more", "groupKey");
+    if (!target) {
+      const headers = [...$sessionList.querySelectorAll(".session-group-header")];
+      target = headers[SESSION_GROUP_LIST_VISIBLE_COUNT] || headers[headers.length - 1] || null;
+    }
   } else target = match(".session-group-more", "groupKey") || match(".session-group-header", "groupKey");
   if (target) target.focus();
 }
