@@ -419,7 +419,7 @@ function connectSSE() {
   es.addEventListener("thinking", (e) => {
     const data = JSON.parse(e.data);
     setCharStatus(data.character, "thinking");
-    showThinking(data.character, data.messageId);
+    showThinking(data.character, data.messageId, data.timestamp);
     loadSessionList();
   });
 
@@ -429,7 +429,7 @@ function connectSSE() {
     // reply/error 可能先于 CLI 最后一条过程 message 到达；优先复用已嵌入回复的归档容器，
     // 避免同一轮后续过程信息又创建一条独立“Thinking 过程”记录。
     const container = findThinkingElement(data.character, data.messageId)
-      || showThinking(data.character, data.messageId);
+      || showThinking(data.character, data.messageId, data.timestamp);
     if (container) appendThinkingContent(container, data);
   });
 
@@ -601,6 +601,7 @@ async function sendMessage() {
       if (data.timestamp && userMsgEl) {
         const timeEl = userMsgEl.querySelector(".msg-time");
         if (timeEl) timeEl.textContent = formatTimeShort(data.timestamp);
+        userMsgEl.dataset.timestamp = data.timestamp;
       }
       await Promise.all([loadSessionMeta(), loadSessionList()]);
     }
@@ -615,6 +616,7 @@ function appendUserMessage(text, timestamp) {
   const time = formatTimeShort(timestamp || Date.now());
   const div = document.createElement("div");
   div.className = "message user";
+  div.dataset.timestamp = timestamp ?? Date.now();
   div.innerHTML = `
     <div class="avatar user-avatar">铲</div>
     <div class="bubble-wrapper">
@@ -646,6 +648,7 @@ function appendAssistantMessage(character, text, replyId, threadId, aiMentions, 
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
   div.dataset.msgId = msgId;
+  div.dataset.timestamp = timestamp ?? Date.now();
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
     <div class="bubble-wrapper">
@@ -737,6 +740,7 @@ function appendThreadReply(data) {
   const div = document.createElement("div");
   div.className = `message assistant ${charClass}`;
   div.dataset.msgId = msgId;
+  div.dataset.timestamp = timestamp ?? Date.now();
   div.dataset.threadId = threadId || "";
   div.innerHTML = `
     <div class="avatar ${charClass}">${avatar}</div>
@@ -773,6 +777,7 @@ function appendSystemNotice(text) {
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const div = document.createElement("div");
   div.className = "system-notice";
+  div.dataset.timestamp = Date.now();
   div.textContent = text;
   $messages.appendChild(div);
   handlePostAppend({ shouldAutoScroll });
@@ -910,6 +915,7 @@ function appendErrorMessage(character, error, timestamp) {
 
   const div = document.createElement("div");
   div.className = `message assistant error-msg ${charClass}`;
+  div.dataset.timestamp = timestamp ?? Date.now();
   div.innerHTML = `
     <div class="avatar ${charClass}" style="background:var(--error-text)">${avatar}</div>
     <div class="bubble-wrapper">
@@ -925,10 +931,28 @@ function appendErrorMessage(character, error, timestamp) {
   return div;
 }
 
+// 无绑定回复的过程记录按首条事件时间定位；迟到事件只更新原容器，不推到消息末尾。
+function positionProcessRecord(container, timestamp) {
+  if (!container || timestamp == null || !Number.isFinite(Number(timestamp))) return;
+  const eventTime = Number(timestamp);
+  const previousTime = container.dataset.timestamp;
+  if (previousTime != null && eventTime >= Number(previousTime)) return;
+  container.dataset.timestamp = eventTime;
+  // 已嵌入回复的记录跟随回复，不能搬回聊天流。
+  if (container.parentElement !== $messages) return;
+  const next = [...$messages.children].find((el) => el !== container
+    && el.dataset.timestamp != null && Number(el.dataset.timestamp) > eventTime);
+  if (next) $messages.insertBefore(container, next);
+}
+
 // ── Thinking ──────────────────────────────────────────────
-function showThinking(character, messageId) {
-  const existing = document.getElementById(`thinking-${character}-${messageId}`);
-  if (existing) return existing;
+function showThinking(character, messageId, timestamp) {
+  const existing = document.getElementById(`thinking-${character}-${messageId}`)
+    || (messageId && $messages.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`));
+  if (existing) {
+    positionProcessRecord(existing, timestamp);
+    return existing;
+  }
 
   const shouldAutoScroll = shouldAutoScrollOnAppend();
   const charClass = getCharClass(character);
@@ -966,6 +990,7 @@ function showThinking(character, messageId) {
   });
   bindThinkingHeader(div);
   $messages.appendChild(div);
+  positionProcessRecord(div, timestamp ?? Date.now());
   handlePostAppend({ shouldAutoScroll });
   return div;
 }
@@ -996,10 +1021,13 @@ function updateThinkingSummary(el, status = "done") {
 
 // 历史渲染专用：直接创建已完成、默认折叠的过程记录容器，
 // 让散落的执行记录重新嵌入它内部，位于绑定回复的上方
-function showArchivedThinking(character, messageId) {
+function showArchivedThinking(character, messageId, timestamp) {
   const existing = document.getElementById(`thinking-${character}-${messageId}`)
     || (messageId && $messages.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`));
-  if (existing) return existing;
+  if (existing) {
+    positionProcessRecord(existing, timestamp);
+    return existing;
+  }
 
   const charClass = getCharClass(character);
   const avatar = getAvatar(character);
@@ -1034,6 +1062,7 @@ function showArchivedThinking(character, messageId) {
   `;
   bindThinkingHeader(div);
   $messages.appendChild(div);
+  positionProcessRecord(div, timestamp ?? Date.now());
   return div;
 }
 
@@ -1062,8 +1091,9 @@ function finalizeThinking(character, messageId, status = "done") {
   for (const btn of buttons) btn.disabled = true;
 }
 
-function appendThinkingContent(container, { text, delta = false }) {
+function appendThinkingContent(container, { text, delta = false, timestamp }) {
   if (!container || typeof text !== "string" || !text.trim()) return;
+  positionProcessRecord(container, timestamp);
   const details = container.querySelector(".thinking-process");
   const content = details?.querySelector(".thinking-content");
   if (!details || !content) return;
@@ -1201,7 +1231,8 @@ function buildPermCardHtml(requestId, toolName, input) {
 }
 
 // 把一条执行记录嵌入指定的过程记录容器（调用方负责定位容器）
-function appendPermRecord(container, { requestId, toolName, input, status = "pending", resolutionMessage }) {
+function appendPermRecord(container, { requestId, toolName, input, status = "pending", resolutionMessage, timestamp }) {
+  positionProcessRecord(container, timestamp);
   const brief = getPermBrief(toolName, input);
   const processLog = container.querySelector(".process-log");
   if (processLog) {
@@ -1230,7 +1261,7 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
   // 用 character + messageId 精确定位 thinking 容器
   const thinkingEl = findThinkingElement(character, messageId);
   if (thinkingEl && thinkingEl.querySelector(".perm-container")) {
-    appendPermRecord(thinkingEl, { requestId, toolName, input, status, resolutionMessage });
+    appendPermRecord(thinkingEl, { requestId, toolName, input, status, resolutionMessage, timestamp });
   } else {
     // 降级：如果找不到 thinking 元素（极端边界情况），独立显示
     const cardHtml = buildPermCardHtml(requestId, toolName, input);
@@ -1253,6 +1284,7 @@ function showPermissionCard({ requestId, character, toolName, input, timestamp, 
       </div>
     `;
     $messages.appendChild(div);
+    positionProcessRecord(div, timestamp ?? Date.now());
 
     if (status && status !== "pending") {
       markPermResolved(requestId, status, resolutionMessage);
@@ -1271,8 +1303,9 @@ function findThinkingElement(character, messageId) {
     // 已嵌入回复内部的过程记录（invoke 尚未结束、仍有权限请求到达）
     const embed = $messages.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`);
     if (embed) return embed;
+    return null; // 已知调用 ID 时不能借用同角色的另一轮记录
   }
-  // 降级：按角色取最新一个
+  // 降级：未提供调用 ID 时按角色取最新一个
   const candidates = $messages.querySelectorAll(`[id^="thinking-${character}-"]`);
   return candidates.length > 0 ? candidates[candidates.length - 1] : null;
 }
@@ -3096,7 +3129,7 @@ async function loadHistory(forSessionId = state.sessionId) {
       const records = pendingPerms.get(permKey(character, messageId));
       if (!records) return;
       pendingPerms.delete(permKey(character, messageId));
-      const container = showArchivedThinking(character, messageId);
+      const container = showArchivedThinking(character, messageId, records[0].timestamp);
       for (const rec of records) {
         if (rec.role === "thinking") appendThinkingContent(container, rec);
         else appendPermRecord(container, rec);
@@ -3168,11 +3201,11 @@ async function loadHistory(forSessionId = state.sessionId) {
           pendingPerms.get(key).push(msg);
         } else if (activeKeys.has(key)) {
           // 仍在执行中：渲染为活的 thinking 容器（处理中样式 + 终止按钮）
-          showThinking(msg.character, msg.messageId);
+          showThinking(msg.character, msg.messageId, msg.timestamp);
           showPermissionCard(msg);
         } else {
           // 孤儿记录（无绑定回复且已结束）：按原时间位置渲染
-          const container = showArchivedThinking(msg.character, msg.messageId);
+          const container = showArchivedThinking(msg.character, msg.messageId, msg.timestamp);
           appendPermRecord(container, msg);
         }
       } else if (msg.role === "thinking") {
@@ -3181,11 +3214,11 @@ async function loadHistory(forSessionId = state.sessionId) {
           if (!pendingPerms.has(key)) pendingPerms.set(key, []);
           pendingPerms.get(key).push(msg);
         } else if (activeKeys.has(key)) {
-          showThinking(msg.character, msg.messageId);
+          showThinking(msg.character, msg.messageId, msg.timestamp);
           const container = findThinkingElement(msg.character, msg.messageId);
           if (container) appendThinkingContent(container, msg);
         } else {
-          const container = showArchivedThinking(msg.character, msg.messageId);
+          const container = showArchivedThinking(msg.character, msg.messageId, msg.timestamp);
           appendThinkingContent(container, msg);
         }
       }
@@ -3194,15 +3227,17 @@ async function loadHistory(forSessionId = state.sessionId) {
     // 恢复仍在执行中的 invoke（含还没有任何执行记录的），保持"处理中"可见；
     // 已有回复落盘的不再新建空 thinking
     for (const t of activeThinkingList) {
-      if (!activeRepliedKeys.has(permKey(t.character, t.messageId))) {
-        showThinking(t.character, t.messageId);
+      if (!activeRepliedKeys.has(permKey(t.character, t.messageId))
+        && !findThinkingElement(t.character, t.messageId)) {
+        const parent = log.messages.find((msg) => msg.id === t.messageId);
+        showThinking(t.character, t.messageId, t.timestamp ?? parent?.timestamp);
       }
       setCharStatus(t.character, "thinking");
     }
 
     // 兜底：理论上已清空，防止异常导致暂存记录丢失
     for (const records of pendingPerms.values()) {
-      const container = showArchivedThinking(records[0].character, records[0].messageId);
+      const container = showArchivedThinking(records[0].character, records[0].messageId, records[0].timestamp);
       for (const rec of records) {
         if (rec.role === "thinking") appendThinkingContent(container, rec);
         else appendPermRecord(container, rec);

@@ -71,6 +71,21 @@ const sessions = {
     lastSeq: 20,
     activeThinking: [],
   },
+  // 无回复的记录迟到入日志：展示位置由首条过程记录的时间决定。
+  "sess-5": {
+    messages: [
+      { id: "orphan-parent", role: "user", text: "早先被中断的调用", timestamp: 10 },
+      { id: "later-parent", role: "user", text: "后来的用户消息", timestamp: 30 },
+      { id: "later-reply", role: "assistant", character: "YYF", text: "后来的正常回复", timestamp: 40, replyTo: "later-parent" },
+      { id: "latest-parent", role: "user", text: "最新用户消息", timestamp: 50 },
+      { id: "op1", role: "permission", requestId: "req-orphan-1", character: "YYF", toolName: "Read", input: { file_path: "/old.js" }, messageId: "orphan-parent", timestamp: 20, status: "allow" },
+      { id: "ot1", role: "thinking", character: "YYF", text: "没有最终回复的旧过程", messageId: "orphan-parent", timestamp: 21 },
+      { id: "op2", role: "permission", requestId: "req-orphan-2", character: "晔晔", toolName: "Read", input: { file_path: "/other.js" }, messageId: "orphan-parent", timestamp: 25, status: "allow" },
+      { id: "op3", role: "permission", requestId: "req-orphan-3", character: "YYF", toolName: "Read", input: { file_path: "/last.js" }, messageId: "orphan-parent", timestamp: 60, status: "allow" },
+    ],
+    lastSeq: 40,
+    activeThinking: [{ character: "金渐层k", messageId: "orphan-parent" }],
+  },
   // 历史错误绑定：permission.messageId 与 error.replyTo 对应
   "sess-4": {
     messages: [
@@ -104,6 +119,9 @@ class MockEventSource {
 function stubFetch(url) {
   const ok = (payload) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
   if (url.includes("/api/history")) {
+    if (url.includes("sess-5")) {
+      return ok({ sessionId: "sess-5", createdAt: 0, ...sessions["sess-5"] });
+    }
     if (url.includes("sess-4")) {
       return ok({ sessionId: "sess-4", createdAt: 0, ...sessions["sess-4"] });
     }
@@ -333,6 +351,48 @@ const waitFor = async (fn, n = 80) => {
     }
     const histStandalone = [...document.querySelectorAll("#messages > *")].some((el) => el.id.startsWith("thinking-archive-晔晔-e1-"));
     assert(!histStandalone, "历史错误场景无独立过程记录行");
+
+    // ── 独立过程记录按首条记录时间定位，而不是补建时的页面尾部 ──
+    esInstances.length = 0;
+    dom.window.eval('switchSession("sess-5")');
+    await waitFor(() => !!document.querySelector('[data-msg-id="later-reply"]'));
+    const topLevel = () => [...document.querySelector("#messages").children];
+    const archived = (character, key) => document.querySelector('[id^="thinking-archive-' + character + '-' + key + '-"]');
+    const oldOrphan = archived("YYF", "orphan-parent");
+    const secondOrphan = archived("晔晔", "orphan-parent");
+    const laterUser = topLevel().find((el) => el.querySelector(".bubble")?.textContent === "后来的用户消息");
+    assert(!!oldOrphan && topLevel().indexOf(oldOrphan) < topLevel().indexOf(laterUser),
+      "迟到入日志的无回复过程记录恢复到早先时间位置");
+    assert(topLevel().indexOf(oldOrphan) < topLevel().indexOf(secondOrphan)
+      && topLevel().indexOf(secondOrphan) < topLevel().indexOf(laterUser),
+      "不同角色的独立过程记录按时间排列");
+    assert(oldOrphan?.querySelectorAll(".perm-card").length === 2,
+      "同一次调用的后续记录保留在原容器，位置仍取首条时间");
+
+    const orphanEs = esInstances[0];
+    const activeWithoutRecords = document.getElementById("thinking-金渐层k-orphan-parent");
+    assert(!!activeWithoutRecords && topLevel().indexOf(activeWithoutRecords) < topLevel().indexOf(oldOrphan),
+      "没有过程条目的执行中记录恢复到原父消息后方");
+    orphanEs.emit("status", { character: "金渐层k", status: "online", messageId: "orphan-parent" });
+    orphanEs.emit("thinking", { character: "YYF", messageId: "new-live", timestamp: 70 });
+    orphanEs.emit("thinking-content", { character: "YYF", messageId: "new-live", timestamp: 71, text: "新调用的过程" });
+    orphanEs.emit("thinking-content", { character: "YYF", messageId: "late-old", timestamp: 22, text: "迟到的旧调用过程" });
+    const lateOld = document.getElementById("thinking-YYF-late-old");
+    assert(!!lateOld && topLevel().indexOf(lateOld) < topLevel().indexOf(secondOrphan),
+      "实时迟到的独立过程按自身时间插入，未追加到最后");
+    assert(!document.getElementById("thinking-YYF-new-live")?.textContent.includes("迟到的旧调用过程"),
+      "带调用 ID 的迟到记录不串入同角色的新调用");
+
+    orphanEs.emit("permission", { requestId: "req-late-alone", character: "YYF", toolName: "Read", input: { file_path: "/late.js" }, messageId: "late-perm", timestamp: 23 });
+    const latePerm = document.getElementById("perm-fallback-req-late-alone");
+    assert(!!latePerm && topLevel().indexOf(latePerm) < topLevel().indexOf(secondOrphan),
+      "无过程容器的迟到权限记录也按事件时间插入");
+    orphanEs.emit("status", { character: "YYF", status: "online", messageId: "late-old" });
+    const oldArchived = archived("YYF", "late-old");
+    orphanEs.emit("thinking", { character: "YYF", messageId: "late-old", timestamp: 22 });
+    assert(!document.getElementById("thinking-YYF-late-old") && !!oldArchived,
+      "迟到的 thinking 开始事件复用已有归档，未补建末尾空容器");
+    orphanEs.emit("status", { character: "YYF", status: "online", messageId: "new-live" });
 
     // ── 全文无未归档 thinking 残留 ──
     let residue = false;
