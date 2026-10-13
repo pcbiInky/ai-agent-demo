@@ -122,6 +122,7 @@ async function init() {
     setupSessionMetaEditor();
   setupThreadPanel();
   setupDiffPanel();
+  setupOutsideClickDismiss();
   setupPermFloatLayer();
 
   $newSessionBtn.addEventListener("click", () => showNewSessionModal());
@@ -2423,6 +2424,23 @@ function closeDiffPanel() {
     clearDiffNav();
     _closeDiffTimer = null;
   }, 250);
+}
+
+// 点击面板以外的区域时自动收起右侧面板；
+// 打开入口（引用条/回复计数条/文件修改条目）自身处理开合，这里跳过；
+// mousedown 起点在面板内的拖拽（如 diff 左缘调宽）不算"点击外部"
+function setupOutsideClickDismiss() {
+  let mouseDownTarget = null;
+  document.addEventListener("mousedown", (e) => {
+    mouseDownTarget = e.target;
+  }, true);
+  document.addEventListener("click", (e) => {
+    if (mouseDownTarget?.closest?.("#thread-panel, #diff-panel")) return;
+    if (e.target.closest("#thread-panel, #diff-panel")) return;
+    if (e.target.closest(".thread-quote, .thread-reply-bar, .file-diff-item")) return;
+    if ($threadPanel.classList.contains("open")) closeThread();
+    if ($diffPanel.classList.contains("open")) closeDiffPanel();
+  });
 }
 
 function truncate(str, max) {
