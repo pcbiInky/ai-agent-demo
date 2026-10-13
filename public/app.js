@@ -2616,6 +2616,8 @@ const expandedSessionGroups = new Set();
 const SESSION_GROUP_VISIBLE_COUNT = 5;
 const SESSION_GROUP_LIST_VISIBLE_COUNT = 5;
 let sessionGroupListExpanded = false;
+const FOLDER_ICON_CLOSED = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.75 3h4.59l1.2 1.5h6.71c.41 0 .75.34.75.75v6.5c0 .41-.34.75-.75.75H1.75a.75.75 0 0 1-.75-.75v-8c0-.41.34-.75.75-.75z"/></svg>';
+const FOLDER_ICON_OPEN = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.75 3h4.59l1.2 1.5h4.71c.41 0 .75.34.75.75V7H5.62L3 12.13V3.75A.75.75 0 0 1 1.75 3z"/><path d="M5.9 8h8.35c.38 0 .65.36.54.72l-1.67 4.5a.75.75 0 0 1-.71.53H3.53l2.37-5.75z"/></svg>';
 const OTHER_GROUP_KEY = "__other__";
 const GROUP_LIST_MORE_KEY = "__group_list_more__";
 
@@ -2656,7 +2658,7 @@ function createSessionGroupHeader(group, collapsed) {
   header.setAttribute("aria-expanded", collapsed ? "false" : "true");
   header.dataset.groupKey = group.key;
   header.innerHTML = `
-    <span class="session-group-arrow" aria-hidden="true">▾</span>
+    <span class="session-group-arrow" aria-hidden="true">${collapsed ? FOLDER_ICON_CLOSED : FOLDER_ICON_OPEN}</span>
     <span class="session-group-name">${escapeHtml(group.name)}</span>
     <span class="session-group-count">${group.sessions.length}</span>
     <span class="session-group-add" role="button" tabindex="0" title="在此目录新建对话" aria-label="在 ${escapeAttribute(group.name)} 分组新建对话">+</span>
