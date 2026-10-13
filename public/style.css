@@ -41,7 +41,7 @@ html, body {
 /* ── 三栏布局 ──────────────────────────── */
 #app {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) minmax(0, clamp(260px, 22vw, 260px));
+  grid-template-columns: 240px minmax(0, 1fr) minmax(0, clamp(240px, 22vw, 240px));
   width: 100%;
   height: 100vh;
   overflow: hidden;

@@ -2678,7 +2678,7 @@ function createSessionGroupHeader(group, collapsed) {
   addBtn.dataset.groupKey = group.key;
   const createInGroup = (e) => {
     e.stopPropagation();
-    createSessionInGroup(group);
+    showNewSessionModal(group.dir);
   };
   addBtn.addEventListener("click", createInGroup);
   addBtn.addEventListener("keydown", (e) => {
@@ -2688,40 +2688,6 @@ function createSessionGroupHeader(group, collapsed) {
     }
   });
   return header;
-}
-
-async function createSessionInGroup(group) {
-  try {
-    const memberIds = Object.entries(state.characters)
-      .filter(([, cfg]) => !cfg.archived)
-      .map(([, cfg]) => cfg.id);
-    const sessionId = crypto.randomUUID();
-    const createRes = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, memberIds }),
-    });
-    if (!createRes.ok) {
-      const err = await createRes.json().catch(() => ({}));
-      appendErrorMessage("系统", err.error || "新建会话失败");
-      return;
-    }
-    if (group.dir) {
-      const patchRes = await fetch(`/api/sessions/${sessionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workingDirectory: group.dir }),
-      });
-      if (!patchRes.ok) {
-        const err = await patchRes.json().catch(() => ({}));
-        appendErrorMessage("系统", err.error || "设置工作目录失败");
-        return;
-      }
-    }
-    switchSession(sessionId);
-  } catch {
-    appendErrorMessage("系统", "网络错误，新建会话失败");
-  }
 }
 
 function createShowMoreButton(group) {
@@ -2960,7 +2926,7 @@ async function switchSession(id) {
   connectSSE();
 }
 
-function showNewSessionModal() {
+function showNewSessionModal(workingDirectory = "") {
   const roles = Object.entries(state.characters).filter(([, cfg]) => !cfg.archived);
   const modal = document.createElement("div");
   modal.className = "modal";
@@ -2969,7 +2935,7 @@ function showNewSessionModal() {
     <div class="modal-backdrop" data-close="1"></div>
     <div class="modal-panel">
       <h3>新建会话</h3>
-      <p class="modal-desc">选择要加入的角色（可在会话中随时邀请/移除）</p>
+      <p class="modal-desc">选择要加入的角色（可在会话中随时邀请/移除）${workingDirectory ? `<br>工作目录：${escapeHtml(workingDirectory)}` : ""}</p>
       <div id="new-session-roles">
         ${roles.map(([name, cfg]) => `
           <label class="role-checkbox">
@@ -2994,11 +2960,33 @@ function showNewSessionModal() {
     const memberIds = [...checked].map(cb => cb.value);
     const sessionId = crypto.randomUUID();
 
-    await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, memberIds }),
-    });
+    try {
+      const createRes = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, memberIds }),
+      });
+      if (!createRes.ok) {
+        const err = await createRes.json().catch(() => ({}));
+        appendErrorMessage("系统", err.error || "新建会话失败");
+        return;
+      }
+      if (workingDirectory) {
+        const patchRes = await fetch(`/api/sessions/${sessionId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workingDirectory }),
+        });
+        if (!patchRes.ok) {
+          const err = await patchRes.json().catch(() => ({}));
+          appendErrorMessage("系统", err.error || "设置工作目录失败");
+          return;
+        }
+      }
+    } catch {
+      appendErrorMessage("系统", "网络错误，新建会话失败");
+      return;
+    }
 
     modal.remove();
     switchSession(sessionId);
