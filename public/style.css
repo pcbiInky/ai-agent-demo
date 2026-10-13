@@ -49,7 +49,7 @@ html, body {
 
 /* ── 左侧栏 ────────────────────────────── */
 #sidebar-left {
-  background: var(--sidebar-bg);
+  background: linear-gradient(180deg, #fbfaff 0%, var(--sidebar-bg) 120px);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -65,39 +65,51 @@ html, body {
 }
 .sidebar-header h2 { font-size: 16px; font-weight: 600; }
 .sidebar-header button {
-  padding: 4px 12px;
+  padding: 5px 14px;
   border: none;
-  border-radius: 6px;
-  background: var(--defualt-button);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #5b7cfa 0%, var(--defualt-button) 100%);
   color: white;
   font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 2px 6px rgba(74, 108, 247, 0.25);
+  transition: box-shadow 0.15s, transform 0.15s;
 }
-.sidebar-header button:hover { opacity: 0.9; }
+.sidebar-header button:hover { box-shadow: 0 3px 10px rgba(74, 108, 247, 0.35); transform: translateY(-1px); }
+.sidebar-header button:active { transform: translateY(0); }
 
 #session-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 8px 10px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+#session-list::-webkit-scrollbar { width: 6px; }
+#session-list::-webkit-scrollbar-track { background: transparent; }
+#session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+#session-list::-webkit-scrollbar-thumb:hover { background: var(--text-light); }
 
 .session-group-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 8px;
-  margin-top: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   color: var(--text-light);
+  transition: background 0.15s, color 0.15s;
 }
 .session-group-header:first-child { margin-top: 0; }
 .session-group-header:hover { background: var(--chat-bg); color: var(--text); }
 .session-group-header:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
-.session-group-header .session-group-arrow { font-size: 10px; transition: transform 0.15s; }
+.session-group-header .session-group-arrow { font-size: 9px; width: 12px; text-align: center; transition: transform 0.2s ease; }
 .session-group-header.collapsed .session-group-arrow { transform: rotate(-90deg); }
 .session-group-header .session-group-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-group-header .session-group-count {
@@ -123,13 +135,17 @@ html, body {
   justify-content: center;
   border: none;
   background: none;
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--text-light);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
-.session-group-header .session-group-add:hover { color: var(--text); background: var(--chat-bg); }
+.session-group-header:hover .session-group-add,
+.session-group-header .session-group-add:focus-visible { opacity: 1; }
+.session-group-header .session-group-add:hover { color: white; background: var(--defualt-button); }
 .session-group-header .session-group-add:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
 .session-group-header + .session-item,
 .session-group-header ~ .session-item { margin-left: 8px; }
@@ -137,29 +153,36 @@ html, body {
 .session-group-more {
   display: block;
   width: calc(100% - 8px);
-  margin-left: 8px;
-  padding: 6px 8px;
+  margin: 2px 0 4px 8px;
+  padding: 5px 8px;
   border: none;
   background: none;
   border-radius: 6px;
   color: var(--defualt-button);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background 0.15s;
 }
-.session-group-more:hover { text-decoration: underline; }
+.session-group-more:hover { background: rgba(74, 108, 247, 0.08); text-decoration: none; }
 .session-group-more:focus-visible { outline: 2px solid var(--defualt-button); outline-offset: -2px; }
 
 .session-item {
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
   cursor: pointer;
-  margin-bottom: 2px;
-  transition: background 0.15s;
+  margin-bottom: 3px;
+  box-shadow: inset 2px 0 0 transparent;
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .session-item:hover { background: var(--chat-bg); }
-.session-item.active { background: #ede8f5; }
+.session-item.active {
+  background: rgba(74, 108, 247, 0.09);
+  box-shadow: inset 2px 0 0 var(--defualt-button);
+}
+.session-item.active .session-preview { font-weight: 600; }
 .session-item .session-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .session-item .session-preview { flex: 1; min-width: 0; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-item .session-indicators { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
@@ -202,7 +225,8 @@ html, body {
 }
 .session-item .session-meta { font-size: 11px; color: var(--text-light); margin-top: 4px; display: flex; justify-content: space-between; }
 .session-item .session-avatars { display: flex; flex-wrap: wrap; row-gap: 2px; margin-bottom: 4px; }
-.session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid white; }
+.session-item .mini-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 600; margin-right: -4px; border: 2px solid var(--sidebar-bg); box-shadow: 0 1px 2px rgba(26, 26, 46, 0.12); }
+.session-item .mini-avatar:hover { transform: translateY(-1px); z-index: 1; position: relative; }
 
 /* ── 中间聊天区 ────────────────────────── */
 #center {
