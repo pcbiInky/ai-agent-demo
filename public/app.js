@@ -2561,9 +2561,9 @@ function renderMetricBar(win, index) {
   const isCtx = win.key === "ctx";
   const fillVariant = isCtx ? "ctx" : variant;
   const lowClass = !isCtx && pct !== null && pct < 20 ? " metric-bar-fill-low" : "";
-  // 余额为 0% 时保留 1% 红色细条提示已耗尽，数字仍显示 0%
+  // 余额为 0% 时保留 2% 红色细条提示已耗尽，数字仍显示 0%
   const emptyClass = !isCtx && pct === 0 ? " metric-bar-fill-empty" : "";
-  const fillPct = pct === null ? 0 : (!isCtx && pct === 0 ? 1 : pct);
+  const fillPct = pct === null ? 0 : (!isCtx && pct === 0 ? 2 : pct);
   const hasResetTime = win.resetsAt !== null && win.resetsAt !== undefined;
   // 只有 5h 短周期窗口把时间显示在标签位做倒计时（codex key=5h；
   // claude key=primary、label=5h，所以必须判 label 而非 key）；
