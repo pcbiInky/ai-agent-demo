@@ -2888,15 +2888,6 @@ function createSessionItem(s) {
   const div = document.createElement("div");
   div.className = `session-item${isCurrent ? " active" : ""}`;
   div.dataset.sessionId = s.sessionId;
-  const memberNames = Array.isArray(s.memberNames)
-    ? s.memberNames
-    : Object.entries(state.characters).filter(([, c]) => !c.archived).map(([name]) => name);
-  const avatarsHtml = memberNames.map((name) => {
-    const cfg = state.characters[name] || {};
-    const charClass = getCharClass(name);
-    const av = getAvatar(name, cfg.avatar);
-    return '<span class="mini-avatar" title="' + escapeAttribute(name) + '" aria-label="' + escapeAttribute(name) + '" style="background:var(--' + charClass + '-accent)">' + escapeHtml(av) + '</span>';
-  }).join('');
   const title = s.title || s.sessionId.slice(0, 12);
   const approvalBadge = s.pendingApprovalCount > 0
     ? `<span class="session-approval-badge" role="status" aria-label="${s.pendingApprovalCount} 个任务等待审批" title="${s.pendingApprovalCount} 个任务等待审批">审批</span>`
@@ -2908,7 +2899,6 @@ function createSessionItem(s) {
     ? `<span class="session-unread-badge" aria-label="${unreadCount} 条未读消息" title="${unreadCount} 条未读消息">${unreadCount > 99 ? "99+" : unreadCount}</span>`
     : "";
   div.innerHTML = `
-    <div class="session-avatars">${avatarsHtml}</div>
     <div class="session-title-row">
       <div class="session-preview" title="${escapeAttribute(title)}">${escapeHtml(title)}${isCurrent ? " (当前)" : ""}</div>
       <div class="session-indicators">${approvalBadge}${taskIndicator}${unreadBadge}</div>
