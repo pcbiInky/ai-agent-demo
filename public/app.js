@@ -2892,8 +2892,9 @@ function createSessionItem(s) {
   const approvalBadge = s.pendingApprovalCount > 0
     ? `<span class="session-approval-badge" role="status" aria-label="${s.pendingApprovalCount} 个任务等待审批" title="${s.pendingApprovalCount} 个任务等待审批">审批</span>`
     : "";
+  // 列表每次刷新都会重建 DOM，用基于墙钟的负 animation-delay 保持旋转相位连续，避免一帧突变
   const taskIndicator = s.activeTaskCount > 0
-    ? `<span class="session-task-spinner" role="status" aria-label="${s.activeTaskCount} 个任务执行中" title="${s.activeTaskCount} 个任务执行中"></span>`
+    ? `<span class="session-task-spinner" role="status" aria-label="${s.activeTaskCount} 个任务执行中" title="${s.activeTaskCount} 个任务执行中" style="animation-delay: -${Date.now() % 800}ms"></span>`
     : "";
   const unreadBadge = unreadCount > 0
     ? `<span class="session-unread-badge" aria-label="${unreadCount} 条未读消息" title="${unreadCount} 条未读消息">${unreadCount > 99 ? "99+" : unreadCount}</span>`
