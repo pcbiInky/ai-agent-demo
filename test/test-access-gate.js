@@ -314,7 +314,7 @@ async function main() {
 
   const allowUpstream = await listenUpstream(allowAccess);
   const allowProxy = await listenProxy(allowUpstream.port);
-  const INTERNAL_ROUTE_LIST = ["/api/permission-request", "/api/permission-response", "/api/tool-result", "/api/mcp-send-message"];
+  const INTERNAL_ROUTE_LIST = ["/api/permission-request", "/api/permission-response", "/api/tool-result", "/api/mcp-send-message", "/api/web-search"];
   for (const route of INTERNAL_ROUTE_LIST) {
     const directInternal = await request(allowUpstream.port, route, { method: "POST", headers: { [INTERNAL_HEADER]: "internal-token" } });
     assert(directInternal.status === 200, `ALLOWED_HOSTS 开启时内部令牌直连回环 Host 仍放行 ${route}（${directInternal.status}）`);
@@ -408,7 +408,7 @@ async function main() {
   // 内部客户端不得再写死回环地址
   const permissionServerSource = fs.readFileSync(path.join(__dirname, "..", "permission-server.js"), "utf-8");
   const serverHostUses = (permissionServerSource.match(/hostname: SERVER_HOST/g) || []).length;
-  assert(serverHostUses === 2, `permission-server.js 的两处回报都使用 SERVER_HOST（实际 ${serverHostUses}）`);
+  assert(serverHostUses === 3, `permission-server.js 的三处回报（审批、SendMessage、WebSearch）都使用 SERVER_HOST（实际 ${serverHostUses}）`);
   assert(!/hostname: "127\.0\.0\.1"/.test(permissionServerSource), "permission-server.js 不再写死 hostname 127.0.0.1");
   const reporterSource = fs.readFileSync(path.join(__dirname, "..", "lib", "tool-result-reporter.js"), "utf-8");
   assert(/hostname: process\.env\.PERMISSION_SERVER_HOST \|\| "127\.0\.0\.1"/.test(reporterSource), "tool-result-reporter 按 PERMISSION_SERVER_HOST 回报，仅在未注入时回落回环");

@@ -361,6 +361,55 @@ server.tool(
 );
 
 // 8. WebSearch
+// 桥接到主服务的 /api/web-search：批准后由主服务保管凭据并调用 DeepSeek，
+// 本进程不持有任何搜索密钥。客户端总超时采用明确的统一上限（上游可配置
+// 最大 120s + 5s 余量），避免"上游 120s 而工具端固定 65s"的冲突
+const { normalizeQuery: normalizeWebSearchQuery } = require("./lib/deepseek-web-search");
+const WEB_SEARCH_CLIENT_TIMEOUT_MS = 125_000;
+
+function postWebSearch(body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: SERVER_HOST,
+        port: parseInt(PORT, 10),
+        path: "/api/web-search",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          ...internalAuthHeaders(),
+        },
+        timeout: WEB_SEARCH_CLIENT_TIMEOUT_MS,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            reject(new Error(`搜索服务响应解析失败（HTTP ${res.statusCode}）`));
+            return;
+          }
+          if (!parsed || parsed.ok !== true) {
+            const code = parsed?.error?.code || "WEB_SEARCH_UPSTREAM_ERROR";
+            const message = parsed?.error?.message || `HTTP ${res.statusCode}`;
+            reject(new Error(`[${code}] ${message}`));
+            return;
+          }
+          resolve(parsed.result);
+        });
+      }
+    );
+    req.on("error", (err) => reject(new Error(`[WEB_SEARCH_UPSTREAM_ERROR] 无法连接搜索服务: ${err.message}`)));
+    req.on("timeout", () => { req.destroy(); reject(new Error("[WEB_SEARCH_TIMEOUT] 搜索请求超时")); });
+    req.write(body);
+    req.end();
+  });
+}
+
 server.tool(
   "WebSearch",
   "搜索网页",
@@ -368,9 +417,13 @@ server.tool(
     query: z.string().describe("搜索关键词"),
   },
   async ({ query }) => {
-    return withPermission("WebSearch", { query }, () => {
-      // MCP 环境下无法直接调用搜索 API，返回提示
-      return `WebSearch 工具在 MCP 代理模式下不可用。请建议用户直接搜索: "${query}"`;
+    const normalized = normalizeWebSearchQuery(query);
+    if (normalized === null) {
+      return { content: [{ type: "text", text: "[WEB_SEARCH_INVALID_INPUT] query 必须是非空字符串且不超过 4096 字符" }], isError: true };
+    }
+    return withPermission("WebSearch", { query: normalized }, async (decision) => {
+      const result = await postWebSearch(JSON.stringify({ requestId: decision.requestId, query: normalized }));
+      return JSON.stringify(result, null, 2);
     });
   }
 );

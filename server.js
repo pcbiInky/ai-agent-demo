@@ -18,6 +18,7 @@ const {
 } = require("./skill-loader");
 const { resolveRequestSkills } = require("./skill-router");
 const { createAccessGate, resolveAccessToken, resolveInternalHost } = require("./lib/access-gate");
+const deepseekWebSearch = require("./lib/deepseek-web-search");
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -34,7 +35,7 @@ const access = resolveAccessToken({
 });
 // 门禁启用时本机 permission-server / MCP 回报也要凭证：把内部令牌交给子进程，
 // 它只在 /api/permission-request、/api/permission-response、/api/tool-result、
-// /api/mcp-send-message 四条内部路由上有效，读不到会话历史与文件快照
+// /api/mcp-send-message、/api/web-search 五条内部路由上有效，读不到会话历史与文件快照
 if (access.enabled && access.internalToken) {
   process.env.PERMISSION_INTERNAL_TOKEN = access.internalToken;
 }
@@ -270,12 +271,15 @@ function clearActiveThinking(sessionId, character, messageId = null) {
 // ── 审批记录管理（一次性消费 + TTL）────────────────────────
 const APPROVAL_TTL_MS = 30_000; // 30 秒过期
 
-function storeApproval(requestId, browserSessionId, character, toolName, replyToMessageId) {
+function storeApproval(requestId, browserSessionId, character, toolName, replyToMessageId, input) {
   approvedRequests.set(requestId, {
     browserSessionId,
     character,
     toolName,
     replyToMessageId,
+    // WebSearch 额外绑定规范化 query：/api/web-search 执行前必须一致，
+    // 避免用户批准 A 之后实际搜索 B
+    ...(toolName === "WebSearch" ? { query: deepseekWebSearch.normalizeQuery(input?.query) } : {}),
     expireAt: Date.now() + APPROVAL_TTL_MS,
   });
   // 自动清理过期记录
@@ -747,8 +751,8 @@ app.post("/api/permission-request", async (req, res) => {
 
   if (await shouldAutoAllowPermissionAsync(toolName, input, permContext)) {
     console.log(`[权限自动通过] ${toolName} (${requestId})`);
-    // 存储审批记录（供 /api/mcp-send-message 校验身份）
-    storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId);
+    // 存储审批记录（供 /api/mcp-send-message、/api/web-search 校验身份与输入）
+    storeApproval(requestId, browserSessionId, character, toolName, thinkingMessageId, input);
     registerToolResultCorrelation(requestId, { browserSessionId, character, toolName, messageId: thinkingMessageId });
     appendPermissionToLog(browserSessionId, {
       requestId,
@@ -878,10 +882,10 @@ app.post("/api/permission-response", (req, res) => {
     message: resolutionMessage,
   });
 
-  // 如果批准，存储审批记录（供 /api/mcp-send-message 等后续调用校验身份）
+  // 如果批准，存储审批记录（供 /api/mcp-send-message、/api/web-search 等后续调用校验身份）
   if (behavior === "allow" && pending.toolName) {
     const thinkingMsgId = activeThinking.get(getActiveThinkingKey(pending.browserSessionId, pending.character)) || null;
-    storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName, thinkingMsgId);
+    storeApproval(requestId, pending.browserSessionId, pending.character, pending.toolName, thinkingMsgId, pending.input);
     registerToolResultCorrelation(requestId, {
       browserSessionId: pending.browserSessionId,
       character: pending.character,
@@ -1836,6 +1840,70 @@ function removeThinking(sessionId, character, messageId) {
   // 前端通过 reply/error 事件自动移除 thinking
 }
 
+// ── API: WebSearch 内部执行（permission-server 批准后桥接调用）──────────
+// 门禁把它列为内部路由只是前提；执行仍必须持有 WebSearch 的一次性审批 requestId，
+// 且 query 与批准时绑定的规范化 query 一致。审批在开始上游调用前一次性消费，
+// 失败也不允许同一 requestId 重放付费请求
+const WEB_SEARCH_ERROR_STATUS = {
+  WEB_SEARCH_INVALID_INPUT: 400,
+  WEB_SEARCH_CONFIG_ERROR: 500,
+  WEB_SEARCH_CREDENTIAL_MISSING: 500,
+  WEB_SEARCH_APPROVAL_INVALID: 403,
+  WEB_SEARCH_TIMEOUT: 504,
+  WEB_SEARCH_UPSTREAM_ERROR: 502,
+  WEB_SEARCH_PROTOCOL_ERROR: 502,
+};
+
+app.post("/api/web-search", async (req, res) => {
+  const fail = (status, code, message) => res.status(status).json({ ok: false, error: { code, message } });
+
+  const { requestId, query } = req.body || {};
+  const normalizedQuery = deepseekWebSearch.normalizeQuery(query);
+  if (typeof requestId !== "string" || !requestId || normalizedQuery === null) {
+    return fail(400, "WEB_SEARCH_INVALID_INPUT", "requestId 不能为空，query 必须是 trim 后非空且不超过 4096 字符的字符串");
+  }
+
+  const approval = consumeApproval(requestId, "WebSearch");
+  if (!approval) {
+    return fail(403, "WEB_SEARCH_APPROVAL_INVALID", "无效、已过期或已使用的审批记录");
+  }
+  if (approval.query !== normalizedQuery) {
+    return fail(403, "WEB_SEARCH_APPROVAL_INVALID", "query 与批准记录不一致");
+  }
+
+  // 调用方提前断开时取消正在进行的上游请求。
+  // 注意不能用 req.on("close")：请求消息正常读取完成也会触发它，会把正常等待
+  // 响应的客户端误判为断开。改在响应侧监听 close，且仅当响应尚未正常结束
+  // （!res.writableEnded）时才视为客户端提前断开
+  const abort = new AbortController();
+  let clientDisconnected = false;
+  const onResponseClose = () => {
+    if (!res.writableEnded) {
+      clientDisconnected = true;
+      abort.abort();
+    }
+  };
+  res.on("close", onResponseClose);
+
+  const startedAt = Date.now();
+  try {
+    const result = await deepseekWebSearch.searchDeepSeekWeb(normalizedQuery, { signal: abort.signal });
+    if (clientDisconnected) return; // 客户端已断开，不再写响应
+    console.log(
+      `[web-search] provider=${result.provider} status=ok elapsedMs=${result.elapsedMs} sources=${result.sources.length}` +
+      ` usage=${JSON.stringify(result.usage || {})} requestId=${requestId} character=${approval.character || "unknown"}`
+    );
+    res.json({ ok: true, result });
+  } catch (err) {
+    if (clientDisconnected) return;
+    const code = err?.code && WEB_SEARCH_ERROR_STATUS[err.code] ? err.code : "WEB_SEARCH_UPSTREAM_ERROR";
+    console.log(`[web-search] provider=deepseek status=error code=${code} elapsedMs=${Date.now() - startedAt} requestId=${requestId}`);
+    fail(WEB_SEARCH_ERROR_STATUS[code], code, err?.message || "搜索失败");
+  } finally {
+    res.removeListener("close", onResponseClose);
+  }
+});
+
 // ── API: MCP SendMessage（AI 主动向聊天室发消息）───────────
 app.post("/api/mcp-send-message", (req, res) => {
   const { text, atTargets, threadId, requestId } = req.body;
@@ -2078,6 +2146,7 @@ module.exports = {
     flushThinkingToLog,
     getThinkingLogKey,
     pendingThinkingLogs,
+    pendingPermissions,
     storeApproval,
     invokeChainCallers,
     invokeQueues,
