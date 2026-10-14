@@ -32,6 +32,32 @@
 - v23 按铲屎官要求：↑/↓ 不再独占一行，改为与文件路径行（`#diff-panel-sub`）同一行，路径吃掉剩余宽度把导航推到右边。
 - v24 按铲屎官要求做视觉美化：纯 CSS，不改结构与行为。
 - v25 按铲屎官要求：面板左缘支持拖动调宽（下限 420px，上限沿用 `max-width: 96vw`）。
+- v26 修复：执行被终止/出错（无回复）时，已记录的文件修改不再丢失——目录改挂到归档过程记录容器或错误气泡。
+- v26.1（晔晔三轮复审）：修复 error 后晚到执行结果静默丢弃、历史位置不一致、error↔reply 两种顺序重复、历史回复乱序目录丢失等五处边界。
+
+## v26.1 变更：error 路径边界修复（晔晔复审 v26）
+
+**问题（晔晔复审复现）**：v26 主路径正确，但 error 场景有三个边界：
+
+1. **[真实缺陷] error 后晚到的执行结果被静默丢弃**：error 先到 → `attachThinkingToReply` 把过程记录嵌入错误气泡为 `.thinking-embed`（无 `.bubble-wrapper`）；之后到达的 `permission-executed` 走兜底找到 embed，但 `renderFileDiffDirectory` 要求 `.bubble-wrapper`，直接 return。修复：`renderFileDiffDirectoryIntoThinking` 把 embed 归一化到 `container.closest(".message")`（错误气泡）再渲染。
+2. **[位置不一致] 历史里 permission 排在 error 之后**：收尾兜底会把目录挂到独立归档容器而非错误气泡。修复：新增 `state.diffDirFallbackHost`（key → 兜底挂载元素），error 分支（实时+历史）把错误气泡登记进去，兜底时优先复用（`isConnected` 校验），与实时位置一致。
+3. **[重复] 同一 messageId 先 error 后 reply**：embed 已存在使 `attachThinkingToReply` 提前返回，错误气泡上的旧目录不清。修复：回复到达（实时 reply 事件与历史 assistant 分支）后调 `clearDiffDirFallback` 移除兜底宿主上的目录，只保留回复里的一份；`diffDirFallbackHost` 随 `fileChanges` 在 loadHistory/switchSession 一起清空。
+4. **[重复，方向相反] 同一 messageId 先 reply 后 error**（晔晔第二轮复核）：回复已由 MCP SendMessage 发出后 invoke 才失败/超时，error 分支无条件渲染会再出一份目录并覆盖 `diffDirFallbackHost`。修复：error 分支（实时 + 历史）渲染前判 `state.replyByThinking[key]`，已有回复则跳过且不登记兜底宿主，目录仍由回复承载。
+5. **[丢失，历史乱序] 回复条目排在 permission 之前**（晔晔第三轮复核）：loadHistory 按日志顺序渲染，assistant 分支渲染目录时 `fileChanges` 尚未被后面的 permission 记录填上（提前 return），而收尾遍历又跳过有回复的 key → 目录整份丢失。修复：收尾遍历不再跳过，所有 key 统一走 `refreshFileDiffDirectory`（幂等，有回复走回复、无回复走过程记录容器/错误气泡）。
+
+- 回归用例（`test-file-diff-display.js` 202 项）：error 后晚到执行结果补挂到错误气泡；先 error 后 reply 目录不重复且由回复承载；历史中 permission 排在 error 之后目录落到错误气泡且只有一份；reply → error 顺序目录仍只有回复里的一份；历史回复排在 permission 之前目录仍渲染且由回复承载。关联套件（permission-float-ui / metric-bar-label / tool-records-fold / thinking-restore / thread-attribution / permission-float-layer）全绿。
+
+## v26 变更：被终止/出错轮次的文件修改目录不再丢失
+
+**问题（铲屎官）**：执行被终止后只显示「执行已被用户终止」提示，已经修改的文件没有整理成 Diff 目录。根因：目录只在 `reply` 事件（或历史里的 assistant 回复）处渲染——`renderFileDiffDirectory` 依赖 `replyByThinking` 找到回复元素；终止/出错的轮次没有回复，`state.fileChanges` 里已记录的修改永远不落界面。
+
+- **新增 `renderFileDiffDirectoryIntoThinking(character, messageId)`**：无回复时把目录挂到该轮的过程记录容器（`thinking-archive-*` 归档容器，进行中的 live thinking 也可）。容器有 `.bubble-wrapper`，复用 `renderFileDiffDirectory` 的幂等 upsert。之后若回复仍到达，`attachThinkingToReply` 只搬走 scrollArea 并移除容器，容器上的目录随之销毁，回复里的目录由 reply 流程重新渲染，不会重复。
+- **`refreshFileDiffDirectory` 兜底**：有回复走原路径；无回复落到 `renderFileDiffDirectoryIntoThinking`。副作用（明示）：执行中、回复未到时，执行结果到达即先把目录挂到进行中的 thinking 容器，修改文件实时可见。
+- **abort 事件**：逐个 finalize 该角色的 thinking 后，对每个 messageId 调 `renderFileDiffDirectoryIntoThinking`；终止后晚到的 `permission-executed` 经 `refreshFileDiffDirectory` 兜底同样补挂。
+- **error 事件与历史 error 分支**：目录同时挂到错误气泡（`appendErrorMessage` 返回的 bubble 有 `.bubble-wrapper`），先 `attachThinkingToReply`（销毁容器上的旧副本）再渲染，不重复。
+- **loadHistory 收尾兜底**：遍历 `state.fileChanges`，无回复的 key 一律 `renderFileDiffDirectoryIntoThinking`——历史里被终止的轮次只有 permission 孤儿记录，此前刷新后目录同样丢失。
+- 回归用例（`test-file-diff-display.js` 197 项）：实时终止 → 目录挂归档容器且含已改文件；终止后晚到执行结果 → 补挂；实时 error → 目录挂错误气泡；历史仅有 permission 无回复 → 目录挂孤儿过程记录。另修复 v25 遗留：`test-permission-float-ui.js` 的 IDS 补 `diff-resize-handle`（33 项通过）。全量套件除 `test-cli-invocation` 9 项 win32 平台断言（macOS 上预存在失败，stash 后复现）与 `test-memory` / `test-invoke` 两个需要真实 CLI 的联调用例外全部通过。
+- **未验证项**：真实浏览器里目录挂在过程记录/错误气泡上的观感、与「执行已被用户终止」系统提示的位置关系，需铲屎官确认。
 
 ## v25 变更：左缘拖动调整面板宽度
 

@@ -754,6 +754,127 @@ function emitEdit(es, { requestId, filePath, messageId = "u1", before, after, st
     assert(panelForResize.style.width === "420px", "松手后不再跟随鼠标");
     assert(!resizeHandle.classList.contains("active") && document.body.style.userSelect === "", "拖动结束后撤掉高亮与选中禁用");
     panelForResize.style.width = "";
+
+    // ── v26：执行被终止/出错时，已修改文件仍整理成 Diff 目录 ──
+    // 实时：被终止的轮次没有回复，目录挂到归档的过程记录容器
+    es.emit("thinking", { character: "YYF", messageId: "u-abort", timestamp: 900 });
+    emitEdit(es, { requestId: "rqAbort", filePath: "/x/aborted.js", messageId: "u-abort", before: "a", after: "b", seq: 1400 });
+    es.emit("abort", { character: "YYF" });
+    await waitFor(() => document.querySelector('[id^="thinking-archive-YYF-u-abort-"] .file-diff-dir'));
+    const abortDir = document.querySelector('[id^="thinking-archive-YYF-u-abort-"] .file-diff-dir');
+    assert(!!abortDir, "被终止的轮次：目录挂到归档过程记录容器");
+    assert(abortDir?.textContent.includes("aborted.js"), "终止前已执行的修改进入目录");
+
+    // 实时：终止后晚到的执行结果同样补挂
+    es.emit("thinking", { character: "YYF", messageId: "u-abort2", timestamp: 910 });
+    es.emit("permission", { requestId: "rqLate2", character: "YYF", toolName: "Edit", input: { file_path: "/x/late2.js", old_string: "a", new_string: "b" }, messageId: "u-abort2", timestamp: 911 });
+    es.emit("permission-resolved", { requestId: "rqLate2", behavior: "allow", message: "已允许" });
+    es.emit("abort", { character: "YYF" });
+    es.emit("permission-executed", { requestId: "rqLate2", execution: { status: "success", filePath: "/x/late2.js", before: "a", after: "b", diffAvailable: true, changed: true, seq: 1401, finishedAt: 912 } });
+    await waitFor(() => document.querySelector('[id^="thinking-archive-YYF-u-abort2-"] .file-diff-dir'));
+    assert(document.querySelector('[id^="thinking-archive-YYF-u-abort2-"] .file-diff-dir')?.textContent.includes("late2.js"), "终止后到达的执行结果补挂到归档容器");
+
+    // 实时：出错（非主动终止）轮次，目录挂到错误气泡
+    es.emit("thinking", { character: "YYF", messageId: "u-err", timestamp: 920 });
+    emitEdit(es, { requestId: "rqErr", filePath: "/x/err.js", messageId: "u-err", before: "a", after: "b", seq: 1402 });
+    es.emit("error", { character: "YYF", messageId: "u-err", error: "连接中断" });
+    await waitFor(() => document.querySelector(".error-msg .file-diff-dir"));
+    assert(document.querySelector(".error-msg .file-diff-dir")?.textContent.includes("err.js"), "出错轮次的目录挂到错误气泡");
+
+    // 历史：只有 permission 记录、没有回复（终止后刷新），目录挂到孤儿过程记录
+    historyPayload = {
+      sessionId: "sess-diff",
+      createdAt: 0,
+      lastSeq: 3,
+      activeThinking: [],
+      messages: [
+        { id: "u9", role: "user", text: "干活", timestamp: 1 },
+        {
+          id: "pOrphan", role: "permission", requestId: "orphan1", character: "YYF", toolName: "Edit",
+          input: { file_path: "/x/orphan.js", old_string: "a", new_string: "b" },
+          messageId: "u9", timestamp: 2, status: "allow",
+          execution: { status: "success", filePath: "/x/orphan.js", before: "a", after: "b", diffAvailable: true, changed: true, seq: 800, finishedAt: 3 },
+        },
+      ],
+    };
+    dom.window.eval("loadHistory()");
+    await waitFor(() => document.querySelector('[id^="thinking-archive-YYF-u9-"] .file-diff-dir'));
+    assert(document.querySelector('[id^="thinking-archive-YYF-u9-"] .file-diff-dir')?.textContent.includes("orphan.js"), "历史重载：无回复的终止轮次目录挂在过程记录上");
+
+    // ── v26.1（晔晔复审）：error 路径的三个边界 ──
+    // 1. error 之后晚到的执行结果：embed 没有 .bubble-wrapper，须归一化到错误气泡，不能静默丢弃
+    es.emit("thinking", { character: "YYF", messageId: "u-err2", timestamp: 930 });
+    es.emit("permission", { requestId: "rqErrLate", character: "YYF", toolName: "Edit", input: { file_path: "/x/errlate.js", old_string: "a", new_string: "b" }, messageId: "u-err2", timestamp: 931 });
+    es.emit("permission-resolved", { requestId: "rqErrLate", behavior: "allow", message: "已允许" });
+    es.emit("error", { character: "YYF", messageId: "u-err2", error: "连接中断" });
+    es.emit("permission-executed", { requestId: "rqErrLate", execution: { status: "success", filePath: "/x/errlate.js", before: "a", after: "b", diffAvailable: true, changed: true, seq: 1403, finishedAt: 932 } });
+    const errLateBubble = () => [...document.querySelectorAll(".error-msg")].find((el) => el.querySelector('[id^="thinking-archive-YYF-u-err2-"]'));
+    await waitFor(() => errLateBubble()?.querySelector(".file-diff-dir"));
+    assert(errLateBubble()?.querySelector(".file-diff-dir")?.textContent.includes("errlate.js"), "error 后晚到的执行结果补挂到错误气泡（embed 归一化，不再静默丢弃）");
+
+    // 2. 同一轮先 error 后 reply：错误气泡上的兜底目录被清理，只保留回复里的一份
+    es.emit("thinking", { character: "YYF", messageId: "u-dup", timestamp: 940 });
+    emitEdit(es, { requestId: "rqDup", filePath: "/x/dup.js", messageId: "u-dup", before: "a", after: "b", seq: 1404 });
+    es.emit("error", { character: "YYF", messageId: "u-dup", error: "部分失败" });
+    await waitFor(() => [...document.querySelectorAll(".error-msg .file-diff-dir")].some((el) => el.textContent.includes("dup.js")));
+    es.emit("reply", { character: "YYF", messageId: "u-dup", replyId: "r-dup", text: "补偿回复", timestamp: 941 });
+    await waitFor(() => document.querySelector('[data-msg-id="r-dup"] .file-diff-dir'));
+    const dupDirs = [...document.querySelectorAll(".file-diff-dir")].filter((el) => el.textContent.includes("dup.js"));
+    assert(dupDirs.length === 1 && dupDirs[0].closest('[data-msg-id="r-dup"]'), `error 后 reply 到达：目录只保留回复里的一份（实际 ${dupDirs.length} 份）`);
+
+    // 3. 历史里 permission 记录排在 error 消息之后：目录仍落到错误气泡，与实时位置一致
+    historyPayload = {
+      sessionId: "sess-diff",
+      createdAt: 0,
+      lastSeq: 4,
+      activeThinking: [],
+      messages: [
+        { id: "u10", role: "user", text: "干活", timestamp: 1 },
+        { id: "e10", role: "error", character: "YYF", error: "连接中断", replyTo: "u10", timestamp: 3 },
+        {
+          id: "p10", role: "permission", requestId: "orphan10", character: "YYF", toolName: "Edit",
+          input: { file_path: "/x/after-err.js", old_string: "a", new_string: "b" },
+          messageId: "u10", timestamp: 2, status: "allow",
+          execution: { status: "success", filePath: "/x/after-err.js", before: "a", after: "b", diffAvailable: true, changed: true, seq: 810, finishedAt: 2 },
+        },
+      ],
+    };
+    dom.window.eval("loadHistory()");
+    await waitFor(() => [...document.querySelectorAll(".error-msg .file-diff-dir")].some((el) => el.textContent.includes("after-err.js")));
+    assert([...document.querySelectorAll(".file-diff-dir")].filter((el) => el.textContent.includes("after-err.js")).length === 1, "历史中 permission 排在 error 之后：目录落到错误气泡且只有一份");
+
+    // 4. 顺序反过来（reply → error）：回复已发出后 invoke 才失败，目录仍只保留回复里的一份
+    es.emit("thinking", { character: "YYF", messageId: "u-re", timestamp: 950 });
+    emitEdit(es, { requestId: "rqRe", filePath: "/x/re.js", messageId: "u-re", before: "a", after: "b", seq: 1405 });
+    es.emit("reply", { character: "YYF", messageId: "u-re", replyId: "r-re", text: "先回了", timestamp: 951 });
+    await waitFor(() => document.querySelector('[data-msg-id="r-re"] .file-diff-dir'));
+    es.emit("error", { character: "YYF", messageId: "u-re", error: "invoke 随后失败" });
+    await sleep(30);
+    const reDirs = [...document.querySelectorAll(".file-diff-dir")].filter((el) => el.textContent.includes("re.js"));
+    assert(reDirs.length === 1 && reDirs[0].closest('[data-msg-id="r-re"]'), `reply → error 顺序：目录仍只有回复里的一份（实际 ${reDirs.length} 份）`);
+
+    // 5. 历史乱序：回复条目排在 permission 之前（先 SendMessage 又继续 Edit），收尾统一刷新后目录不丢
+    historyPayload = {
+      sessionId: "sess-diff",
+      createdAt: 0,
+      lastSeq: 5,
+      activeThinking: [],
+      messages: [
+        { id: "u11", role: "user", text: "干活", timestamp: 1 },
+        { id: "a11", role: "assistant", character: "YYF", text: "先回了", replyTo: "u11", timestamp: 2 },
+        { id: "e11", role: "error", character: "YYF", error: "invoke 随后失败", replyTo: "u11", timestamp: 4 },
+        {
+          id: "p11", role: "permission", requestId: "orphan11", character: "YYF", toolName: "Edit",
+          input: { file_path: "/x/reorder.js", old_string: "a", new_string: "b" },
+          messageId: "u11", timestamp: 3, status: "allow",
+          execution: { status: "success", filePath: "/x/reorder.js", before: "a", after: "b", diffAvailable: true, changed: true, seq: 820, finishedAt: 3 },
+        },
+      ],
+    };
+    dom.window.eval("loadHistory()");
+    await waitFor(() => document.querySelector('[data-msg-id="a11"] .file-diff-dir'));
+    const reorderDirs = [...document.querySelectorAll(".file-diff-dir")].filter((el) => el.textContent.includes("reorder.js"));
+    assert(reorderDirs.length === 1 && !!reorderDirs[0].closest('[data-msg-id="a11"]'), `历史回复排在 permission 之前：目录仍渲染且由回复承载（实际 ${reorderDirs.length} 份）`);
   } catch (err) {
     console.error("测试异常:", err);
     failed += 1;

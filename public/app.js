@@ -30,6 +30,9 @@ const state = {
   permRequestIndex: {},
   // "character|messageId" -> replyId，用于执行结果晚于回复到达时补挂目录
   replyByThinking: {},
+  // "character|messageId" -> 兜底挂载了文件修改目录的元素（过程记录容器/错误气泡），
+  // 回复真正到达后要清掉上面的目录，避免与回复里的重复
+  diffDirFallbackHost: {},
   skills: [],
   skillConfig: null,
   skillTraces: [],
@@ -452,6 +455,7 @@ function connectSSE() {
     if (data.messageId) {
       state.replyByThinking[`${data.character}|${data.messageId}`] = data.replyId;
       renderFileDiffDirectory(data.character, data.messageId, state.messageElements[data.replyId]);
+      clearDiffDirFallback(data.character, data.messageId, state.messageElements[data.replyId]);
     }
 
     if (data.source !== "mcp-tool") {
@@ -472,6 +476,12 @@ function connectSSE() {
       const errorEl = appendErrorMessage(data.character, data.error);
       // 归档后的执行记录嵌入错误气泡内部，不再作为独立行残留
       if (data.messageId) attachThinkingToReply(data.character, data.messageId, errorEl);
+      // 出错/被终止且没有回复的轮次：已记录的文件修改目录挂到错误气泡上；
+      // 已有回复（reply → error 顺序）时目录仍由回复承载，不重复渲染
+      if (data.messageId && !state.replyByThinking[`${data.character}|${data.messageId}`]) {
+        renderFileDiffDirectory(data.character, data.messageId, errorEl);
+        state.diffDirFallbackHost[`${data.character}|${data.messageId}`] = errorEl;
+      }
       loadSessionList();
       loadSkillTraces();
     }
@@ -494,7 +504,10 @@ function connectSSE() {
     const els = document.querySelectorAll(`[id^="thinking-${data.character}-"]`);
     for (const el of els) {
       if (el.dataset.archived) continue;
-      finalizeThinking(data.character, el.id.replace(`thinking-${data.character}-`, ""), "error");
+      const abortedMsgId = el.id.replace(`thinking-${data.character}-`, "");
+      finalizeThinking(data.character, abortedMsgId, "error");
+      // 被终止的轮次没有回复：已记录的文件修改目录挂到归档的过程记录上
+      renderFileDiffDirectoryIntoThinking(data.character, abortedMsgId);
     }
     appendSystemNotice(`${getDisplayName(data.character)} 的执行已被用户终止`);
     loadSessionList();
@@ -2035,12 +2048,48 @@ function renderFileDiffDirectory(character, messageId, replyEl) {
   wrapper.appendChild(dir);
 }
 
-// 执行结果晚于回复到达时补挂/刷新目录
+// 执行结果晚于回复到达时补挂/刷新目录；没有回复（被终止/出错）时落到过程记录容器
 function refreshFileDiffDirectory(character, messageId) {
   if (!character || !messageId) return;
   const replyId = state.replyByThinking[`${character}|${messageId}`];
-  if (!replyId) return;
-  renderFileDiffDirectory(character, messageId, state.messageElements[replyId]);
+  if (replyId) {
+    renderFileDiffDirectory(character, messageId, state.messageElements[replyId]);
+    return;
+  }
+  renderFileDiffDirectoryIntoThinking(character, messageId);
+}
+
+// 被终止/出错等没有回复的轮次：目录改挂到过程记录容器（归档或进行中的 thinking）。
+// 之后若回复仍到达，attachThinkingToReply 只搬走 scrollArea 并移除容器，
+// 容器上的目录随之销毁，回复里的目录由 reply 流程重新渲染，不会重复。
+function renderFileDiffDirectoryIntoThinking(character, messageId) {
+  if (!character || !messageId) return;
+  const fallbackKey = `${character}|${messageId}`;
+  if (state.replyByThinking[fallbackKey]) return; // 有回复：由回复承载
+  // 已挂过目录的错误气泡优先：历史里 permission 记录可能排在 error 消息之后，
+  // 兜底仍落到同一气泡，位置与实时一致
+  const recorded = state.diffDirFallbackHost[fallbackKey];
+  if (recorded && recorded.isConnected) {
+    renderFileDiffDirectory(character, messageId, recorded);
+    return;
+  }
+  const container = document.querySelector(`[id^="thinking-archive-${character}-${messageId}-"]`)
+    || document.getElementById(`thinking-${character}-${messageId}`);
+  if (!container) return;
+  // 已嵌入错误气泡的 embed 自身没有 .bubble-wrapper，归一化到宿主消息，
+  // 否则 error 之后晚到的执行结果会被静默丢弃
+  const host = container.classList.contains("thinking-embed") ? container.closest(".message") : container;
+  if (!host) return;
+  state.diffDirFallbackHost[fallbackKey] = host;
+  renderFileDiffDirectory(character, messageId, host);
+}
+
+// 回复到达后目录由回复承载：清掉此前挂在过程记录/错误气泡上的兜底目录，避免重复
+function clearDiffDirFallback(character, messageId, keepEl) {
+  const key = `${character}|${messageId}`;
+  const host = state.diffDirFallbackHost[key];
+  if (host && host !== keepEl) host.querySelector(".file-diff-dir")?.remove();
+  delete state.diffDirFallbackHost[key];
 }
 
 let $diffRail = null;
@@ -2981,6 +3030,7 @@ async function switchSession(id) {
   state.fileChanges = {};
   state.permRequestIndex = {};
   state.replyByThinking = {};
+  state.diffDirFallbackHost = {};
   clearFloatPerms();
   closeDiffPanel();
 
@@ -3101,6 +3151,7 @@ async function loadHistory(forSessionId = state.sessionId) {
     state.fileChanges = {};
     state.permRequestIndex = {};
     state.replyByThinking = {};
+    state.diffDirFallbackHost = {};
     closeDiffPanel();
 
     // 第一遍：重建 thread 数据结构
@@ -3193,6 +3244,7 @@ async function loadHistory(forSessionId = state.sessionId) {
         if (msg.replyTo) {
           state.replyByThinking[permKey(msg.character, msg.replyTo)] = msg.id;
           renderFileDiffDirectory(msg.character, msg.replyTo, state.messageElements[msg.id]);
+          clearDiffDirFallback(msg.character, msg.replyTo, state.messageElements[msg.id]);
         }
         // 快照仍 active 但回复已落盘（主线与 thread 深层回复都覆盖）：
         // 不再额外新建空 thinking，角色状态仍保持为 thinking
@@ -3207,6 +3259,12 @@ async function loadHistory(forSessionId = state.sessionId) {
         const errorEl = appendErrorMessage(msg.character, msg.error, msg.timestamp);
         // 执行记录嵌入错误气泡内部（replyTo 即对应 thinking 的 messageId）
         if (msg.replyTo) attachThinkingToReply(msg.character, msg.replyTo, errorEl);
+        // 出错/被终止且没有回复的轮次同样展示已记录的文件修改目录；
+        // 已有回复（回复落盘后 invoke 才失败）时目录仍由回复承载，不重复渲染
+        if (msg.replyTo && !state.replyByThinking[permKey(msg.character, msg.replyTo)]) {
+          renderFileDiffDirectory(msg.character, msg.replyTo, errorEl);
+          state.diffDirFallbackHost[permKey(msg.character, msg.replyTo)] = errorEl;
+        }
       } else if (msg.role === "permission") {
         // 仅聚合获批且执行成功的编辑记录；存量无 execution 的历史记录本期不展示
         if (msg.status === "allow" && msg.execution?.status === "success") recordFileChange(msg);
@@ -3263,6 +3321,15 @@ async function loadHistory(forSessionId = state.sessionId) {
         if (rec.role === "thinking") appendThinkingContent(container, rec);
         else appendPermRecord(container, rec);
       }
+    }
+
+    // 收尾统一刷新所有文件修改目录：refreshFileDiffDirectory 幂等，
+    // 有回复走回复、无回复走过程记录容器/错误气泡。
+    // 不能跳过有回复的 key：回复条目可能排在 permission 之前，
+    // 当时 fileChanges 还没填上，跳过了就再没有别处渲染
+    for (const key of Object.keys(state.fileChanges)) {
+      const sep = key.indexOf("|");
+      refreshFileDiffDirectory(key.slice(0, sep), key.slice(sep + 1));
     }
 
     // 汇总每个过程记录容器的摘要（标题 + 条数），含嵌入回复内部的
