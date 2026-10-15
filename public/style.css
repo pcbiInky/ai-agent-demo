@@ -2279,7 +2279,7 @@ html, body {
   contain: layout paint;
 }
 .mermaid-lightbox-stage > svg,
-.mermaid-lightbox-bitmap {
+.mermaid-lightbox-preview {
   position: absolute;
   left: 0;
   top: 0;
@@ -2288,7 +2288,7 @@ html, body {
   margin: 0;
   transform-origin: 0 0;
 }
-.mermaid-lightbox-bitmap {
+.mermaid-lightbox-preview {
   pointer-events: none;
   will-change: transform;
 }
