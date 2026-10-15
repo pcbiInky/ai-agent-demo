@@ -46,7 +46,13 @@ const mermaidMock = {
     this.calls.push({ id, source });
     if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     if (source.includes("INVALID")) throw new Error("Parse error on line 1: <bad>");
-    if (source.includes("LARGE_PREVIEW")) {
+    if (source.includes("NATIVE_BITMAP")) {
+      return { svg: `<svg xmlns="http://www.w3.org/2000/svg" id="${id}-svg" style="max-width:1600px" height="900" viewBox="0 0 1600 900"><text>native</text></svg>` };
+    }
+    if (source.includes("WIDE_BITMAP")) {
+      return { svg: `<svg xmlns="http://www.w3.org/2000/svg" id="${id}-svg" style="max-width:40000px" height="100" viewBox="0 0 40000 100"><text>wide</text></svg>` };
+    }
+    if (source.includes("LARGE_BITMAP")) {
       return { svg: `<svg xmlns="http://www.w3.org/2000/svg" id="${id}-svg" style="max-width:20000px" height="5000" viewBox="0 0 20000 5000">${'<rect width="10" height="10"/>'.repeat(600)}</svg>` };
     }
     if (source.includes("EVIL")) {
@@ -408,7 +414,7 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     assert(!document.querySelector(".mermaid-lightbox"), "点击遮罩本体关闭放大浮层");
     assert(!zoomFigure.classList.contains("mermaid-lightbox-source"), "关闭浮层后释放原消息图的合成层提示");
 
-    // ── 14. 大图缩放位图预览：解码就绪、手势切换、清晰恢复、失败和关闭回收 ──
+    // ── 14. 固定位图：原始 1 倍分辨率、持续复用、预算、失败和关闭回收 ──
     const images = [];
     const liveUrls = new Set();
     let drawCalls = 0;
@@ -425,7 +431,7 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     window.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() { drawCalls++; } });
     es.emit("reply", {
       character: "YYF", messageId: "u1", replyId: "preview-large",
-      text: md("flowchart LR\nLARGE_PREVIEW-->B"), timestamp: 113,
+      text: md("flowchart LR\nLARGE_BITMAP-->B"), timestamp: 113,
     });
     await waitFor(() => state_messageElements("preview-large")?.querySelector("svg"));
     const largeFigure = state_messageElements("preview-large").querySelector(".mermaid-figure");
@@ -436,23 +442,31 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     const firstImage = images.at(-1);
     assert(largeFigure.classList.contains("mermaid-lightbox-source"), "打开浮层期间隔离原消息大图的重绘");
     assert(!!firstImage && !largeBox.querySelector("canvas") && largeSvg.style.display !== "none", "预览未就绪时继续显示原始 SVG");
-    firstImage.onload();
-    let canvas = largeBox.querySelector("canvas");
-    assert(canvas.width * canvas.height <= 4000000 && Math.max(canvas.width, canvas.height) <= 8192, "巨大类图预览受 400 万像素及单边 8192px 限制");
-    assert(drawCalls === 1 && canvas.style.display === "none" && liveUrls.size === 0, "快照只绘制一次，初始保留矢量显示并释放 Blob URL");
     largeBox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: -30, clientX: 500, clientY: 300, cancelable: true }));
     await nextZoomFrame();
-    assert(largeSvg.style.display === "none" && canvas.style.display === "block", "缩放期间关闭整个 SVG 的绘制，显示位图预览");
+    const loadedTransform = largeSvg.style.transform;
+    firstImage.onload();
+    let canvas = largeBox.querySelector("canvas");
+    assert(canvas.width * canvas.height <= 40000000 && Math.max(canvas.width, canvas.height) <= 16384, "超预算图等比降采样，限制 4000 万像素及单边 16384px");
+    assert(drawCalls === 1 && largeSvg.style.display === "none" && liveUrls.size === 0, "位图就绪后立即替代 SVG，并释放 Blob URL");
+    assert(canvas.style.transform === loadedTransform, "解码期间已经缩放，位图接管时保持当前倍率");
+    const pixelWidth = canvas.width;
+    const pixelHeight = canvas.height;
+    const frozenSvgTransform = largeSvg.style.transform;
+    largeBox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: -30, clientX: 500, clientY: 300, cancelable: true }));
+    await nextZoomFrame();
+    assert(largeSvg.style.display === "none" && canvas.style.display !== "none" && canvas.style.transform !== loadedTransform, "缩放只变换位图，SVG 持续隐藏");
     const movingLabel = largeBox.querySelector(".mermaid-zoom-label").textContent;
     await sleep(220);
-    assert(largeSvg.style.display !== "none" && canvas.style.display === "none" && largeBox.querySelector(".mermaid-zoom-label").textContent === movingLabel, "停手后恢复原始 SVG，保持缩放比例");
+    assert(largeSvg.style.display === "none" && canvas.style.display !== "none" && largeBox.querySelector(".mermaid-zoom-label").textContent === movingLabel, "停手后继续显示同一位图，不恢复 SVG");
+    assert(canvas.width === pixelWidth && canvas.height === pixelHeight && drawCalls === 1 && largeSvg.style.transform === frozenSvgTransform, "缩放与停手均不重新绘制像素、不更新隐藏 SVG 的变换");
 
     largeBox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: -30, cancelable: true }));
     await nextZoomFrame();
     largeBox.querySelector(".mermaid-lightbox-close").click();
     assert(canvas.width === 0 && canvas.height === 0 && !largeFigure.classList.contains("mermaid-lightbox-source"), "关闭释放位图像素与原消息图合成层");
     await sleep(220);
-    assert(!document.querySelector(".mermaid-lightbox"), "关闭取消清晰恢复定时器，不再回写已移除浮层");
+    assert(!document.querySelector(".mermaid-lightbox"), "关闭后不再回写已移除浮层");
 
     largeFigure.click();
     await nextZoomFrame();
@@ -471,6 +485,56 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     assert(pendingImage.onload === null && pendingImage.onerror === null && liveUrls.size === 0, "关闭取消尚未解码的快照并释放 URL");
     lateLoad();
     assert(!document.querySelector(".mermaid-lightbox") && drawCalls === 1, "迟到的解码回调不创建新位图或浮层");
+
+    // Retina 屏仍生成 1 倍像素；小图也使用固定位图。验证待处理缩放不丢失。
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    es.emit("reply", {
+      character: "YYF", messageId: "u1", replyId: "bitmap-native",
+      text: md("flowchart LR\nNATIVE_BITMAP-->B"), timestamp: 114,
+    });
+    await waitFor(() => state_messageElements("bitmap-native")?.querySelector("svg"));
+    const nativeFigure = state_messageElements("bitmap-native").querySelector(".mermaid-figure");
+    nativeFigure.click();
+    await nextZoomFrame();
+    const nativeBox = document.querySelector(".mermaid-lightbox");
+    nativeBox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: -30, cancelable: true }));
+    const beforeFrameTransform = nativeBox.querySelector("svg").style.transform;
+    images.at(-1).onload();
+    const nativeCanvas = nativeBox.querySelector("canvas");
+    assert(nativeCanvas.width === 1600 && nativeCanvas.height === 900, "100% 位图按原图 1 倍像素生成，Retina 不扩大像素缓冲");
+    assert(nativeCanvas.style.transform === beforeFrameTransform, "位图就绪时沿用已绘制的比例，等待中的输入留给下一帧");
+    await nextZoomFrame();
+    assert(nativeCanvas.style.transform !== beforeFrameTransform && nativeCanvas.width === 1600 && drawCalls === 2, "位图切换前排队的缩放正常执行，像素只绘制一次");
+    nativeBox.querySelector(".mermaid-zoom-label").click();
+    await nextZoomFrame();
+    assert(nativeCanvas.style.transform === "scale(1)" && nativeBox.querySelector("svg").style.display === "none" && drawCalls === 2, "重置 100% 仍复用位图");
+    nativeBox.querySelector(".mermaid-lightbox-close").click();
+
+    es.emit("reply", {
+      character: "YYF", messageId: "u1", replyId: "bitmap-wide",
+      text: md("flowchart LR\nWIDE_BITMAP-->B"), timestamp: 115,
+    });
+    await waitFor(() => state_messageElements("bitmap-wide")?.querySelector("svg"));
+    state_messageElements("bitmap-wide").querySelector(".mermaid-figure").click();
+    await nextZoomFrame();
+    images.at(-1).onload();
+    const wideBox = document.querySelector(".mermaid-lightbox");
+    const wideCanvas = wideBox.querySelector("canvas");
+    assert(wideCanvas.width === 16384 && wideCanvas.height === 40 && wideCanvas.style.width === "40000px", "总像素未超预算的超宽图仍受单边限制，CSS 展示尺寸保持原样");
+    wideBox.querySelector(".mermaid-lightbox-close").click();
+
+    const failedCanvases = [];
+    window.HTMLCanvasElement.prototype.getContext = function () {
+      failedCanvases.push(this);
+      return { drawImage() { throw new Error("GPU allocation failed"); } };
+    };
+    nativeFigure.click();
+    await nextZoomFrame();
+    images.at(-1).onload();
+    const failedBox = document.querySelector(".mermaid-lightbox");
+    assert(!failedBox.querySelector("canvas") && failedBox.querySelector("svg").style.display !== "none", "像素绘制失败时继续显示 SVG");
+    assert(failedCanvases[0].width === 0 && failedCanvases[0].height === 0 && liveUrls.size === 0, "绘制失败立即释放像素缓冲与 URL");
+    failedBox.querySelector(".mermaid-lightbox-close").click();
 
   } catch (err) {
     console.error("测试异常:", err);
