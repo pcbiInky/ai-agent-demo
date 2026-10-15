@@ -29,7 +29,7 @@ ACCESS_TOKEN=你的令牌 node server.js                # 仍只听 127.0.0.1，
 | 环境变量 | 默认／规则 |
 |---|---|
 | `DEEPSEEK_API_KEY` | 优先凭据；设置后忽略凭据文件 |
-| `DEEPSEEK_SEARCH_CREDENTIALS_FILE` | 可选；显式指定时读取 dsh 格式 YAML 的 `refs.DEEPSEEK_API_KEY`，不自动扫描用户目录 |
+| `DEEPSEEK_SEARCH_CREDENTIALS_FILE` | 可选；显式指定时读取 dsh 格式 YAML 的 `refs.DEEPSEEK_API_KEY`。两者都未设置时，主服务默认回落到 `~/.dsh/.credentials.yaml`（仅文件存在时生效） |
 | `DEEPSEEK_SEARCH_BASE_URL` | `https://api.deepseek.com/anthropic/v1`，必须为合法 HTTPS URL |
 | `DEEPSEEK_SEARCH_MODEL` | `deepseek-v4-flash` |
 | `DEEPSEEK_SEARCH_TIMEOUT_MS` | `60000`，范围 1000–120000 |

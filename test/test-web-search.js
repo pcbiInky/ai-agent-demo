@@ -12,6 +12,7 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const http = require("http");
 
@@ -39,7 +40,23 @@ webSearchLib.searchDeepSeekWeb = async (query) => {
   return upstreamBehavior(query);
 };
 
+// 让默认凭据回落行为在 require server.js 时确定可见（保存现场，退出前恢复）
+const savedApiKey = process.env.DEEPSEEK_API_KEY;
+const savedCredFile = process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE;
+delete process.env.DEEPSEEK_API_KEY;
+delete process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE;
+
 const server = require("../server");
+
+// 默认搜索凭据回落：两者都未显式配置时指向 ~/.dsh/.credentials.yaml（仅文件存在时生效）
+const DEFAULT_DSH_CREDENTIALS_FILE = path.join(os.homedir(), ".dsh", ".credentials.yaml");
+const defaultCredApplied = process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE === DEFAULT_DSH_CREDENTIALS_FILE;
+if (savedApiKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = savedApiKey;
+if (savedCredFile === undefined) {
+  if (!defaultCredApplied) delete process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE;
+} else {
+  process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE = savedCredFile;
+}
 
 let passed = 0;
 let failed = 0;
@@ -106,6 +123,14 @@ async function approveWebSearch(query, { behavior = "allow", requestId } = {}) {
 
 async function testRoute() {
   console.log("\n=== /api/web-search 审批与执行路由 ===");
+
+  // 默认凭据回落（在 require server.js 时判定）
+  if (fs.existsSync(DEFAULT_DSH_CREDENTIALS_FILE)) {
+    assert(defaultCredApplied, "未显式配置时默认回落到 ~/.dsh/.credentials.yaml");
+  } else {
+    assert(!defaultCredApplied, "dsh 凭据文件不存在时不设置默认回落");
+  }
+
   upstreamCalls.length = 0;
 
   // 无效输入

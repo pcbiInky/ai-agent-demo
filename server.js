@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const crypto = require("crypto");
 const { invoke, initMcpRegistrations, cleanupMcpRegistrations } = require("./invoke");
 const { getRoleCardMetrics } = require("./lib/role-metrics");
@@ -41,6 +42,13 @@ if (access.enabled && access.internalToken) {
 }
 // 子进程回报时要连实际监听的地址：绑定具体网卡或 ::1 时 127.0.0.1 连不上
 process.env.PERMISSION_SERVER_HOST = process.env.PERMISSION_SERVER_HOST || resolveInternalHost(HOST);
+// 搜索凭据默认值：未显式配置 DEEPSEEK_API_KEY / DEEPSEEK_SEARCH_CREDENTIALS_FILE 时，
+// 回落到本机 dsh 已保存的凭据文件（仅文件存在时生效；不存在则仍走"未配置凭据"报错路径）
+const DEFAULT_DSH_CREDENTIALS_FILE = path.join(os.homedir(), ".dsh", ".credentials.yaml");
+if (!process.env.DEEPSEEK_API_KEY && !process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE && fs.existsSync(DEFAULT_DSH_CREDENTIALS_FILE)) {
+  process.env.DEEPSEEK_SEARCH_CREDENTIALS_FILE = DEFAULT_DSH_CREDENTIALS_FILE;
+  console.log(`[web-search] 使用默认搜索凭据文件: ${DEFAULT_DSH_CREDENTIALS_FILE}`);
+}
 const LOG_DIR = path.join(__dirname, "chat-logs");
 
 // ── 角色系统初始化 ────────────────────────────────────────
