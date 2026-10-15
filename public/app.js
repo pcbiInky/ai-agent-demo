@@ -2487,8 +2487,8 @@ function setupOutsideClickDismiss() {
     mouseDownTarget = e.target;
   }, true);
   document.addEventListener("click", (e) => {
-    if (mouseDownTarget?.closest?.("#thread-panel, #diff-panel")) return;
-    if (e.target.closest("#thread-panel, #diff-panel")) return;
+    if (mouseDownTarget?.closest?.("#thread-panel, #diff-panel, .mermaid-lightbox")) return;
+    if (e.target.closest("#thread-panel, #diff-panel, .mermaid-lightbox")) return;
     if (e.target.closest(".thread-quote, .thread-reply-bar, .file-diff-item")) return;
     if ($threadPanel.classList.contains("open")) closeThread();
     if ($diffPanel.classList.contains("open")) closeDiffPanel();
@@ -3560,6 +3560,9 @@ async function renderMermaidTask(task) {
     figure.innerHTML = sanitizeMermaidSvg(svg);
     if (!figure.querySelector("svg")) return showMermaidError(task, "渲染结果为空");
     block.dataset.mermaidState = "done";
+    // 点击放大：绑定一次（同一节点不会重复排队，重建的消息会产生新节点）
+    figure.title = "点击放大查看";
+    figure.addEventListener("click", () => openMermaidLightbox(figure));
     if (stickToBottom) scrollToBottom();
   } catch (err) {
     document.getElementById(renderId)?.remove();
@@ -3579,6 +3582,44 @@ function showMermaidError(task, message) {
   note.textContent = `Mermaid 渲染失败：${message}`;
   figure.appendChild(note);
   details.open = true; // 失败时源码直接可见
+}
+
+// ── Mermaid 图形放大查看 ──────────────────────────────────
+// 点击已渲染的图形打开全屏浮层，SVG 克隆节点展示（已清洗的 DOM 直接复制，
+// 不做字符串注入）；点击任意处 / Esc / × 关闭
+let _mermaidLightbox = null;
+
+function openMermaidLightbox(figure) {
+  const svg = figure.querySelector("svg");
+  if (!svg) return;
+  closeMermaidLightbox();
+  const overlay = document.createElement("div");
+  overlay.className = "mermaid-lightbox";
+  const body = document.createElement("div");
+  body.className = "mermaid-lightbox-body";
+  body.appendChild(svg.cloneNode(true));
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "mermaid-lightbox-close";
+  closeBtn.textContent = "×";
+  closeBtn.title = "关闭";
+  overlay.appendChild(body);
+  overlay.appendChild(closeBtn);
+  overlay.addEventListener("click", () => closeMermaidLightbox());
+  document.addEventListener("keydown", onMermaidLightboxKeydown);
+  document.body.appendChild(overlay);
+  _mermaidLightbox = overlay;
+}
+
+function closeMermaidLightbox() {
+  if (!_mermaidLightbox) return;
+  _mermaidLightbox.remove();
+  _mermaidLightbox = null;
+  document.removeEventListener("keydown", onMermaidLightboxKeydown);
+}
+
+function onMermaidLightboxKeydown(e) {
+  if (e.key === "Escape") closeMermaidLightbox();
 }
 
 function initProfiles() {

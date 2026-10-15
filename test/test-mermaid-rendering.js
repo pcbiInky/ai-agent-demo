@@ -253,6 +253,19 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     assert(!!r12?.querySelector("code")?.textContent.includes("inline"), "行内代码正常");
     assert(!!r12?.querySelector("table") && !!r12?.querySelector('a[href="https://example.com"]'), "表格与链接渲染无回归");
 
+    // ── 13. 点击放大浮层 ──
+    const zoomFigure = state_messageElements("r11")?.querySelector(".mermaid-figure");
+    assert(zoomFigure?.title === "点击放大查看", "渲染成功的图形带点击放大提示");
+    zoomFigure.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const lightbox = document.querySelector(".mermaid-lightbox");
+    assert(!!lightbox?.querySelector(".mermaid-lightbox-body svg"), "点击图形打开放大浮层并克隆 SVG");
+    assert(lightbox.querySelector("svg")?.getAttribute("id")?.endsWith("-svg"), "浮层 SVG 内容与气泡内一致");
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" }));
+    assert(!document.querySelector(".mermaid-lightbox"), "Esc 关闭放大浮层");
+    zoomFigure.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    document.querySelector(".mermaid-lightbox")?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert(!document.querySelector(".mermaid-lightbox"), "点击浮层关闭放大浮层");
+
   } catch (err) {
     console.error("测试异常:", err);
     failed += 1;

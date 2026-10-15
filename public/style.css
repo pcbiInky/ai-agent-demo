@@ -2241,3 +2241,51 @@ html, body {
 .mermaid-source pre {
   margin-top: 6px;
 }
+
+/* ── Mermaid 图形放大浮层 ─────────────────────────────── */
+.mermaid-block[data-mermaid-state="done"] .mermaid-figure {
+  cursor: zoom-in;
+}
+.mermaid-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(20, 18, 40, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mermaid-lightbox-body {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  max-width: 94vw;
+  max-height: 92vh;
+  overflow: auto;
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35);
+}
+/* 浮层里按原始尺寸展示，宽图/高图双向滚动 */
+.mermaid-lightbox-body svg {
+  max-width: none;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.mermaid-lightbox-close {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.mermaid-lightbox-close:hover {
+  background: #fff;
+}
