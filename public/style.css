@@ -2246,6 +2246,10 @@ html, body {
 .mermaid-block[data-mermaid-state="done"] .mermaid-figure {
   cursor: zoom-in;
 }
+/* 只在查看浮层期间隔离原消息图，避免它被浮层缩放牵连重绘。 */
+.mermaid-lightbox-source {
+  will-change: transform;
+}
 .mermaid-lightbox {
   position: fixed;
   inset: 0;
@@ -2274,7 +2278,8 @@ html, body {
   overflow: hidden;
   contain: layout paint;
 }
-.mermaid-lightbox-stage > svg {
+.mermaid-lightbox-stage > svg,
+.mermaid-lightbox-preview {
   position: absolute;
   left: 0;
   top: 0;
@@ -2282,6 +2287,10 @@ html, body {
   display: block;
   margin: 0;
   transform-origin: 0 0;
+}
+.mermaid-lightbox-preview {
+  pointer-events: none;
+  will-change: transform;
 }
 .mermaid-lightbox-controls {
   position: fixed;

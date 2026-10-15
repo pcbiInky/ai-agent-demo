@@ -3592,11 +3592,14 @@ function showMermaidError(task, message) {
 // 或底部 ± 按钮；双指滚动走原生 overflow 平移；Esc / × / 点击遮罩关闭
 let _mermaidLightbox = null;
 let _mermaidZoomFrame = null;
+let _mermaidLightboxCleanup = null;
 
 function openMermaidLightbox(figure) {
   const svg = figure.querySelector("svg");
   if (!svg) return;
   closeMermaidLightbox();
+  // 浮层下的原消息图也需要独立合成，否则更新遮罩上方内容会重绘底层大 SVG。
+  figure.classList.add("mermaid-lightbox-source");
 
   const clone = svg.cloneNode(true);
   const naturalWidth = parseFloat(clone.style.maxWidth)
@@ -3626,10 +3629,105 @@ function openMermaidLightbox(figure) {
   const ZOOM_MIN = 0.1;
   const ZOOM_MAX = 8;
   let zoomLabel = null;
+  // 大图在缩放手势期间使用有像素上限的位图，停手后恢复原始 SVG。
+  // 单纯 transform 仍会让浏览器反复遍历/绘制大型 SVG；预览不改变最终清晰度。
+  let preview = null;
+  let previewActive = false;
+  let previewImage = null;
+  let previewUrl = null;
+  let previewTimer = null;
+  let settleTimer = null;
+  let closed = false;
+  const svgDisplay = clone.style.display;
+  const revokePreviewUrl = () => {
+    if (previewUrl !== null) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  };
+  const restoreVector = () => {
+    settleTimer = null;
+    if (!previewActive) return;
+    clone.style.display = svgDisplay;
+    preview.style.display = "none";
+    previewActive = false;
+  };
+  const usePreview = () => {
+    if (!preview) return;
+    preview.style.transform = `scale(${renderedZoom})`;
+    preview.style.display = "block";
+    clone.style.display = "none";
+    previewActive = true;
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(restoreVector, 180);
+  };
+  const preparePreview = () => {
+    previewTimer = null;
+    // 小图沿用矢量绘制；不支持快照或快照失败时也继续正常缩放。
+    if (closed || !URL.createObjectURL || clone.querySelectorAll("*").length < 500) return;
+    try {
+      const snapshot = clone.cloneNode(true);
+      snapshot.style.transform = "none";
+      snapshot.style.display = svgDisplay;
+      previewUrl = URL.createObjectURL(new Blob(
+        [new XMLSerializer().serializeToString(snapshot)], { type: "image/svg+xml" },
+      ));
+      const image = new Image();
+      previewImage = image;
+      image.onload = () => {
+        image.onload = image.onerror = null;
+        previewImage = null;
+        revokePreviewUrl();
+        if (closed) return;
+        try {
+          // 最多 400 万像素、单边 8192px，避免巨大类图分配整图高分辨率纹理。
+          const ratio = Math.min(window.devicePixelRatio || 1,
+            Math.sqrt(4000000 / (naturalWidth * naturalHeight)),
+            8192 / Math.max(naturalWidth, naturalHeight));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(naturalWidth * ratio));
+          canvas.height = Math.max(1, Math.floor(naturalHeight * ratio));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          canvas.className = "mermaid-lightbox-preview";
+          canvas.setAttribute("aria-hidden", "true");
+          canvas.style.width = `${naturalWidth}px`;
+          canvas.style.height = `${naturalHeight}px`;
+          canvas.style.display = "none";
+          stage.appendChild(canvas);
+          preview = canvas;
+        } catch {
+          // 图像解码/绘制受限时保留 SVG，不影响关闭或后续缩放。
+        }
+      };
+      image.onerror = () => {
+        image.onload = image.onerror = null;
+        previewImage = null;
+        revokePreviewUrl();
+      };
+      image.src = previewUrl;
+    } catch {
+      revokePreviewUrl();
+    }
+  };
+  _mermaidLightboxCleanup = () => {
+    closed = true;
+    figure.classList.remove("mermaid-lightbox-source");
+    clearTimeout(previewTimer);
+    clearTimeout(settleTimer);
+    if (previewImage) {
+      previewImage.onload = previewImage.onerror = null;
+      previewImage.src = "";
+      previewImage = null;
+    }
+    revokePreviewUrl();
+    if (preview) preview.width = preview.height = 0;
+  };
+  const graphicRect = () => (previewActive ? preview : clone).getBoundingClientRect();
   const applyZoom = () => {
     stage.style.width = `${naturalWidth * zoom}px`;
     stage.style.height = `${naturalHeight * zoom}px`;
     clone.style.transform = `scale(${zoom})`;
+    if (preview) preview.style.transform = `scale(${zoom})`;
     if (zoomLabel) zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
     renderedZoom = zoom;
   };
@@ -3640,11 +3738,12 @@ function openMermaidLightbox(figure) {
   const renderZoom = () => {
     _mermaidZoomFrame = null;
     if (zoom === renderedZoom) return;
+    usePreview();
     const rect = body.getBoundingClientRect();
     const ax = pendingAnchorPoint ? pendingAnchorPoint.x : rect.left + rect.width / 2;
     const ay = pendingAnchorPoint ? pendingAnchorPoint.y : rect.top + rect.height / 2;
     if (!zoomAnchor || zoomAnchor.clientX !== ax || zoomAnchor.clientY !== ay) {
-      const before = clone.getBoundingClientRect();
+      const before = graphicRect();
       zoomAnchor = {
         clientX: ax,
         clientY: ay,
@@ -3653,7 +3752,7 @@ function openMermaidLightbox(figure) {
       };
     }
     applyZoom();
-    const after = clone.getBoundingClientRect();
+    const after = graphicRect();
     body.scrollLeft += (after.left + zoomAnchor.relX * after.width) - ax;
     body.scrollTop += (after.top + zoomAnchor.relY * after.height) - ay;
   };
@@ -3725,6 +3824,7 @@ function openMermaidLightbox(figure) {
   applyZoom();
   document.body.appendChild(overlay);
   _mermaidLightbox = overlay;
+  previewTimer = setTimeout(preparePreview, 0);
 }
 
 function closeMermaidLightbox() {
@@ -3733,6 +3833,8 @@ function closeMermaidLightbox() {
     cancelAnimationFrame(_mermaidZoomFrame);
     _mermaidZoomFrame = null;
   }
+  _mermaidLightboxCleanup?.();
+  _mermaidLightboxCleanup = null;
   _mermaidLightbox.remove();
   _mermaidLightbox = null;
   document.removeEventListener("keydown", onMermaidLightboxKeydown);
