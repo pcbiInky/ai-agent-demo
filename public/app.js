@@ -3586,27 +3586,126 @@ function showMermaidError(task, message) {
 
 // ── Mermaid 图形放大查看 ──────────────────────────────────
 // 点击已渲染的图形打开全屏浮层，SVG 克隆节点展示（已清洗的 DOM 直接复制，
-// 不做字符串注入）；点击任意处 / Esc / × 关闭
+// 不做字符串注入）。浮层按图形原始尺寸起步：mermaid 的行内 max-width /
+// width:100% 在浮层里会把图缩得更小，必须显式覆写宽高。
+// 缩放：触控板双指捏合（浏览器表现为 ctrlKey+wheel，Safari 为 gesture 事件）
+// 或底部 ± 按钮；双指滚动走原生 overflow 平移；Esc / × / 点击遮罩关闭
 let _mermaidLightbox = null;
 
 function openMermaidLightbox(figure) {
   const svg = figure.querySelector("svg");
   if (!svg) return;
   closeMermaidLightbox();
+
+  const clone = svg.cloneNode(true);
+  const naturalWidth = parseFloat(clone.style.maxWidth)
+    || clone.viewBox?.baseVal?.width
+    || clone.getBoundingClientRect().width
+    || 800;
+  const naturalHeight = parseFloat(clone.getAttribute("height"))
+    || clone.viewBox?.baseVal?.height
+    || naturalWidth * 0.6;
+
   const overlay = document.createElement("div");
   overlay.className = "mermaid-lightbox";
   const body = document.createElement("div");
   body.className = "mermaid-lightbox-body";
-  body.appendChild(svg.cloneNode(true));
-  const closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.className = "mermaid-lightbox-close";
-  closeBtn.textContent = "×";
-  closeBtn.title = "关闭";
+  body.appendChild(clone);
+
+  let zoom = 1;
+  const ZOOM_MIN = 0.1;
+  const ZOOM_MAX = 8;
+  let zoomLabel = null;
+  const applyZoom = () => {
+    clone.style.maxWidth = "none";
+    clone.style.width = `${Math.round(naturalWidth * zoom)}px`;
+    clone.style.height = `${Math.round(naturalHeight * zoom)}px`;
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  };
+  // 缩放时保留正在看的位置。锚点：捏合为指针位置（视口坐标），按钮缩放为可视区中心。
+  // 不用理论公式推算——SVG 与容器之间有 padding、宽高写入时有像素取整、
+  // 内容小于容器时还有 auto 居中，一律按缩放前后 SVG 的实际 getBoundingClientRect
+  // 测量偏移再补偿滚动（滚动到边界时自然截断）。
+  // 连续缩放期间固定图内锚点 zoomAnchor：浏览器对滚动位置有取整/亚像素误差，
+  // 每步重新测量锚点会把上一步的误差带进下一步并放大；锚点固定后残差有界不累计。
+  // 用户平移（普通滚动/按下拖动/新一轮捏合）或锚点变化时重置，重新测量。
+  let zoomAnchor = null;
+  const setZoom = (next, anchorPoint) => {
+    const prevZoom = zoom;
+    zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next));
+    if (zoom === prevZoom) return;
+    const rect = body.getBoundingClientRect();
+    const ax = anchorPoint ? anchorPoint.x : rect.left + rect.width / 2;
+    const ay = anchorPoint ? anchorPoint.y : rect.top + rect.height / 2;
+    if (!zoomAnchor || zoomAnchor.clientX !== ax || zoomAnchor.clientY !== ay) {
+      const before = clone.getBoundingClientRect();
+      zoomAnchor = {
+        clientX: ax,
+        clientY: ay,
+        relX: before.width > 0 ? Math.min(1, Math.max(0, (ax - before.left) / before.width)) : 0.5,
+        relY: before.height > 0 ? Math.min(1, Math.max(0, (ay - before.top) / before.height)) : 0.5,
+      };
+    }
+    applyZoom();
+    const after = clone.getBoundingClientRect();
+    body.scrollLeft += (after.left + zoomAnchor.relX * after.width) - ax;
+    body.scrollTop += (after.top + zoomAnchor.relY * after.height) - ay;
+  };
+
+  const mkBtn = (text, title, onClick, className = "") => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = text;
+    btn.title = title;
+    if (className) btn.className = className;
+    btn.addEventListener("click", onClick);
+    return btn;
+  };
+  zoomLabel = mkBtn("100%", "重置为 100%", () => setZoom(1), "mermaid-zoom-label");
+  const controls = document.createElement("div");
+  controls.className = "mermaid-lightbox-controls";
+  controls.append(
+    mkBtn("−", "缩小", () => setZoom(zoom / 1.2)),
+    zoomLabel,
+    mkBtn("+", "放大", () => setZoom(zoom * 1.2)),
+  );
+
+  const closeBtn = mkBtn("×", "关闭", () => closeMermaidLightbox(), "mermaid-lightbox-close");
   overlay.appendChild(body);
+  overlay.appendChild(controls);
   overlay.appendChild(closeBtn);
-  overlay.addEventListener("click", () => closeMermaidLightbox());
+
+  // 只有点遮罩本体才关闭：点图形、缩放按钮不关闭
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeMermaidLightbox();
+  });
+  // 触控板捏合 → ctrlKey+wheel，以指针位置为锚点缩放；
+  // 普通双指滚动不拦截，留给原生平移；deltaY 为 0 的横向滚动不是缩放，不拦截
+  overlay.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey && !e.metaKey) {
+      zoomAnchor = null; // 平移手势：正在看的内容变了，重新测量锚点
+      return;
+    }
+    if (e.deltaY === 0) return;
+    e.preventDefault();
+    setZoom(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08), { x: e.clientX, y: e.clientY });
+  }, { passive: false });
+  // 按下拖动（鼠标/触摸平移）同样重置锚点
+  body.addEventListener("pointerdown", () => { zoomAnchor = null; });
+  // Safari 的捏合走专有 gesture 事件；新一轮捏合重置锚点
+  let gestureBaseZoom = 1;
+  overlay.addEventListener("gesturestart", (e) => {
+    e.preventDefault();
+    gestureBaseZoom = zoom;
+    zoomAnchor = null;
+  });
+  overlay.addEventListener("gesturechange", (e) => {
+    e.preventDefault();
+    setZoom(gestureBaseZoom * e.scale);
+  });
+
   document.addEventListener("keydown", onMermaidLightboxKeydown);
+  applyZoom();
   document.body.appendChild(overlay);
   _mermaidLightbox = overlay;
 }

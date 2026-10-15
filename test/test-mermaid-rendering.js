@@ -253,18 +253,104 @@ const errorBlocks = () => blocks().filter((b) => b.dataset.mermaidState === "err
     assert(!!r12?.querySelector("code")?.textContent.includes("inline"), "行内代码正常");
     assert(!!r12?.querySelector("table") && !!r12?.querySelector('a[href="https://example.com"]'), "表格与链接渲染无回归");
 
-    // ── 13. 点击放大浮层 ──
+    // ── 13. 点击放大浮层与缩放 ──
     const zoomFigure = state_messageElements("r11")?.querySelector(".mermaid-figure");
     assert(zoomFigure?.title === "点击放大查看", "渲染成功的图形带点击放大提示");
     zoomFigure.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    const lightbox = document.querySelector(".mermaid-lightbox");
+    let lightbox = document.querySelector(".mermaid-lightbox");
     assert(!!lightbox?.querySelector(".mermaid-lightbox-body svg"), "点击图形打开放大浮层并克隆 SVG");
-    assert(lightbox.querySelector("svg")?.getAttribute("id")?.endsWith("-svg"), "浮层 SVG 内容与气泡内一致");
+    const zoomSvg = lightbox.querySelector("svg");
+    assert(zoomSvg?.getAttribute("id")?.endsWith("-svg"), "浮层 SVG 内容与气泡内一致");
+    assert(/^\d+px$/.test(zoomSvg.style.width) && zoomSvg.style.maxWidth === "none", "浮层 SVG 去掉 max-width 约束并按像素尺寸展示（不再比气泡里更小）");
+    assert(lightbox.querySelector(".mermaid-zoom-label")?.textContent === "100%", "初始缩放 100%");
+
+    // P2 回归：缩放保留正在看的位置。模拟真实布局：body 有 16px padding
+    // （留白不参与缩放），SVG 位置 = padding − 滚动偏移，尺寸随 style 宽高变化；
+    // 滚动写入按整数取整，模拟浏览器的滚动取整误差
+    const lbBody = lightbox.querySelector(".mermaid-lightbox-body");
+    let mockScrollLeft = 0;
+    let mockScrollTop = 0;
+    Object.defineProperty(lbBody, "scrollLeft", { get: () => mockScrollLeft, set: (v) => { mockScrollLeft = Math.round(v); }, configurable: true });
+    Object.defineProperty(lbBody, "scrollTop", { get: () => mockScrollTop, set: (v) => { mockScrollTop = Math.round(v); }, configurable: true });
+    Object.defineProperty(lbBody, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 1000, height: 800 }), configurable: true });
+    const lbSvg = lbBody.querySelector("svg");
+    Object.defineProperty(lbSvg, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 16 - mockScrollLeft,
+        top: 16 - mockScrollTop,
+        width: parseFloat(lbSvg.style.width) || 800,
+        height: parseFloat(lbSvg.style.height) || 40,
+      }),
+    });
+    // 锚点 (500,100) 落在 SVG 内；与实现一致，钳制到图边缘（padding 区不缩放）
+    const pinchAt = (x, y, dx = -120) => lightbox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: dx, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    const pinch = (dx = -120) => pinchAt(500, 100, dx);
+    const anchorRel = (ax, ay) => {
+      const r = lbSvg.getBoundingClientRect();
+      const clamp01 = (v) => Math.min(1, Math.max(0, v));
+      return { x: clamp01((ax - r.left) / r.width), y: clamp01((ay - r.top) / r.height) };
+    };
+    for (let i = 0; i < 19; i++) pinch(); // 先放大到约 4 倍，让内容宽于视口
+    // 用户平移到 scrollLeft=600：滚动变化必伴随滚轮/指针事件，锚点因此重置
+    lightbox.dispatchEvent(new window.WheelEvent("wheel", { deltaY: 30, bubbles: true, cancelable: true }));
+    mockScrollLeft = 600;
+    mockScrollTop = 40;
+    let maxDeviation = 0;
+    for (let step = 0; step < 6; step++) {
+      const before = anchorRel(500, 100);
+      pinch();
+      const after = anchorRel(500, 100);
+      maxDeviation = Math.max(maxDeviation, Math.abs(after.x - before.x), Math.abs(after.y - before.y));
+    }
+    assert(maxDeviation < 0.01, `连续捏合缩放保留视点（滚动取整 + padding，最大偏差 ${(maxDeviation * 100).toFixed(3)}% 图宽）`);
+    assert(mockScrollLeft !== 600, "捏合缩放时滚动位置随锚点补偿");
+
+    // 平移（普通滚动）重置锚点：之后在新指针位置捏合，按新锚点保持
+    lightbox.dispatchEvent(new window.WheelEvent("wheel", { deltaY: 30, bubbles: true, cancelable: true }));
+    mockScrollLeft = 900;
+    let panDeviation = 0;
+    for (let step = 0; step < 3; step++) {
+      const before = anchorRel(300, 60);
+      pinchAt(300, 60);
+      const after = anchorRel(300, 60);
+      panDeviation = Math.max(panDeviation, Math.abs(after.x - before.x));
+    }
+    assert(panDeviation < 0.01, `平移后更换锚点重新保持视点（最大偏差 ${(panDeviation * 100).toFixed(3)}% 图宽）`);
+
+    // P3 回归：无纵向增量的 Ctrl+滚轮（如横向滚动）不是缩放手势，不缩放也不拦截
+    const zoomLabelBeforeP3 = lightbox.querySelector(".mermaid-zoom-label").textContent;
+    const scrollLeftBeforeP3 = mockScrollLeft;
+    const notPrevented = lightbox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: 0, deltaX: 60, bubbles: true, cancelable: true }));
+    assert(notPrevented === true, "deltaY=0 的滚轮事件不被拦截（未 preventDefault，原生横向滚动保留）");
+    assert(lightbox.querySelector(".mermaid-zoom-label")?.textContent === zoomLabelBeforeP3 && mockScrollLeft === scrollLeftBeforeP3, "deltaY=0 的滚轮事件不触发缩放");
+
+    // 触控板捏合（ctrlKey+wheel）缩放；普通滚动不拦截
+    lightbox.dispatchEvent(new window.WheelEvent("wheel", { ctrlKey: true, deltaY: -120, bubbles: true, cancelable: true }));
+    assert(lightbox.querySelector(".mermaid-zoom-label")?.textContent !== "100%", "捏合手势（ctrlKey+wheel）触发缩放");
+    const zoomedWidth = parseInt(lightbox.querySelector("svg").style.width, 10);
+    lightbox.dispatchEvent(new window.WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+    assert(parseInt(lightbox.querySelector("svg").style.width, 10) === zoomedWidth, "普通双指滚动不触发缩放（留给原生平移）");
+    // 按钮缩放与重置（先复位到 100%，前面 P2 连续捏合已触到 800% 上限）
+    lightbox.querySelector(".mermaid-zoom-label").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const baseWidth = parseInt(lightbox.querySelector("svg").style.width, 10);
+    const plusBtn = [...lightbox.querySelectorAll(".mermaid-lightbox-controls button")].find((b) => b.textContent === "+");
+    plusBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const widthAfterPlus = parseInt(lightbox.querySelector("svg").style.width, 10);
+    assert(widthAfterPlus > baseWidth, "＋ 按钮放大图形");
+    lightbox.querySelector(".mermaid-zoom-label").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert(lightbox.querySelector(".mermaid-zoom-label")?.textContent === "100%", "点击百分比重置为 100%");
+    assert(!!document.querySelector(".mermaid-lightbox"), "点击缩放按钮不关闭浮层");
+
+    // 点图形不关闭；Esc 关闭；点遮罩本体关闭
+    lightbox.querySelector("svg").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert(!!document.querySelector(".mermaid-lightbox"), "点击浮层内图形不关闭");
     document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" }));
     assert(!document.querySelector(".mermaid-lightbox"), "Esc 关闭放大浮层");
     zoomFigure.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    document.querySelector(".mermaid-lightbox")?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    assert(!document.querySelector(".mermaid-lightbox"), "点击浮层关闭放大浮层");
+    lightbox = document.querySelector(".mermaid-lightbox");
+    lightbox.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert(!document.querySelector(".mermaid-lightbox"), "点击遮罩本体关闭放大浮层");
 
   } catch (err) {
     console.error("测试异常:", err);
