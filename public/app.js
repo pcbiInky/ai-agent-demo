@@ -3591,6 +3591,7 @@ function showMermaidError(task, message) {
 // 缩放：触控板双指捏合（浏览器表现为 ctrlKey+wheel，Safari 为 gesture 事件）
 // 或底部 ± 按钮；双指滚动走原生 overflow 平移；Esc / × / 点击遮罩关闭
 let _mermaidLightbox = null;
+let _mermaidZoomFrame = null;
 
 function openMermaidLightbox(figure) {
   const svg = figure.querySelector("svg");
@@ -3610,33 +3611,38 @@ function openMermaidLightbox(figure) {
   overlay.className = "mermaid-lightbox";
   const body = document.createElement("div");
   body.className = "mermaid-lightbox-body";
-  body.appendChild(clone);
+  // SVG 保持原始布局尺寸，仅用 transform 缩放；外层负责原生滚动范围，
+  // 避免每个输入事件都重新布局整张 SVG（大型类图可有数千个子节点）。
+  const stage = document.createElement("div");
+  stage.className = "mermaid-lightbox-stage";
+  stage.appendChild(clone);
+  body.appendChild(stage);
+  clone.style.maxWidth = "none";
+  clone.style.width = `${naturalWidth}px`;
+  clone.style.height = `${naturalHeight}px`;
 
-  let zoom = 1;
+  let zoom = 1; // 包含尚未绘制的输入，连续事件不会丢失增量
+  let renderedZoom = 1;
   const ZOOM_MIN = 0.1;
   const ZOOM_MAX = 8;
   let zoomLabel = null;
   const applyZoom = () => {
-    clone.style.maxWidth = "none";
-    clone.style.width = `${Math.round(naturalWidth * zoom)}px`;
-    clone.style.height = `${Math.round(naturalHeight * zoom)}px`;
+    stage.style.width = `${naturalWidth * zoom}px`;
+    stage.style.height = `${naturalHeight * zoom}px`;
+    clone.style.transform = `scale(${zoom})`;
     if (zoomLabel) zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+    renderedZoom = zoom;
   };
-  // 缩放时保留正在看的位置。锚点：捏合为指针位置（视口坐标），按钮缩放为可视区中心。
-  // 不用理论公式推算——SVG 与容器之间有 padding、宽高写入时有像素取整、
-  // 内容小于容器时还有 auto 居中，一律按缩放前后 SVG 的实际 getBoundingClientRect
-  // 测量偏移再补偿滚动（滚动到边界时自然截断）。
-  // 连续缩放期间固定图内锚点 zoomAnchor：浏览器对滚动位置有取整/亚像素误差，
-  // 每步重新测量锚点会把上一步的误差带进下一步并放大；锚点固定后残差有界不累计。
-  // 用户平移（普通滚动/按下拖动/新一轮捏合）或锚点变化时重置，重新测量。
+  // 连续缩放固定图内锚点，避免滚动取整误差累计。每帧按实际位置补偿，
+  // 同时兼容容器 padding、小图居中和滚动边界；平移或指针变化后重新测量。
   let zoomAnchor = null;
-  const setZoom = (next, anchorPoint) => {
-    const prevZoom = zoom;
-    zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next));
-    if (zoom === prevZoom) return;
+  let pendingAnchorPoint = null;
+  const renderZoom = () => {
+    _mermaidZoomFrame = null;
+    if (zoom === renderedZoom) return;
     const rect = body.getBoundingClientRect();
-    const ax = anchorPoint ? anchorPoint.x : rect.left + rect.width / 2;
-    const ay = anchorPoint ? anchorPoint.y : rect.top + rect.height / 2;
+    const ax = pendingAnchorPoint ? pendingAnchorPoint.x : rect.left + rect.width / 2;
+    const ay = pendingAnchorPoint ? pendingAnchorPoint.y : rect.top + rect.height / 2;
     if (!zoomAnchor || zoomAnchor.clientX !== ax || zoomAnchor.clientY !== ay) {
       const before = clone.getBoundingClientRect();
       zoomAnchor = {
@@ -3650,6 +3656,14 @@ function openMermaidLightbox(figure) {
     const after = clone.getBoundingClientRect();
     body.scrollLeft += (after.left + zoomAnchor.relX * after.width) - ax;
     body.scrollTop += (after.top + zoomAnchor.relY * after.height) - ay;
+  };
+  const setZoom = (next, anchorPoint = null) => {
+    if (!Number.isFinite(next)) return;
+    zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next));
+    pendingAnchorPoint = anchorPoint;
+    if (_mermaidZoomFrame === null && zoom !== renderedZoom) {
+      _mermaidZoomFrame = requestAnimationFrame(renderZoom);
+    }
   };
 
   const mkBtn = (text, title, onClick, className = "") => {
@@ -3688,7 +3702,10 @@ function openMermaidLightbox(figure) {
     }
     if (e.deltaY === 0) return;
     e.preventDefault();
-    setZoom(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08), { x: e.clientX, y: e.clientY });
+    // 按实际增量连续缩放，小幅捏合不会再强制跳变 8%；统一滚轮的单位。
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? body.clientHeight : 1;
+    const delta = Math.max(-600, Math.min(600, e.deltaY * unit));
+    setZoom(zoom * Math.exp(-delta * 0.002), { x: e.clientX, y: e.clientY });
   }, { passive: false });
   // 按下拖动（鼠标/触摸平移）同样重置锚点
   body.addEventListener("pointerdown", () => { zoomAnchor = null; });
@@ -3712,6 +3729,10 @@ function openMermaidLightbox(figure) {
 
 function closeMermaidLightbox() {
   if (!_mermaidLightbox) return;
+  if (_mermaidZoomFrame !== null) {
+    cancelAnimationFrame(_mermaidZoomFrame);
+    _mermaidZoomFrame = null;
+  }
   _mermaidLightbox.remove();
   _mermaidLightbox = null;
   document.removeEventListener("keydown", onMermaidLightboxKeydown);

@@ -2266,12 +2266,22 @@ html, body {
   overflow: auto;
   box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35);
 }
-/* 浮层里尺寸由 JS 按缩放比例写行内宽高，宽图/高图双向滚动 */
-.mermaid-lightbox-body svg {
-  max-width: none;
-  height: auto;
-  display: block;
+/* 外层提供缩放后的滚动范围，SVG 自身保持原始布局尺寸。
+   裁剪未缩放的布局边界，缩小到 100% 以下时不会留下多余滚动区域。 */
+.mermaid-lightbox-stage {
+  position: relative;
   margin: 0 auto;
+  overflow: hidden;
+  contain: layout paint;
+}
+.mermaid-lightbox-stage > svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  display: block;
+  margin: 0;
+  transform-origin: 0 0;
 }
 .mermaid-lightbox-controls {
   position: fixed;
