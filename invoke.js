@@ -11,12 +11,14 @@ const { buildQodercnContextMetrics } = require("./lib/qodercn-metrics");
 const { resolveCliInvocation } = require("./lib/cli-invocation");
 const { invokeDshAcp } = require("./lib/dsh-acp-client");
 const { invokeKimiAcp } = require("./lib/kimi-acp-client");
+const { killProcessTree } = require("./lib/process-tree");
 
-// 活跃子进程集合，父进程退出时统一清理
+// 活跃子进程集合，父进程退出时统一清理（整棵进程树：CLI 包装脚本会把
+// shell 命令放进独立进程组，只杀直接子进程会漏掉真正在跑命令的那层）
 const activeChildren = new Set();
 function cleanupChildren() {
   for (const child of activeChildren) {
-    child.kill("SIGTERM");
+    killProcessTree(child, "SIGTERM");
   }
 }
 process.on("SIGINT", () => { cleanupChildren(); process.exit(1); });
@@ -744,6 +746,8 @@ function invoke(cli, prompt, sessionId, options = {}) {
     const child = spawn(cliInvocation.command, cliInvocation.args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
+      // 独占进程组：终止时先杀整个进程组，再按进程树补杀另起进程组的子孙
+      detached: process.platform !== "win32",
     });
 
     activeChildren.add(child);
@@ -752,14 +756,14 @@ function invoke(cli, prompt, sessionId, options = {}) {
     let stderr = "";
     let aborted = false; // signal 提前终止标记
 
-    // signal 支持：外部可通过 AbortSignal 提前终止 CLI 进程
+    // signal 支持：外部可通过 AbortSignal 提前终止 CLI 进程（整棵进程树）
     if (signal) {
       const onAbort = () => {
         if (child.exitCode !== null) return; // 已退出，忽略
         aborted = true;
-        child.kill("SIGTERM");
+        killProcessTree(child, "SIGTERM");
         setTimeout(() => {
-          if (child.exitCode === null) child.kill("SIGKILL");
+          if (child.exitCode === null) killProcessTree(child, "SIGKILL");
         }, 3000);
       };
       if (signal.aborted) {
@@ -777,15 +781,15 @@ function invoke(cli, prompt, sessionId, options = {}) {
     child.stdout.on("data", markActive);
     child.stderr.on("data", markActive);
 
-    // 定时检查是否超时：先 SIGTERM 优雅终止，5 秒后兜底 SIGKILL
+    // 定时检查是否超时：先 SIGTERM 优雅终止（整棵进程树），5 秒后兜底 SIGKILL
     let killTimer = null;
     const timer = setInterval(() => {
       if (Date.now() - lastActivity > timeoutMs) {
         clearInterval(timer);
-        child.kill("SIGTERM");
+        killProcessTree(child, "SIGTERM");
         killTimer = setTimeout(() => {
           if (!child.killed || child.exitCode === null) {
-            child.kill("SIGKILL");
+            killProcessTree(child, "SIGKILL");
           }
         }, 5000);
       }

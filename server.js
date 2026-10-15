@@ -1014,20 +1014,23 @@ app.post("/api/chat", (req, res) => {
           resolve();
         }, (err) => {
           setCharStatus(sessionId, character, "online");
-          emitSSE(sessionId, "error", {
-            character,
-            messageId,
-            error: err.message,
-          });
+          // 用户终止（排队期间或 ACP 执行中）属正常终止：abort SSE 已提示，不再产生 error 气泡
+          if (!err.invokeAborted && !err.aborted) {
+            emitSSE(sessionId, "error", {
+              character,
+              messageId,
+              error: err.message,
+            });
 
-          appendToLog(sessionId, {
-            id: crypto.randomUUID(),
-            role: "error",
-            character,
-            error: err.message,
-            replyTo: messageId,
-            timestamp: Date.now(),
-          });
+            appendToLog(sessionId, {
+              id: crypto.randomUUID(),
+              role: "error",
+              character,
+              error: err.message,
+              replyTo: messageId,
+              timestamp: Date.now(),
+            });
+          }
           resolve();
         }, {
           skillDecision,
@@ -1276,7 +1279,14 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
   const roleModel = fullRole?.model || model;
 
   const abortController = new AbortController();
-  invokeAbortControllers.set(key, abortController);
+  // 同一角色可能有排队中的 invoke：控制器按 key 收进 Set，终止时对排队与
+  // 执行中的实例一并生效；直接 set 覆盖会让正在跑的那个收不到终止
+  let abortControllers = invokeAbortControllers.get(key);
+  if (!abortControllers) {
+    abortControllers = new Set();
+    invokeAbortControllers.set(key, abortControllers);
+  }
+  abortControllers.add(abortController);
 
   // 任务体整体包 try：setup、invoke、回调与失败清理都在内部消化异常，
   // 保证 next 恒为 fulfilled，不会以 rejected 状态毒化后续链
@@ -1285,6 +1295,13 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
     const thinkingRecordId = crypto.randomUUID();
     const thinkingLogKey = getThinkingLogKey(browserSessionId, thinkingRecordId);
     try {
+      // 排队期间被终止的实例出队时直接失败，不再启动 CLI；
+      // invokeAborted 标记让上层把它当正常终止，不产生 error 气泡（abort SSE 已提示）
+      if (abortController.signal.aborted) {
+        const err = new Error("invoke 已被终止（排队期间）");
+        err.invokeAborted = true;
+        throw err;
+      }
       // 从落盘的 session-context 读取 provider sessionId
       const cliSessionId = sessionStore.getProviderSessionId(browserSessionId, roleId);
       const sendCountBefore = getMcpSendCount(browserSessionId, character);
@@ -1351,7 +1368,8 @@ function enqueueInvoke(browserSessionId, cli, prompt, character, onResult, onErr
       }
       runQueueCallback(onError, err, "onError");
     } finally {
-      invokeAbortControllers.delete(key);
+      abortControllers.delete(abortController);
+      if (abortControllers.size === 0) invokeAbortControllers.delete(key);
       if (chainKey) invokeChainCallers.delete(chainKey);
     }
   });
@@ -1478,17 +1496,20 @@ async function dispatchParentFollowUpFromEvent(event) {
     }, (err) => {
       setCharStatus(event.sessionId, event.parentCharacter, "online");
       removeThinking(event.sessionId, event.parentCharacter, event.childMessageId);
-      emitSSE(event.sessionId, "error", { character: event.parentCharacter, messageId: event.childMessageId, error: err.message, threadId: event.threadId });
-      appendToLog(event.sessionId, {
-        id: crypto.randomUUID(),
-        role: "error",
-        character: event.parentCharacter,
-        error: err.message,
-        replyTo: event.childMessageId,
-        timestamp: Date.now(),
-        ...(event.threadId && { threadId: event.threadId }),
-        ...(event.depth > 0 && { depth: event.depth }),
-      });
+      // 用户终止（排队期间或 ACP 执行中）属正常终止：不产生 error 气泡
+      if (!err.invokeAborted && !err.aborted) {
+        emitSSE(event.sessionId, "error", { character: event.parentCharacter, messageId: event.childMessageId, error: err.message, threadId: event.threadId });
+        appendToLog(event.sessionId, {
+          id: crypto.randomUUID(),
+          role: "error",
+          character: event.parentCharacter,
+          error: err.message,
+          replyTo: event.childMessageId,
+          timestamp: Date.now(),
+          ...(event.threadId && { threadId: event.threadId }),
+          ...(event.depth > 0 && { depth: event.depth }),
+        });
+      }
       resolve();
     }, {
       skillDecision: followUpSkillDecision,
@@ -1768,17 +1789,20 @@ async function dispatchAIMentions(sessionId, fromCharacter, aiMentions, messageI
       }, (err) => {
         setCharStatus(sessionId, targetChar, "online");
         removeThinking(sessionId, targetChar, messageId);
-        emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
-        appendToLog(sessionId, {
-          id: crypto.randomUUID(),
-          role: "error",
-          character: targetChar,
-          error: err.message,
-          replyTo: messageId,
-          timestamp: Date.now(),
-          threadId,
-          depth: depth + 1,
-        });
+        // 用户终止（排队期间或 ACP 执行中）属正常终止：不产生 error 气泡
+        if (!err.invokeAborted && !err.aborted) {
+          emitSSE(sessionId, "error", { character: targetChar, messageId, error: err.message, threadId });
+          appendToLog(sessionId, {
+            id: crypto.randomUUID(),
+            role: "error",
+            character: targetChar,
+            error: err.message,
+            replyTo: messageId,
+            timestamp: Date.now(),
+            threadId,
+            depth: depth + 1,
+          });
+        }
         resolve();
       }, {
         skillDecision: targetSkillDecision,
@@ -2029,12 +2053,13 @@ app.post("/api/abort-invoke", (req, res) => {
   }
   const roleId = roleConfig.id || character;
   const abortKey = `${browserSessionId}:${roleId}`;
-  const controller = invokeAbortControllers.get(abortKey);
-  if (!controller) {
+  const controllers = invokeAbortControllers.get(abortKey);
+  if (!controllers || controllers.size === 0) {
     return res.json({ ok: true, aborted: false, reason: "该角色当前没有活跃的 invoke" });
   }
-  controller.abort();
-  console.log(`[用户终止] ${character} (${abortKey})`);
+  // 终止对该 key 下所有实例生效：正在执行的 + 排队中的
+  for (const controller of controllers) controller.abort();
+  console.log(`[用户终止] ${character} (${abortKey})，共 ${controllers.size} 个 invoke 实例`);
   clearActiveThinking(browserSessionId, character);
   // 任务终止时一并清理该角色待审批的权限请求，前端待审批标识随之消失
   for (const [requestId, pending] of pendingPermissions) {

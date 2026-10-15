@@ -18,6 +18,7 @@ const http = require("http");
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { runCommandTree, killActiveCommandTrees } = require("./lib/process-tree");
 const { globSync } = require("fs").promises ? { globSync: null } : {};
 
 const PORT = process.env.PERMISSION_SERVER_PORT || "3000";
@@ -191,22 +192,27 @@ server.tool(
   async ({ command, cwd, description, timeout }) => {
     const ctx = getContext();
     const effectiveCwd = cwd || ctx.workingDirectory || undefined;
-    return withPermission("Bash", { command, cwd: effectiveCwd, description }, () => {
-      try {
-        const result = execSync(command, {
-          cwd: effectiveCwd,
-          encoding: "utf-8",
-          timeout: timeout || 120_000,
-          maxBuffer: 10 * 1024 * 1024,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        return result || "(无输出)";
-      } catch (err) {
-        const stdout = err.stdout || "";
-        const stderr = err.stderr || "";
-        const msg = stderr || stdout || err.message;
-        return `命令执行失败 (exit ${err.status || "?"})\n${msg}`;
+    const effectiveTimeout = timeout || 120_000;
+    // 用 spawn 替代 execSync：保留子进程引用，宿主被终止 / 超时时能杀掉
+    // 整棵进程树（execSync 只杀 sh 自己，命令再启动的子孙会被 init 收养继续跑）
+    return withPermission("Bash", { command, cwd: effectiveCwd, description }, async () => {
+      const { code, signal, stdout, stderr, timedOut, truncated } = await runCommandTree(command, {
+        cwd: effectiveCwd,
+        timeoutMs: effectiveTimeout,
+      });
+      const suffix = truncated ? "\n(输出过长已截断)" : "";
+      if (timedOut) {
+        const msg = stderr || stdout || "";
+        return `命令执行失败 (超时 ${effectiveTimeout}ms，进程树已终止)${msg ? `\n${msg}` : ""}${suffix}`;
       }
+      if (truncated) {
+        // 输出超限即整树终止（与 execSync 的 maxBuffer 语义一致）
+        const msg = stdout || stderr || "";
+        return `命令执行失败 (输出超过 10MB 上限，进程树已终止)${msg ? `\n${msg}` : ""}`;
+      }
+      if (code === 0) return (stdout || "(无输出)") + suffix;
+      const msg = stderr || stdout || (signal ? `signal ${signal}` : "");
+      return `命令执行失败 (exit ${code ?? "?"})${msg ? `\n${msg}` : ""}${suffix}`;
     });
   }
 );
@@ -522,6 +528,19 @@ server.tool(
 );
 
 // ── 启动 ──────────────────────────────────────────────────
+
+// 退出清理：宿主 CLI 死亡（stdin EOF）或收到信号时，杀掉仍在执行的命令进程树，
+// 不能孤儿化后让命令在后台继续跑
+function shutdownAndExit(code) {
+  killActiveCommandTrees("SIGTERM");
+  process.exit(code);
+}
+process.on("SIGTERM", () => shutdownAndExit(0));
+process.on("SIGINT", () => shutdownAndExit(0));
+process.stdin.on("end", () => shutdownAndExit(0));
+// exit 阶段只能同步操作：兜底 SIGKILL 一遍，防止 SIGTERM 后仍有残留
+process.on("exit", () => killActiveCommandTrees("SIGKILL"));
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
